@@ -1,14 +1,22 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { proxyConfigSchema, parseConfigFile, serializeConfigFile } from "./config-schema";
-import type { ProxyConfigFile, ProxyForwardConfig, ProxyInstanceConfig } from "../types/proxy";
+import {
+  proxyConfigSchema,
+  parseConfigFile,
+  serializeConfigFile,
+} from "./config-schema";
+import type {
+  ProxyConfigFile,
+  ProxyForwardConfig,
+  ProxyInstanceConfig,
+} from "../types/proxy";
+import { getConfigExample } from "./config-template.macro" with { type: "macro" };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DEFAULT_CONFIG_DIR = path.join(__dirname, "../../config");
-const DEFAULT_CONFIG_PATH = path.join(DEFAULT_CONFIG_DIR, "proxy-config.json");
+const DEFAULT_CONFIG_PATH = path.resolve(process.cwd(), "proxy-config.json");
 
 let configFilePath = process.env.PROXY_CONFIG_PATH?.length
   ? path.resolve(process.env.PROXY_CONFIG_PATH)
@@ -31,7 +39,8 @@ export function getConfigFilePath(): string {
 export function loadConfig(): ProxyConfigFile {
   ensureConfigDir();
   if (!fs.existsSync(configFilePath)) {
-    throw new Error(`[ConfigStore] Config file missing at ${configFilePath}`);
+    fs.writeFileSync(configFilePath, getConfigExample());
+    // throw new Error(`[ConfigStore] Config file missing at ${configFilePath}`);
   }
   const content = fs.readFileSync(configFilePath, "utf-8");
   return parseConfigFile(content);
@@ -76,7 +85,9 @@ export function initConfigStore(): void {
   ensureConfigDir();
   if (!fs.existsSync(configFilePath)) {
     writeDefaultConfig();
-    console.log(`[ConfigStore] Created configuration file at ${configFilePath}`);
+    console.log(
+      `[ConfigStore] Created configuration file at ${configFilePath}`,
+    );
     return;
   }
   // Validate existing file
@@ -113,11 +124,16 @@ export function deleteInstance(name: string): boolean {
   return true;
 }
 
-export function getForwardsByInstanceName(instanceName: string): ProxyForwardConfig[] {
+export function getForwardsByInstanceName(
+  instanceName: string,
+): ProxyForwardConfig[] {
   return getInstanceByName(instanceName)?.forwards ?? [];
 }
 
-export function upsertForward(instanceName: string, forward: ProxyForwardConfig): void {
+export function upsertForward(
+  instanceName: string,
+  forward: ProxyForwardConfig,
+): void {
   const config = loadConfig();
   const idx = config.instances.findIndex((i) => i.name === instanceName);
   if (idx === -1) {
@@ -138,7 +154,10 @@ export function upsertForward(instanceName: string, forward: ProxyForwardConfig)
   saveConfig(config);
 }
 
-export function deleteForward(instanceName: string, forwardName: string): boolean {
+export function deleteForward(
+  instanceName: string,
+  forwardName: string,
+): boolean {
   const config = loadConfig();
   const idx = config.instances.findIndex((i) => i.name === instanceName);
   if (idx === -1) return false;
@@ -152,7 +171,10 @@ export function deleteForward(instanceName: string, forwardName: string): boolea
   return true;
 }
 
-export function reorderForwards(instanceName: string, orderedNames: string[]): void {
+export function reorderForwards(
+  instanceName: string,
+  orderedNames: string[],
+): void {
   const config = loadConfig();
   const instIdx = config.instances.findIndex((i) => i.name === instanceName);
   if (instIdx === -1) throw new Error(`Instance not found: ${instanceName}`);

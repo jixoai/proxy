@@ -45,8 +45,8 @@ bun run viewer
 
 ## 配置管理
 
-- 所有代理实例与转发规则现在存储在 `config/proxy-config.json` 中（运行时自动生成并维护）。
-- 首次启动会根据示例数据创建默认配置；你也可以参考 `config/proxy-config.example.json` 手动编写。
+- 所有代理实例与转发规则现在存储在当前工作目录下的 `proxy-config.json` 中（运行时会自动创建并维护该文件）。
+- 首次启动会在当前目录根据示例数据创建默认配置；你也可以参考 `config/proxy-config.example.json` 手动编写。
 - 若需要将配置放到自定义位置，可在启动前设置环境变量 `PROXY_CONFIG_PATH=/path/to/config.json`。
 - GUI 中的“实例”和“转发规则”操作都会实时写回该配置文件，方便后续通过 Hooks 或其他工具复用。
 - 若需将请求数据库移动到其他目录，可设置 `PROXY_DB_PATH=/data/proxy.db`，便于在不同磁盘或容器内保存请求记录。

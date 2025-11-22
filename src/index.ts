@@ -3,6 +3,7 @@ import { initDatabase } from "./lib/db";
 import { initConfigStore } from "./lib/config-store";
 import { ProxyInstancesManager } from "./proxy-instances-manager";
 import { startViewerServer } from "./viewer-server";
+import { killPort } from "./lib/kill-port";
 
 const args = parseArgs({
   options: {
@@ -32,11 +33,14 @@ await manager.autoStartEnabledInstances();
 
 // 启动 Viewer Server
 console.log(`[Init] Starting Viewer Server on port ${PORT}...`);
+// killPort(PORT);
 const server = startViewerServer(manager, PORT);
 
 // 优雅退出处理
 const shutdown = async () => {
-  console.log("\n\n[Shutdown] Received shutdown signal, gracefully shutting down...");
+  console.log(
+    "\n\n[Shutdown] Received shutdown signal, gracefully shutting down...",
+  );
 
   try {
     // 停止所有代理实例
