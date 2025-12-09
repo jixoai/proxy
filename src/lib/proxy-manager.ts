@@ -216,8 +216,13 @@ export class ProxyManager {
       configPath,
       JSON.stringify(
         {
-          instanceHeaders: this.instanceHeaders,
-          forwards,
+          instances: [
+            {
+              name: this.instanceName,
+              headers: this.instanceHeaders,
+              forwards,
+            },
+          ],
         },
         null,
         2,

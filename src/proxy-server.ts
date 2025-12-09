@@ -41,12 +41,22 @@ if (args.values.config) {
   try {
     const content = fs.readFileSync(args.values.config, "utf-8");
     const parsed = JSON.parse(content) as {
-      forwards?: ForwardRule[];
-      instanceHeaders?: Record<string, string> | null;
+      instances: Array<{
+        name: string;
+        enabled?: boolean;
+        headers?: Record<string, string> | null;
+        forwards: ForwardRule[];
+      }>;
     };
-    forwards = (parsed.forwards ?? []).filter((f) => f && f.enabled);
-    instanceHeaders = parsed.instanceHeaders ?? null;
-    console.log(`[Config] Loaded ${forwards.length} forward rules.`);
+
+    const instance = parsed.instances.find((i) => i.name === INSTANCE_NAME);
+    if (!instance) {
+      console.error(`[Config] Instance "${INSTANCE_NAME}" not found`);
+      process.exit(1);
+    }
+    forwards = (instance.forwards ?? []).filter((f) => f && f.enabled);
+    instanceHeaders = instance.headers ?? null;
+    console.log(`[Config] Loaded ${forwards.length} forward rules for "${INSTANCE_NAME}"`);
   } catch (error) {
     console.error("[Config] Failed to load config:", error);
     process.exit(1);
@@ -58,14 +68,20 @@ function normalizePathname(pathname: string | null | undefined): string {
   return pathname.startsWith("/") ? pathname : `/${pathname}`;
 }
 
-function matchMethod(ruleMethods: string[] | undefined, requestMethod: string): boolean {
+function matchMethod(
+  ruleMethods: string[] | undefined,
+  requestMethod: string,
+): boolean {
   const method = (requestMethod || "GET").toUpperCase();
   if (!ruleMethods || ruleMethods.length === 0) return true;
   if (ruleMethods.includes("*")) return true;
   return ruleMethods.map((m) => m.toUpperCase()).includes(method);
 }
 
-function matchForwardRule(requestMethod: string, pathname: string): ForwardRule | null {
+function matchForwardRule(
+  requestMethod: string,
+  pathname: string,
+): ForwardRule | null {
   if (forwards.length === 0) return null;
   const normalizedPath = normalizePathname(pathname);
   const method = (requestMethod || "GET").toUpperCase();
@@ -100,7 +116,9 @@ function buildTargetUrl(rule: ForwardRule, requestUrl: URL): URL {
   if (rulePathRaw && incomingPath.startsWith(rulePathRaw)) {
     const suffix = incomingPath.slice(rulePathRaw.length) || "/";
     finalPath =
-      suffix === "/" ? targetBase.pathname || "/" : joinPaths(targetBase.pathname || "/", suffix);
+      suffix === "/"
+        ? targetBase.pathname || "/"
+        : joinPaths(targetBase.pathname || "/", suffix);
   } else if (!rulePathRaw) {
     const basePath = targetBase.pathname || "/";
     finalPath = basePath === "/" || basePath === "" ? incomingPath : basePath;
@@ -118,7 +136,8 @@ function applyCustomHeaders(
 ): void {
   if (!additions) return;
   for (const [rawKey, value] of Object.entries(additions)) {
-    const isRegex = rawKey.startsWith("/") && rawKey.endsWith("/") && rawKey.length > 2;
+    const isRegex =
+      rawKey.startsWith("/") && rawKey.endsWith("/") && rawKey.length > 2;
     const targetKeys: string[] = [];
     if (isRegex) {
       const pattern = rawKey.slice(1, -1);
@@ -148,7 +167,10 @@ const server = http.createServer(async (req, res) => {
   const timestamp = new Date().toISOString();
 
   const protocol = req.headers["x-forwarded-proto"] || "http";
-  const requestUrl = new URL(req.url || "/", `${protocol}://${req.headers.host || `localhost:${PROXY_PORT}`}`);
+  const requestUrl = new URL(
+    req.url || "/",
+    `${protocol}://${req.headers.host || `localhost:${PROXY_PORT}`}`,
+  );
   const method = (req.method || "GET").toUpperCase();
   const forwardRule = matchForwardRule(method, requestUrl.pathname);
   if (!forwardRule) {
@@ -166,7 +188,9 @@ const server = http.createServer(async (req, res) => {
   const requestBody = Buffer.concat(requestBodyChunks);
   const requestContentType = (req.headers["content-type"] as string) || null;
   const requestBodyDataUrl =
-    requestBody.length > 0 ? bufferToDataUrl(requestBody, requestContentType) : null;
+    requestBody.length > 0
+      ? bufferToDataUrl(requestBody, requestContentType)
+      : null;
 
   const forwardHeaders: http.OutgoingHttpHeaders = { ...req.headers };
   forwardHeaders.host = targetUrl.host;
@@ -216,9 +240,13 @@ const server = http.createServer(async (req, res) => {
       proxyRes.on("end", () => {
         const duration = Date.now() - startTime;
         const responseBody = Buffer.concat(responseChunks);
-        const contentType = proxyRes.headers["content-type"] as string | undefined;
+        const contentType = proxyRes.headers["content-type"] as
+          | string
+          | undefined;
         const responseBodyDataUrl =
-          responseBody.length > 0 ? bufferToDataUrl(responseBody, contentType) : null;
+          responseBody.length > 0
+            ? bufferToDataUrl(responseBody, contentType)
+            : null;
 
         updateProxyRequest(dbRecordId, {
           status: "completed",
@@ -308,5 +336,7 @@ server.on("error", (error) => {
 dbNotifier.init();
 
 server.listen(PROXY_PORT, () => {
-  console.log(`Proxy running on http://localhost:${PROXY_PORT} (instance: ${INSTANCE_NAME})`);
+  console.log(
+    `Proxy running on http://localhost:${PROXY_PORT} (instance: ${INSTANCE_NAME})`,
+  );
 });
