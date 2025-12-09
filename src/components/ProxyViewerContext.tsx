@@ -11,6 +11,20 @@ import type { ProxyInstance } from "@/types/proxy";
 export type RequestStatus = "pending" | "streaming" | "completed" | "error";
 export type WebSocketDirection = "send" | "receive" | null;
 
+export interface RequestMetadata {
+  method: string;
+  url: string;
+  headersCount: number;
+  bodySize: number;
+}
+
+export interface ResponseMetadata {
+  statusCode: number | null;
+  statusMessage: string | null;
+  headersCount: number;
+  bodySize: number;
+}
+
 export interface RequestData {
   id: string;
   folderName: string;
@@ -30,20 +44,12 @@ export interface RequestData {
     targetUrl?: string;
     originUrl?: string;
     forwardedHeaders?: Record<string, string>;
-    request: {
-      method: string;
-      url: string;
-      headersCount: number;
-      bodySize: number;
-    };
-    response:
-      | {
-          statusCode: number | null;
-          statusMessage: string | null;
-          headersCount: number;
-          bodySize: number;
-        }
-      | null;
+    request: RequestMetadata;
+    response: ResponseMetadata | null;
+    /** hooks 是否有修改请求 */
+    hasHookedRequest?: boolean;
+    /** hooks 处理后的请求元数据 */
+    hookedRequest?: RequestMetadata;
   };
   requestContent?: string;
   responseContent?: string;
@@ -51,6 +57,10 @@ export interface RequestData {
   responseBody?: string;
   responseBodyFormatted?: string | null;
   responseBodyHighlighted?: string | null;
+  /** hooks 处理后的请求头（markdown 格式） */
+  hookedRequestContent?: string;
+  /** hooks 处理后的请求体 */
+  hookedRequestBody?: string;
 }
 
 interface ProxyViewerContextValue {

@@ -62,6 +62,8 @@ interface RequestData {
   responseContent?: string;
   requestBody?: string;
   responseBody?: string;
+  hookedRequestContent?: string;
+  hookedRequestBody?: string;
 }
 
 function coerceBodyDataUrl(
@@ -282,6 +284,8 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
         }
       : undefined;
 
+  const hasHookedRequest = !!req.hookedRequest;
+
   return {
     id: (req.id ?? req.request_id).toString(),
     folderName: `${req.request_id}_${new Date(req.timestamp).toISOString().replace(/[:.]/g, "-")}`,
@@ -294,7 +298,7 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
       isWebSocket: req.is_websocket,
       websocketDirection: req.websocket_direction,
       errorMessage: req.error_message,
-      targetUrl: req.request.url,
+      targetUrl: hasHookedRequest ? req.hookedRequest!.url : req.request.url,
       originUrl: req.request.url,
       forwardedHeaders: req.request.forwardedHeaders,
       request: {
@@ -311,6 +315,15 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
             bodySize: req.response.bodySize,
           }
         : null,
+      hasHookedRequest,
+      hookedRequest: hasHookedRequest
+        ? {
+            method: req.hookedRequest!.method,
+            url: req.hookedRequest!.url,
+            headersCount: Object.keys(req.hookedRequest!.headers ?? {}).length,
+            bodySize: req.hookedRequest!.bodySize,
+          }
+        : undefined,
     },
   };
 }
@@ -457,6 +470,33 @@ export function startViewerServer(
         formatted.requestContent += `二进制数据 (${buffer.length} bytes)\n`;
       }
       formatted.requestBody = requestBodyDataUrl;
+    }
+
+    // 如果有 hooked 请求，添加 hooked 数据
+    if (req.hookedRequest) {
+      const hookedHeaders = req.hookedRequest.headers ?? {};
+      formatted.hookedRequestContent =
+        `# Hooked 请求信息\n\n` +
+        `- **方法**: ${req.hookedRequest.method}\n` +
+        `- **URL**: ${req.hookedRequest.url}\n\n` +
+        `## 请求头\n\n\`\`\`\n${Object.entries(hookedHeaders)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join("\n")}\n\`\`\`\n\n`;
+
+      const hookedContentType = extractContentTypeFromHeaders(hookedHeaders);
+      const hookedBodyDataUrl = coerceBodyDataUrl(req.hookedRequest.bodyDataUrl, hookedContentType);
+
+      if (hookedBodyDataUrl) {
+        const { mime, buffer } = dataUrlToBuffer(hookedBodyDataUrl);
+        const isText = isTextLikeMime(mime);
+        formatted.hookedRequestContent += `## 请求体\n\n大小: ${req.hookedRequest.bodySize} bytes\n\n`;
+        if (isText) {
+          formatted.hookedRequestContent += `\`\`\`\n${buffer.toString("utf-8")}\n\`\`\`\n`;
+        } else {
+          formatted.hookedRequestContent += `二进制数据 (${buffer.length} bytes)\n`;
+        }
+        formatted.hookedRequestBody = hookedBodyDataUrl;
+      }
     }
 
     if (req.response) {

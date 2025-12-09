@@ -1,5 +1,32 @@
 import { z } from "zod";
-import type { ProxyConfigFile, ProxyForwardConfig, ProxyInstanceConfig } from "../types/proxy";
+import type {
+  ProxyConfigFile,
+  ProxyForwardConfig,
+  ProxyInstanceConfig,
+  HooksConfig,
+} from "../types/proxy";
+
+const stdioHookSchema = z.object({
+  type: z.literal("stdio"),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+});
+
+const hookConfigSchema = stdioHookSchema;
+
+const hooksSchema = z
+  .object({
+    request: hookConfigSchema.optional().nullable(),
+    response: hookConfigSchema.optional().nullable(),
+  })
+  .optional()
+  .nullable()
+  .transform<HooksConfig | null>((value) => {
+    if (!value) return null;
+    if (!value.request && !value.response) return null;
+    return value;
+  });
 
 const headersSchema = z
   .any()
@@ -34,6 +61,7 @@ export const proxyForwardSchema = z
       }),
     methods: z.array(z.string().trim().toUpperCase()).optional(),
     headers: headersSchema,
+    hooks: hooksSchema,
   })
   .transform<ProxyForwardConfig>((forward) => ({
     ...forward,
@@ -50,6 +78,7 @@ export const proxyInstanceSchema = z
     enabled: z.boolean().default(true),
     description: z.string().trim().min(1).optional().nullable().default(null),
     headers: headersSchema,
+    hooks: hooksSchema,
     forwards: z.array(proxyForwardSchema).default([]),
   })
   .transform<ProxyInstanceConfig>((instance) => ({

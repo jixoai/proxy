@@ -7,6 +7,25 @@ import { bufferToDataUrl, dataUrlToBuffer, ensureDataUrl, isDataUrl } from "./da
 export type RequestStatus = "pending" | "streaming" | "completed" | "error";
 export type WebSocketDirection = "send" | "receive" | null;
 
+export interface RequestData {
+  method: string;
+  url: string;
+  headers: Record<string, string | string[]>;
+  forwardedHeaders?: Record<string, string | string[]>;
+  bodyDataUrl: string | null;
+  bodySize: number;
+}
+
+export interface ResponseData {
+  statusCode: number | null;
+  statusMessage: string | null;
+  headers: Record<string, string | string[]>;
+  bodyDataUrl: string | null;
+  bodySize: number;
+  durationMs: number;
+  contentType?: string | null;
+}
+
 export interface LoggedRequest {
   id?: number;
   request_id: string;
@@ -18,23 +37,12 @@ export interface LoggedRequest {
   is_websocket: boolean;
   websocket_direction: WebSocketDirection;
   error_message: string | null;
-  request: {
-    method: string;
-    url: string;
-    headers: Record<string, string | string[]>;
-    forwardedHeaders?: Record<string, string | string[]>;
-    bodyDataUrl: string | null;
-    bodySize: number;
-  };
-  response?: {
-    statusCode: number | null;
-    statusMessage: string | null;
-    headers: Record<string, string | string[]>;
-    bodyDataUrl: string | null;
-    bodySize: number;
-    durationMs: number;
-    contentType?: string | null;
-  };
+  request: RequestData;
+  /** hooks 处理后的请求（如果有 request hook） */
+  hookedRequest?: RequestData;
+  response?: ResponseData;
+  /** hooks 处理后的响应（如果有 response hook） */
+  hookedResponse?: ResponseData;
 }
 
 export interface ProxyRequestFilters {

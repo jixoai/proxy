@@ -9,6 +9,8 @@ import { createProxyRequest, updateProxyRequest } from "./lib/db-requests";
 import { dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
+import { HooksExecutor } from "./lib/hooks-executor";
+import type { HooksConfig } from "./types/proxy";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,10 +34,13 @@ interface ForwardRule {
   path?: string | null;
   methods?: string[];
   headers?: Record<string, string> | null;
+  hooks?: HooksConfig | null;
 }
 
 let forwards: ForwardRule[] = [];
 let instanceHeaders: Record<string, string> | null = null;
+let instanceHooks: HooksConfig | null = null;
+let hooksExecutor: HooksExecutor | null = null;
 
 if (args.values.config) {
   try {
@@ -45,6 +50,7 @@ if (args.values.config) {
         name: string;
         enabled?: boolean;
         headers?: Record<string, string> | null;
+        hooks?: HooksConfig | null;
         forwards: ForwardRule[];
       }>;
     };
@@ -56,7 +62,16 @@ if (args.values.config) {
     }
     forwards = (instance.forwards ?? []).filter((f) => f && f.enabled);
     instanceHeaders = instance.headers ?? null;
+    instanceHooks = instance.hooks ?? null;
     console.log(`[Config] Loaded ${forwards.length} forward rules for "${INSTANCE_NAME}"`);
+
+    // 初始化 hooks 执行器
+    if (instanceHooks || forwards.some((f) => f.hooks)) {
+      hooksExecutor = new HooksExecutor(INSTANCE_NAME, instanceHooks);
+      hooksExecutor.start().catch((err) => {
+        console.error("[Hooks] Failed to start hooks executor:", err);
+      });
+    }
   } catch (error) {
     console.error("[Config] Failed to load config:", error);
     process.exit(1);
@@ -171,7 +186,7 @@ const server = http.createServer(async (req, res) => {
     req.url || "/",
     `${protocol}://${req.headers.host || `localhost:${PROXY_PORT}`}`,
   );
-  const method = (req.method || "GET").toUpperCase();
+  let method = (req.method || "GET").toUpperCase();
   const forwardRule = matchForwardRule(method, requestUrl.pathname);
   if (!forwardRule) {
     res.writeHead(500, { "Content-Type": "application/json" });
@@ -179,23 +194,76 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const targetUrl = buildTargetUrl(forwardRule, requestUrl);
+  // 设置 forward 级别的 hooks
+  if (hooksExecutor && forwardRule.hooks) {
+    await hooksExecutor.setForwardHooks(forwardRule.name, forwardRule.hooks);
+  }
+
+  let targetUrl = buildTargetUrl(forwardRule, requestUrl);
 
   const requestBodyChunks: Buffer[] = [];
   for await (const chunk of req) {
     requestBodyChunks.push(chunk as Buffer);
   }
-  const requestBody = Buffer.concat(requestBodyChunks);
+  const originalRequestBody = Buffer.concat(requestBodyChunks);
   const requestContentType = (req.headers["content-type"] as string) || null;
-  const requestBodyDataUrl =
-    requestBody.length > 0
-      ? bufferToDataUrl(requestBody, requestContentType)
+
+  // 原始请求数据（hooks 处理前）
+  const originalForwardHeaders: http.OutgoingHttpHeaders = { ...req.headers };
+  originalForwardHeaders.host = targetUrl.host;
+  applyCustomHeaders(originalForwardHeaders, instanceHeaders);
+  applyCustomHeaders(originalForwardHeaders, forwardRule.headers ?? null);
+
+  const originalRequestBodyDataUrl =
+    originalRequestBody.length > 0
+      ? bufferToDataUrl(originalRequestBody, requestContentType)
       : null;
 
-  const forwardHeaders: http.OutgoingHttpHeaders = { ...req.headers };
-  forwardHeaders.host = targetUrl.host;
-  applyCustomHeaders(forwardHeaders, instanceHeaders);
-  applyCustomHeaders(forwardHeaders, forwardRule.headers ?? null);
+  // hooks 处理后的数据
+  let hookedMethod = method;
+  let hookedTargetUrl = targetUrl;
+  let hookedRequestBody = originalRequestBody;
+  let hookedForwardHeaders: http.OutgoingHttpHeaders = { ...originalForwardHeaders };
+  let hasRequestHookChanges = false;
+
+  // 执行 request hooks
+  if (hooksExecutor?.hasRequestHooks) {
+    try {
+      const hookResult = await hooksExecutor.executeRequestHooks({
+        method,
+        url: targetUrl.href,
+        headers: hookedForwardHeaders as Record<string, string | string[]>,
+        body: originalRequestBody.length > 0 ? originalRequestBody.toString("utf-8") : null,
+      });
+
+      if (hookResult.method) {
+        hookedMethod = hookResult.method;
+        hasRequestHookChanges = true;
+      }
+      if (hookResult.url) {
+        hookedTargetUrl = new URL(hookResult.url);
+        hasRequestHookChanges = true;
+      }
+      if (hookResult.headers) {
+        hookedForwardHeaders = hookResult.headers as http.OutgoingHttpHeaders;
+        hookedForwardHeaders.host = hookedTargetUrl.host;
+        hasRequestHookChanges = true;
+      }
+      if (hookResult.body !== undefined) {
+        hookedRequestBody = hookResult.body
+          ? Buffer.from(hookResult.body, "utf-8")
+          : Buffer.alloc(0);
+        hasRequestHookChanges = true;
+      }
+    } catch (err) {
+      console.error("[Hooks] Request hook error:", err);
+    }
+  }
+
+  const hookedRequestBodyDataUrl =
+    hookedRequestBody.length > 0
+      ? bufferToDataUrl(hookedRequestBody, requestContentType)
+      : null;
 
   const dbRecordId = createProxyRequest({
     request_id: requestId,
@@ -211,33 +279,105 @@ const server = http.createServer(async (req, res) => {
       method,
       url: requestUrl.href,
       headers: req.headers as Record<string, string | string[]>,
-      forwardedHeaders: forwardHeaders as Record<string, string | string[]>,
-      bodyDataUrl: requestBodyDataUrl,
-      bodySize: requestBody.length,
+      forwardedHeaders: originalForwardHeaders as Record<string, string | string[]>,
+      bodyDataUrl: originalRequestBodyDataUrl,
+      bodySize: originalRequestBody.length,
     },
+    hookedRequest: hasRequestHookChanges
+      ? {
+          method: hookedMethod,
+          url: hookedTargetUrl.href,
+          headers: hookedForwardHeaders as Record<string, string | string[]>,
+          bodyDataUrl: hookedRequestBodyDataUrl,
+          bodySize: hookedRequestBody.length,
+        }
+      : undefined,
     response: undefined,
   });
 
-  const isHttps = targetUrl.protocol === "https:";
+  const isHttps = hookedTargetUrl.protocol === "https:";
   const requestModule = isHttps ? https : http;
   const defaultPort = isHttps ? 443 : 80;
 
   const proxyReq = requestModule.request(
     {
-      hostname: targetUrl.hostname,
-      port: targetUrl.port || defaultPort,
-      path: targetUrl.pathname + targetUrl.search,
-      method,
-      headers: forwardHeaders,
+      hostname: hookedTargetUrl.hostname,
+      port: hookedTargetUrl.port || defaultPort,
+      path: hookedTargetUrl.pathname + hookedTargetUrl.search,
+      method: hookedMethod,
+      headers: hookedForwardHeaders,
     },
-    (proxyRes) => {
+    async (proxyRes) => {
       const responseChunks: Buffer[] = [];
-      proxyRes.on("data", (chunk) => {
-        responseChunks.push(chunk as Buffer);
-        res.write(chunk);
+      const hasResponseHooks = hooksExecutor?.hasResponseHooks ?? false;
+
+      // 处理 response headers hook
+      let responseHeaders = { ...proxyRes.headers };
+      let statusCode = proxyRes.statusCode || 502;
+      let statusMessage = proxyRes.statusMessage || "";
+
+      if (hasResponseHooks) {
+        try {
+          const hookResult = await hooksExecutor!.executeResponseHeaderHooks({
+            statusCode,
+            statusMessage,
+            headers: responseHeaders as Record<string, string | string[]>,
+          });
+          if (hookResult.statusCode !== undefined)
+            statusCode = hookResult.statusCode;
+          if (hookResult.statusMessage !== undefined)
+            statusMessage = hookResult.statusMessage;
+          if (hookResult.headers)
+            responseHeaders = hookResult.headers as http.IncomingHttpHeaders;
+        } catch (err) {
+          console.error("[Hooks] Response header hook error:", err);
+        }
+      }
+
+      // 移除 hop-by-hop 与长度类头，避免重复的 Transfer-Encoding/Content-Length/Connection
+      for (const hopKey of [
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+      ]) {
+        delete (responseHeaders as Record<string, unknown>)[hopKey];
+      }
+
+      res.writeHead(statusCode, statusMessage, responseHeaders);
+
+      proxyRes.on("data", async (chunk: Buffer) => {
+        responseChunks.push(chunk);
+        if (hasResponseHooks) {
+          try {
+            const transformed =
+              await hooksExecutor!.transformResponseChunk(chunk);
+            res.write(transformed);
+          } catch (err) {
+            console.error("[Hooks] Response chunk hook error:", err);
+            res.write(chunk);
+          }
+        } else {
+          res.write(chunk);
+        }
       });
 
-      proxyRes.on("end", () => {
+      proxyRes.on("end", async () => {
+        // 结束 response 流
+        if (hasResponseHooks) {
+          try {
+            const finalChunk = await hooksExecutor!.endResponseStream();
+            if (finalChunk) res.write(finalChunk);
+          } catch (err) {
+            console.error("[Hooks] Response end hook error:", err);
+          }
+        }
+
         const duration = Date.now() - startTime;
         const responseBody = Buffer.concat(responseChunks);
         const contentType = proxyRes.headers["content-type"] as
@@ -262,10 +402,6 @@ const server = http.createServer(async (req, res) => {
         });
 
         res.end();
-      });
-
-      res.writeHead(proxyRes.statusCode || 502, proxyRes.statusMessage, {
-        ...proxyRes.headers,
       });
     },
   );
@@ -299,7 +435,7 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: "代理请求失败", message: error.message }));
   });
 
-  if (requestBody.length > 0) proxyReq.write(requestBody);
+  if (hookedRequestBody.length > 0) proxyReq.write(hookedRequestBody);
   proxyReq.end();
 });
 

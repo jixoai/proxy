@@ -2,6 +2,22 @@ export interface ProxyForwardHeaders {
   [key: string]: string;
 }
 
+/** stdio 类型的 hook 配置，通过子进程 + jsonrpc2 通信 */
+export interface StdioHookConfig {
+  type: "stdio";
+  command: string;
+  args?: string[];
+  cwd?: string;
+}
+
+export type HookConfig = StdioHookConfig;
+
+/** hooks 配置，支持 request 和 response 两个阶段 */
+export interface HooksConfig {
+  request?: HookConfig | null;
+  response?: HookConfig | null;
+}
+
 export interface ProxyForwardConfig {
   name: string;
   enabled: boolean;
@@ -10,6 +26,7 @@ export interface ProxyForwardConfig {
   path: string | null;
   methods: string[];
   headers: ProxyForwardHeaders | null;
+  hooks?: HooksConfig | null;
 }
 
 export interface ProxyInstanceConfig {
@@ -18,6 +35,7 @@ export interface ProxyInstanceConfig {
   enabled: boolean;
   description: string | null;
   headers: ProxyForwardHeaders | null;
+  hooks?: HooksConfig | null;
   forwards: ProxyForwardConfig[];
 }
 

@@ -25,6 +25,7 @@ export class ProxyInstancesManager {
       path: f.path ?? null,
       methods: f.methods && f.methods.length ? f.methods : ["*"],
       headers: f.headers ?? null,
+      hooks: f.hooks ?? null,
     }));
 
     const manager = new ProxyManager(instanceName, instance.port, instance.headers ?? null);
@@ -72,6 +73,7 @@ export class ProxyInstancesManager {
       path: f.path ?? null,
       methods: f.methods && f.methods.length ? f.methods : ["*"],
       headers: f.headers ?? null,
+      hooks: f.hooks ?? null,
     }));
 
     const manager = this.managers.get(instanceName);

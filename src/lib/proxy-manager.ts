@@ -23,6 +23,8 @@ export interface ProxyLogMessage {
 
 type LogCallback = (log: ProxyLogMessage) => void;
 
+import type { HooksConfig } from "../types/proxy";
+
 export interface ForwardConfig {
   name: string;
   enabled: boolean;
@@ -31,6 +33,7 @@ export interface ForwardConfig {
   path?: string | null;
   methods?: string[];
   headers?: Record<string, string> | null;
+  hooks?: HooksConfig | null;
 }
 
 export class ProxyManager {

@@ -20,6 +20,7 @@ import {
   ChevronDown,
   PlusCircle,
   ArrowRightCircle,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +30,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { generateFetchCode, generateNodeFetchCode, copyToClipboard } from "@/components/copy-as-fetch";
 import { AddForwardFromRequestDialog } from "@/components/AddForwardFromRequestDialog";
 
@@ -46,11 +48,19 @@ export function RequestDetail() {
     return selectedDetail?.metadata?.forwardedHeaders || {};
   }, [selectedDetail]);
 
+  const hookedRequestHeaders = useMemo(() => {
+    return selectedDetail?.hookedRequestContent
+      ? parseMarkdownHeaders(selectedDetail.hookedRequestContent)
+      : {};
+  }, [selectedDetail]);
+
   const responseHeaders = useMemo(() => {
     return selectedDetail?.responseContent
       ? parseMarkdownHeaders(selectedDetail.responseContent)
       : {};
   }, [selectedDetail]);
+
+  const hasHookedRequest = selectedDetail?.metadata?.hasHookedRequest ?? false;
 
   // 复制为 fetch 代码
   const handleCopyAsFetch = async (mode: "via-proxy" | "to-target") => {
@@ -166,23 +176,72 @@ export function RequestDetail() {
 
       {/* Request & Response Headers - Two columns on wide screens */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <HeadersCard
-          title="Request Headers"
-          headers={forwardedHeaders}
-          originalHeaders={requestHeaders}
-        />
+        {hasHookedRequest ? (
+          <Tabs defaultValue="hooked" className="w-full">
+            <TabsList>
+              <TabsTrigger value="hooked" className="gap-1">
+                <Zap className="w-3 h-3" />
+                Hooked Headers
+              </TabsTrigger>
+              <TabsTrigger value="original">Original Headers</TabsTrigger>
+            </TabsList>
+            <TabsContent value="hooked">
+              <HeadersCard
+                title="Request Headers (Hooked)"
+                headers={hookedRequestHeaders}
+              />
+            </TabsContent>
+            <TabsContent value="original">
+              <HeadersCard
+                title="Request Headers (Original)"
+                headers={forwardedHeaders}
+                originalHeaders={requestHeaders}
+              />
+            </TabsContent>
+          </Tabs>
+        ) : (
+          <HeadersCard
+            title="Request Headers"
+            headers={forwardedHeaders}
+            originalHeaders={requestHeaders}
+          />
+        )}
         <HeadersCard title="Response Headers" headers={responseHeaders} />
       </div>
 
       {/* Request & Response Body - 使用容器查询实现响应式布局 */}
       <div className="@container">
         <div className="grid grid-cols-1 @[1280px]:grid-cols-2 gap-4">
-          {/* Request Body - 只在有内容时显示 */}
+          {/* Request Body - 如果有 hooked 数据，使用 tabs */}
           {selectedDetail.requestBody && (
-            <RequestBodyViewer
-              body={selectedDetail.requestBody}
-              headers={requestHeaders}
-            />
+            hasHookedRequest ? (
+              <Tabs defaultValue="hooked" className="w-full">
+                <TabsList>
+                  <TabsTrigger value="hooked" className="gap-1">
+                    <Zap className="w-3 h-3" />
+                    Hooked
+                  </TabsTrigger>
+                  <TabsTrigger value="original">Original</TabsTrigger>
+                </TabsList>
+                <TabsContent value="hooked">
+                  <RequestBodyViewer
+                    body={selectedDetail.hookedRequestBody || selectedDetail.requestBody}
+                    headers={hookedRequestHeaders}
+                  />
+                </TabsContent>
+                <TabsContent value="original">
+                  <RequestBodyViewer
+                    body={selectedDetail.requestBody}
+                    headers={requestHeaders}
+                  />
+                </TabsContent>
+              </Tabs>
+            ) : (
+              <RequestBodyViewer
+                body={selectedDetail.requestBody}
+                headers={requestHeaders}
+              />
+            )
           )}
 
           {/* Response Body - 使用 ResponseBodyViewer 支持自动解压 */}
