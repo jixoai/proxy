@@ -643,3 +643,20 @@ BUG：这是我目前代理的配置文件`/Users/kzf/.claude/scripts/proxy/conf
 现在你是压缩上下文之后的一个新AI，需要延续上一次AI的工作。
 
 请你分析后，列出详细计划。
+
+---
+
+好的，我通过不断地控制变量，找到了问题的关键。
+我跟你说一下我的分析过程：
+
+1. 400的原始错误请求是 .tmp/hook-logs/400.json
+2. 200的成功请求是 .tmp/hook-logs/200.json
+3. 我将 200.json 的 messages 给到 400.json 中，获得成功；同时 400.json 的 messages 给 200.json，结果获得失败，说明问题的关键是 messages，和其它变量无关
+4. 我通过移除了我么注入的`<droid-system-context>`这段提示词，发现仍然是是400的错误，说明问题不在于我们注入了这段提示词。
+5. 我发现400.json 有两段 role=user 的message，并且发现两段`<system-reminder>...</system-reminder>`，我删除了其中任意一段，都能返回200。我怀疑是[缓存机制](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)发现这里存在重复冲突的问题。
+6. 于是我试着删除其中的一段`<system-reminder>`对应的缓存控制，发现果然能200返回了。
+7. 之所以会出现两段`<system-reminder>`，核心原因是，第一段`<system-reminder>`是来自上下文压缩，因此它除了`<system-reminder>`还有上一次上下文压缩之后留下来的一些任务提示词，而第二段`<system-reminder>`是开启一个新的会话后，自己默认注入的`<system-reminder>`。
+8. 所以我们的rewrite解决方案是：
+   1. 除了要做`<droid-system-context>`的注入；
+   2. 还要查找开头是否存在连续的两个 role=user 的message，如果存在：
+   3. 寻找第一 user-message 中是否存在`<system-reminder>`，同时第二个是否也存在`<system-reminder>`，如果是，那么找出第一个 user-message中关于`<system-reminder>`的部分，然后将第二个含有`<system-reminder>` user-message 直接替代第一个user-message中关于`<system-reminder>`的部分

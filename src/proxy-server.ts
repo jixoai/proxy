@@ -265,6 +265,15 @@ const server = http.createServer(async (req, res) => {
       ? bufferToDataUrl(hookedRequestBody, requestContentType)
       : null;
 
+  // 确保 content-length 与重写后的请求体一致，避免上游 400
+  if (hookedForwardHeaders["content-length"] !== undefined) {
+    if (hookedRequestBody.length > 0) {
+      hookedForwardHeaders["content-length"] = hookedRequestBody.length;
+    } else {
+      delete hookedForwardHeaders["content-length"];
+    }
+  }
+
   const dbRecordId = createProxyRequest({
     request_id: requestId,
     timestamp,
