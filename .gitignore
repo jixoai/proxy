@@ -30,6 +30,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 **/.workers/
 **/.standalone/
 .tmp/
+plugins/hook-logs
 
 # IntelliJ based IDEs
 .idea
