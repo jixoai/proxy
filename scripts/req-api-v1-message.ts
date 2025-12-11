@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   const url =
     process.env.ANTHROPIC_URL ??
     process.env.BASE_URL ??
-    "https://www.88code.org/api/v1/messages";
+    "https://www.88code.org/api/v1/messages?beta=true";
   const method = process.env.HTTP_METHOD ?? "POST";
 
   const headers = buildHeaders(apiKey);

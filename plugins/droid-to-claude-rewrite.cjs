@@ -38,7 +38,7 @@ const claudeCodeReqRef = {
     {
       type: "text",
       text: "You are Claude Code, Anthropic's official CLI for Claude.",
-      cache_control: { type: "ephemeral" },
+      // cache_control: { type: "ephemeral" },
     },
   ],
   // tools: [],
