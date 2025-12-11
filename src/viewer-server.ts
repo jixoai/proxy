@@ -1138,31 +1138,22 @@ export function startViewerServer(
             );
           }
         },
+      },
+      "/api/instances/:id/forwards/reorder": {
         async POST(req) {
           try {
             const { name } = parseInstanceIdParam(req.params.id);
             const body = await req.json();
-            const orderedIds = Array.isArray(body.order)
-              ? (body.order as number[])
+            const orderedNames = Array.isArray(body.order)
+              ? (body.order as string[])
               : [];
 
-            if (orderedIds.length === 0) {
+            if (orderedNames.length === 0) {
               return Response.json(
                 { error: "Order array is empty" },
                 { status: 400 },
               );
             }
-
-            const orderedNames = orderedIds.map((forwardId) => {
-              if (!Number.isInteger(forwardId)) {
-                throw new Error("Order must contain numeric ids");
-              }
-              const key = getForwardKeyById(forwardId);
-              if (!key || key.instanceName !== name) {
-                throw new Error("Order contains invalid forward ids");
-              }
-              return key.forwardName;
-            });
 
             reorderForwards(name, orderedNames);
             refreshConfigCache();

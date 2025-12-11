@@ -185,39 +185,53 @@ class HookProcess {
 
 /** hooks 执行器，管理 instance 和 forward 级别的 hooks */
 export class HooksExecutor {
-  private instanceRequestHook: HookProcess | null = null;
-  private instanceResponseHook: HookProcess | null = null;
-  private forwardRequestHook: HookProcess | null = null;
-  private forwardResponseHook: HookProcess | null = null;
+  private instanceRequestHooks: HookProcess[] = [];
+  private instanceResponseHooks: HookProcess[] = [];
+  private forwardRequestHooks: HookProcess[] = [];
+  private forwardResponseHooks: HookProcess[] = [];
 
   constructor(
     private instanceName: string,
     private instanceHooks: HooksConfig | null | undefined,
   ) {}
 
+  /** 将单个或数组的 hook 配置统一为数组 */
+  private normalizeHooks(
+    hooks: HookConfig | HookConfig[] | null | undefined,
+  ): HookConfig[] {
+    if (!hooks) return [];
+    return Array.isArray(hooks) ? hooks : [hooks];
+  }
+
   async start(): Promise<void> {
-    if (this.instanceHooks?.request) {
-      this.instanceRequestHook = new HookProcess(
-        this.instanceHooks.request,
-        `${this.instanceName}/instance/request`,
+    const requestConfigs = this.normalizeHooks(this.instanceHooks?.request);
+    const responseConfigs = this.normalizeHooks(this.instanceHooks?.response);
+
+    for (const [i, config] of requestConfigs.entries()) {
+      const hook = new HookProcess(
+        config,
+        `${this.instanceName}/instance/request[${i}]`,
       );
-      await this.instanceRequestHook.start();
+      await hook.start();
+      this.instanceRequestHooks.push(hook);
     }
-    if (this.instanceHooks?.response) {
-      this.instanceResponseHook = new HookProcess(
-        this.instanceHooks.response,
-        `${this.instanceName}/instance/response`,
+
+    for (const [i, config] of responseConfigs.entries()) {
+      const hook = new HookProcess(
+        config,
+        `${this.instanceName}/instance/response[${i}]`,
       );
-      await this.instanceResponseHook.start();
+      await hook.start();
+      this.instanceResponseHooks.push(hook);
     }
   }
 
   async stop(): Promise<void> {
     await Promise.all([
-      this.instanceRequestHook?.stop(),
-      this.instanceResponseHook?.stop(),
-      this.forwardRequestHook?.stop(),
-      this.forwardResponseHook?.stop(),
+      ...this.instanceRequestHooks.map((h) => h.stop()),
+      ...this.instanceResponseHooks.map((h) => h.stop()),
+      ...this.forwardRequestHooks.map((h) => h.stop()),
+      ...this.forwardResponseHooks.map((h) => h.stop()),
     ]);
   }
 
@@ -226,43 +240,51 @@ export class HooksExecutor {
     forwardName: string,
     hooks: HooksConfig | null | undefined,
   ): Promise<void> {
-    await this.forwardRequestHook?.stop();
-    await this.forwardResponseHook?.stop();
-    this.forwardRequestHook = null;
-    this.forwardResponseHook = null;
+    await Promise.all(this.forwardRequestHooks.map((h) => h.stop()));
+    await Promise.all(this.forwardResponseHooks.map((h) => h.stop()));
+    this.forwardRequestHooks = [];
+    this.forwardResponseHooks = [];
 
-    if (hooks?.request) {
-      this.forwardRequestHook = new HookProcess(
-        hooks.request,
-        `${this.instanceName}/${forwardName}/request`,
+    const requestConfigs = this.normalizeHooks(hooks?.request);
+    const responseConfigs = this.normalizeHooks(hooks?.response);
+
+    for (const [i, config] of requestConfigs.entries()) {
+      const hook = new HookProcess(
+        config,
+        `${this.instanceName}/${forwardName}/request[${i}]`,
       );
-      await this.forwardRequestHook.start();
+      await hook.start();
+      this.forwardRequestHooks.push(hook);
     }
-    if (hooks?.response) {
-      this.forwardResponseHook = new HookProcess(
-        hooks.response,
-        `${this.instanceName}/${forwardName}/response`,
+
+    for (const [i, config] of responseConfigs.entries()) {
+      const hook = new HookProcess(
+        config,
+        `${this.instanceName}/${forwardName}/response[${i}]`,
       );
-      await this.forwardResponseHook.start();
+      await hook.start();
+      this.forwardResponseHooks.push(hook);
     }
   }
 
-  /** 执行 request hooks：先 instance 后 forward */
+  /** 执行 request hooks：先 instance 后 forward（类似 koa 中间件洋葱模型的下行阶段） */
   async executeRequestHooks(
     params: RequestHookParams,
   ): Promise<RequestHookParams> {
     let result = params;
 
-    if (this.instanceRequestHook) {
-      const hookResult = await this.instanceRequestHook.call<RequestHookResult>(
+    // instance request hooks 按顺序执行
+    for (const hook of this.instanceRequestHooks) {
+      const hookResult = await hook.call<RequestHookResult>(
         "rewrite_request",
         result,
       );
       result = { ...result, ...hookResult };
     }
 
-    if (this.forwardRequestHook) {
-      const hookResult = await this.forwardRequestHook.call<RequestHookResult>(
+    // forward request hooks 按顺序执行
+    for (const hook of this.forwardRequestHooks) {
+      const hookResult = await hook.call<RequestHookResult>(
         "rewrite_request",
         result,
       );
@@ -278,22 +300,22 @@ export class HooksExecutor {
   ): Promise<ResponseHookParams> {
     let result = params;
 
-    // response 先 forward 后 instance
-    if (this.forwardResponseHook) {
-      const hookResult =
-        await this.forwardResponseHook.call<ResponseHookResult>(
-          "rewrite_response_headers",
-          result,
-        );
+    // response 先 forward 后 instance（类似 koa 中间件洋葱模型的上行阶段）
+    // forward response hooks 按顺序执行
+    for (const hook of this.forwardResponseHooks) {
+      const hookResult = await hook.call<ResponseHookResult>(
+        "rewrite_response_headers",
+        result,
+      );
       result = { ...result, ...hookResult };
     }
 
-    if (this.instanceResponseHook) {
-      const hookResult =
-        await this.instanceResponseHook.call<ResponseHookResult>(
-          "rewrite_response_headers",
-          result,
-        );
+    // instance response hooks 按顺序执行
+    for (const hook of this.instanceResponseHooks) {
+      const hookResult = await hook.call<ResponseHookResult>(
+        "rewrite_response_headers",
+        result,
+      );
       result = { ...result, ...hookResult };
     }
 
@@ -304,12 +326,12 @@ export class HooksExecutor {
   async transformResponseChunk(chunk: Uint8Array): Promise<Uint8Array> {
     let result = chunk;
 
-    if (this.forwardResponseHook) {
-      result = await this.forwardResponseHook.transformChunk(result);
+    for (const hook of this.forwardResponseHooks) {
+      result = await hook.transformChunk(result);
     }
 
-    if (this.instanceResponseHook) {
-      result = await this.instanceResponseHook.transformChunk(result);
+    for (const hook of this.instanceResponseHooks) {
+      result = await hook.transformChunk(result);
     }
 
     return result;
@@ -319,13 +341,13 @@ export class HooksExecutor {
   async endResponseStream(): Promise<Uint8Array | null> {
     const chunks: Uint8Array[] = [];
 
-    if (this.forwardResponseHook) {
-      const chunk = await this.forwardResponseHook.endStream();
+    for (const hook of this.forwardResponseHooks) {
+      const chunk = await hook.endStream();
       if (chunk) chunks.push(chunk);
     }
 
-    if (this.instanceResponseHook) {
-      const chunk = await this.instanceResponseHook.endStream();
+    for (const hook of this.instanceResponseHooks) {
+      const chunk = await hook.endStream();
       if (chunk) chunks.push(chunk);
     }
 
@@ -341,10 +363,16 @@ export class HooksExecutor {
   }
 
   get hasRequestHooks(): boolean {
-    return !!(this.instanceRequestHook || this.forwardRequestHook);
+    return (
+      this.instanceRequestHooks.length > 0 ||
+      this.forwardRequestHooks.length > 0
+    );
   }
 
   get hasResponseHooks(): boolean {
-    return !!(this.instanceResponseHook || this.forwardResponseHook);
+    return (
+      this.instanceResponseHooks.length > 0 ||
+      this.forwardResponseHooks.length > 0
+    );
   }
 }

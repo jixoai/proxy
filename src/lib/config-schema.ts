@@ -15,10 +15,16 @@ const stdioHookSchema = z.object({
 
 const hookConfigSchema = stdioHookSchema;
 
+/** hook 字段 schema：单个对象或数组，兼容旧配置 */
+const hookFieldSchema = z
+  .union([hookConfigSchema, z.array(hookConfigSchema)])
+  .optional()
+  .nullable();
+
 const hooksSchema = z
   .object({
-    request: hookConfigSchema.optional().nullable(),
-    response: hookConfigSchema.optional().nullable(),
+    request: hookFieldSchema,
+    response: hookFieldSchema,
   })
   .optional()
   .nullable()

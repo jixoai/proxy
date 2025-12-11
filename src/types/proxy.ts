@@ -12,10 +12,10 @@ export interface StdioHookConfig {
 
 export type HookConfig = StdioHookConfig;
 
-/** hooks 配置，支持 request 和 response 两个阶段 */
+/** hooks 配置，支持 request 和 response 两个阶段，每个阶段可以是单个 hook 或多个 hooks 数组 */
 export interface HooksConfig {
-  request?: HookConfig | null;
-  response?: HookConfig | null;
+  request?: HookConfig | HookConfig[] | null;
+  response?: HookConfig | HookConfig[] | null;
 }
 
 export interface ProxyForwardConfig {

@@ -73,18 +73,16 @@ export function ForwardRulesList({
   };
 
   const saveOrder = async (currentForwards: ProxyForward[]) => {
-    const orderedIds = currentForwards
-      .map((f) => f.id)
-      .filter((id): id is number => typeof id === "number");
+    const orderedNames = currentForwards.map((f) => f.name);
 
-    if (orderedIds.length === 0) return;
+    if (orderedNames.length === 0) return;
 
     setSavingOrder(true);
     try {
-      const resp = await fetch(`/api/instances/${instanceId}/forwards`, {
+      const resp = await fetch(`/api/instances/${instanceId}/forwards/reorder`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order: orderedIds }),
+        body: JSON.stringify({ order: orderedNames }),
       });
       const data = await resp.json();
       if (!resp.ok || data.error) {
