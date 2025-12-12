@@ -62,20 +62,20 @@ export function HeadersCard({
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="bg-muted rounded-lg p-4 font-mono text-sm space-y-2 max-h-[400px] overflow-auto">
+        <div className="bg-muted max-h-[400px] space-y-2 overflow-auto rounded-lg p-4 font-mono text-sm">
           {Object.entries(headers).map(([key, value]) => {
             const status = getDiffStatus(key, value);
             return (
               <div
                 key={key}
-                className="grid grid-cols-[150px_1fr] gap-2 border-b border-border/40 pb-2 last:border-0"
+                className="border-border/40 grid grid-cols-[150px_1fr] gap-2 border-b pb-2 last:border-0"
               >
-                <div className="text-muted-foreground font-medium text-xs flex items-center gap-2">
+                <div className="text-muted-foreground flex items-center gap-2 text-xs font-medium">
                   <span>{key}</span>
                   {status === "added" && (
                     <Badge
                       variant="outline"
-                      className="text-[10px] bg-green-500/10 text-green-700 border-green-500/20 px-1 py-0"
+                      className="border-green-500/20 bg-green-500/10 px-1 py-0 text-[10px] text-green-700"
                     >
                       +
                     </Badge>
@@ -83,23 +83,23 @@ export function HeadersCard({
                   {status === "modified" && (
                     <Badge
                       variant="outline"
-                      className="text-[10px] bg-yellow-500/10 text-yellow-700 border-yellow-500/20 px-1 py-0"
+                      className="border-yellow-500/20 bg-yellow-500/10 px-1 py-0 text-[10px] text-yellow-700"
                     >
                       ~
                     </Badge>
                   )}
                 </div>
                 <div
-                  className={`break-all text-xs ${
+                  className={`text-xs break-all ${
                     status === "added"
-                      ? "text-green-700 font-medium"
+                      ? "font-medium text-green-700"
                       : status === "modified"
-                        ? "text-yellow-700 font-medium"
+                        ? "font-medium text-yellow-700"
                         : ""
                   }`}
                 >
                   {status === "modified" && (
-                    <div className="text-red-700 line-through opacity-60 mb-1">
+                    <div className="mb-1 text-red-700 line-through opacity-60">
                       {getOriginalValue(key)}
                     </div>
                   )}
@@ -113,20 +113,18 @@ export function HeadersCard({
               {deletedHeaders.map(([key, value]) => (
                 <div
                   key={`deleted-${key}`}
-                  className="grid grid-cols-[150px_1fr] gap-2 border-b border-border/40 pb-2 last:border-0 opacity-50"
+                  className="border-border/40 grid grid-cols-[150px_1fr] gap-2 border-b pb-2 opacity-50 last:border-0"
                 >
-                  <div className="text-muted-foreground font-medium text-xs flex items-center gap-2">
+                  <div className="text-muted-foreground flex items-center gap-2 text-xs font-medium">
                     <span className="line-through">{key}</span>
                     <Badge
                       variant="outline"
-                      className="text-[10px] bg-red-500/10 text-red-700 border-red-500/20 px-1 py-0"
+                      className="border-red-500/20 bg-red-500/10 px-1 py-0 text-[10px] text-red-700"
                     >
                       -
                     </Badge>
                   </div>
-                  <div className="break-all text-xs text-red-700 line-through">
-                    {value}
-                  </div>
+                  <div className="text-xs break-all text-red-700 line-through">{value}</div>
                 </div>
               ))}
             </>

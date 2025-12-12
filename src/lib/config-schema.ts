@@ -3,17 +3,18 @@ import type {
   ProxyConfigFile,
   ProxyForwardConfig,
   ProxyInstanceConfig,
+  ProxyGlobalSettings,
   HooksConfig,
 } from "../types/proxy";
 
-const stdioHookSchema = z.object({
-  type: z.literal("stdio"),
+const httpHookSchema = z.object({
+  type: z.literal("http"),
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
   cwd: z.string().optional(),
 });
 
-const hookConfigSchema = stdioHookSchema;
+const hookConfigSchema = httpHookSchema;
 
 /** hook 字段 schema：单个对象或数组，兼容旧配置 */
 const hookFieldSchema = z
@@ -72,9 +73,7 @@ export const proxyForwardSchema = z
   .transform<ProxyForwardConfig>((forward) => ({
     ...forward,
     methods:
-      forward.methods && forward.methods.length > 0
-        ? Array.from(new Set(forward.methods))
-        : ["*"],
+      forward.methods && forward.methods.length > 0 ? Array.from(new Set(forward.methods)) : ["*"],
   }));
 
 export const proxyInstanceSchema = z

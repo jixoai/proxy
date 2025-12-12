@@ -1,9 +1,5 @@
 import { Image } from "lucide-react";
-import type {
-  BodyViewerPlugin,
-  PluginContext,
-  Content,
-} from "@/contexts/BodyViewerPlugin";
+import type { BodyViewerPlugin, PluginContext, Content } from "@/contexts/BodyViewerPlugin";
 
 /**
  * 图片查看器面板（纯展示组件）
@@ -11,7 +7,7 @@ import type {
 function ImageViewerPanel({ source, mime }: { source: string; mime: string }) {
   return (
     <div
-      className="flex justify-center p-4 rounded"
+      className="flex justify-center rounded p-4"
       style={{
         backgroundImage: `
           linear-gradient(45deg, #e5e7eb 25%, transparent 25%),
@@ -26,7 +22,7 @@ function ImageViewerPanel({ source, mime }: { source: string; mime: string }) {
       <img
         src={source}
         alt={`Response preview (${mime})`}
-        className="max-w-full max-h-[600px] object-contain border rounded shadow-lg"
+        className="max-h-[600px] max-w-full rounded border object-contain shadow-lg"
       />
     </div>
   );
@@ -65,13 +61,7 @@ export function imageViewerPlugin(): BodyViewerPlugin {
             Image
           </span>
         ),
-        content: (
-          <ImageViewerPanel
-            key="image-viewer"
-            source={imageUrl}
-            mime={content.mime}
-          />
-        ),
+        content: <ImageViewerPanel key="image-viewer" source={imageUrl} mime={content.mime} />,
       });
 
       // 不修改 content

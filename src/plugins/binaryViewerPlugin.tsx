@@ -1,10 +1,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Type, Binary, Hash, FileCode } from "lucide-react";
-import type {
-  BodyViewerPlugin,
-  PluginContext,
-  Content,
-} from "@/contexts/BodyViewerPlugin";
+import type { BodyViewerPlugin, PluginContext, Content } from "@/contexts/BodyViewerPlugin";
 
 /**
  * Uint8Array 解码为 UTF-8
@@ -75,53 +71,37 @@ export function BinaryViewerPanel({ data }: { data: Uint8Array }) {
     <Tabs defaultValue="utf8" className="w-full">
       <TabsList className="grid w-full grid-cols-4">
         <TabsTrigger value="utf8">
-          <Type className="w-4 h-4 mr-1" />
+          <Type className="mr-1 h-4 w-4" />
           UTF-8
         </TabsTrigger>
         <TabsTrigger value="hex">
-          <Hash className="w-4 h-4 mr-1" />
+          <Hash className="mr-1 h-4 w-4" />
           Hex
         </TabsTrigger>
         <TabsTrigger value="binary">
-          <Binary className="w-4 h-4 mr-1" />
+          <Binary className="mr-1 h-4 w-4" />
           Binary
         </TabsTrigger>
         <TabsTrigger value="base64">
-          <FileCode className="w-4 h-4 mr-1" />
+          <FileCode className="mr-1 h-4 w-4" />
           Base64
         </TabsTrigger>
       </TabsList>
 
-      <TabsContent
-        value="utf8"
-        className="bg-muted rounded-lg p-4 max-h-[600px] overflow-auto"
-      >
-        <pre className="font-mono text-xs whitespace-pre-wrap break-all">
-          {utf8Decoded}
-        </pre>
+      <TabsContent value="utf8" className="bg-muted max-h-[600px] overflow-auto rounded-lg p-4">
+        <pre className="font-mono text-xs break-all whitespace-pre-wrap">{utf8Decoded}</pre>
       </TabsContent>
 
-      <TabsContent
-        value="hex"
-        className="bg-muted rounded-lg p-4 max-h-[600px] overflow-auto"
-      >
+      <TabsContent value="hex" className="bg-muted max-h-[600px] overflow-auto rounded-lg p-4">
         <pre className="font-mono text-xs whitespace-pre">{hexDecoded}</pre>
       </TabsContent>
 
-      <TabsContent
-        value="binary"
-        className="bg-muted rounded-lg p-4 max-h-[600px] overflow-auto"
-      >
+      <TabsContent value="binary" className="bg-muted max-h-[600px] overflow-auto rounded-lg p-4">
         <pre className="font-mono text-xs whitespace-pre">{binaryDecoded}</pre>
       </TabsContent>
 
-      <TabsContent
-        value="base64"
-        className="bg-muted rounded-lg p-4 max-h-[600px] overflow-auto"
-      >
-        <pre className="font-mono text-xs whitespace-pre-wrap break-all">
-          {base64Decoded}
-        </pre>
+      <TabsContent value="base64" className="bg-muted max-h-[600px] overflow-auto rounded-lg p-4">
+        <pre className="font-mono text-xs break-all whitespace-pre-wrap">{base64Decoded}</pre>
       </TabsContent>
     </Tabs>
   );
@@ -145,9 +125,7 @@ export function binaryViewerPlugin(): BodyViewerPlugin {
 
       // 只在非文本且非图片的情况下注册
       const isText =
-        mime.startsWith("text/") ||
-        mime === "application/json" ||
-        mime === "application/xml";
+        mime.startsWith("text/") || mime === "application/json" || mime === "application/xml";
       const isImage = mime.startsWith("image/");
 
       if (isText || isImage) {
@@ -162,9 +140,7 @@ export function binaryViewerPlugin(): BodyViewerPlugin {
             Binary
           </span>
         ),
-        content: (
-          <BinaryViewerPanel key="binary-viewer" data={content.value} />
-        ),
+        content: <BinaryViewerPanel key="binary-viewer" data={content.value} />,
       });
 
       // 不修改 content

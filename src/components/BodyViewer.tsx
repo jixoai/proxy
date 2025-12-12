@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { createDefaultPlugins } from "@/plugins";
 import type {
@@ -27,10 +21,7 @@ interface BodyViewerProps {
 /**
  * 从 body 和 headers 推导初始 Content
  */
-function deriveContentFromBody(
-  body: Uint8Array,
-  headers: Record<string, string>,
-): Content {
+function deriveContentFromBody(body: Uint8Array, headers: Record<string, string>): Content {
   const mime = headers["content-type"] || "application/octet-stream";
   return {
     mime,
@@ -61,7 +52,7 @@ function ViewerTabs({
         </Button>
       ))}
       {viewers.length === 0 && (
-        <span className="text-xs text-muted-foreground border border-dashed rounded px-2 py-1">
+        <span className="text-muted-foreground rounded border border-dashed px-2 py-1 text-xs">
           No viewer
         </span>
       )}
@@ -70,11 +61,7 @@ function ViewerTabs({
 }
 
 function EmptyState({ message }: { message: string }) {
-  return (
-    <div className="py-8 text-center text-muted-foreground text-sm">
-      {message}
-    </div>
-  );
+  return <div className="text-muted-foreground py-8 text-center text-sm">{message}</div>;
 }
 
 export function BodyViewer({
@@ -87,16 +74,11 @@ export function BodyViewer({
   // 合并并排序插件
   const pluginManager = useMemo(() => {
     const defaultPlugins = createDefaultPlugins();
-    const finalPlugins = plugins
-      ? [...defaultPlugins, ...plugins]
-      : defaultPlugins;
+    const finalPlugins = plugins ? [...defaultPlugins, ...plugins] : defaultPlugins;
     return new PluginManager(finalPlugins);
   }, [plugins]);
 
-  const sortedPlugins = useMemo(
-    () => pluginManager.getPlugins(),
-    [pluginManager],
-  );
+  const sortedPlugins = useMemo(() => pluginManager.getPlugins(), [pluginManager]);
 
   // 插件状态数组
   const [pluginStates, setPluginStates] = useState<PluginState[]>([]);
@@ -104,19 +86,10 @@ export function BodyViewer({
 
   // 每个插件的动态 actions 和 tips（按插件名分组）
   const [pluginDynamicActionsMap, setPluginDynamicActionsMap] = useState<
-    Map<
-      string,
-      Map<string, import("@/contexts/BodyViewerPlugin").ToolbarAction[]>
-    >
+    Map<string, Map<string, import("@/contexts/BodyViewerPlugin").ToolbarAction[]>>
   >(new Map());
   const [pluginTipsMap, setPluginTipsMap] = useState<
-    Map<
-      string,
-      Map<
-        string,
-        import("@/contexts/BodyViewerPlugin").TipConfig & { id: string }
-      >
-    >
+    Map<string, Map<string, import("@/contexts/BodyViewerPlugin").TipConfig & { id: string }>>
   >(new Map());
 
   // 用 ref 存储最新的执行请求，防止竞态条件
@@ -248,8 +221,7 @@ export function BodyViewer({
           headers,
           content: currentContent,
           setContent: (next) => {
-            const newContent =
-              typeof next === "function" ? next(currentContent) : next;
+            const newContent = typeof next === "function" ? next(currentContent) : next;
             // 从下一个插件开始重新执行
             executeTransformChain(newContent, i + 1);
           },
@@ -262,8 +234,7 @@ export function BodyViewer({
           showTip: createShowTip(plugin.name),
           hideTip: createHideTip(plugin.name),
           getConfig: () => pluginManager.getPluginConfig(plugin.name),
-          setConfig: (config) =>
-            pluginManager.setPluginConfig(plugin.name, config),
+          setConfig: (config) => pluginManager.setPluginConfig(plugin.name, config),
         };
 
         // 执行 transform
@@ -281,10 +252,7 @@ export function BodyViewer({
               state.content = currentContent;
             }
           } catch (error) {
-            console.error(
-              `[BodyViewer] Plugin "${plugin.name}" transform failed:`,
-              error,
-            );
+            console.error(`[BodyViewer] Plugin "${plugin.name}" transform failed:`, error);
           }
         }
 
@@ -360,9 +328,7 @@ export function BodyViewer({
 
     // 动态 actions：只显示当前激活插件的动态 actions
     const dynamicActions = activeViewerId
-      ? Array.from(
-          pluginDynamicActionsMap.get(activeViewerId)?.values() ?? [],
-        ).flat()
+      ? Array.from(pluginDynamicActionsMap.get(activeViewerId)?.values() ?? []).flat()
       : [];
 
     return [...staticActions, ...dynamicActions];
@@ -401,18 +367,18 @@ export function BodyViewer({
       <CardFooter className="flex flex-col gap-2">
         {/* Tips */}
         {allTips.length > 0 && (
-          <div className="flex flex-col gap-1 w-full">
+          <div className="flex w-full flex-col gap-1">
             {allTips.map((tip) => (
               <div
                 key={tip.id}
-                className={`text-xs px-2 py-1 rounded border ${
+                className={`rounded border px-2 py-1 text-xs ${
                   tip.type === "error"
-                    ? "bg-red-50 border-red-200 text-red-700"
+                    ? "border-red-200 bg-red-50 text-red-700"
                     : tip.type === "warning"
-                      ? "bg-yellow-50 border-yellow-200 text-yellow-700"
+                      ? "border-yellow-200 bg-yellow-50 text-yellow-700"
                       : tip.type === "success"
-                        ? "bg-green-50 border-green-200 text-green-700"
-                        : "bg-blue-50 border-blue-200 text-blue-700"
+                        ? "border-green-200 bg-green-50 text-green-700"
+                        : "border-blue-200 bg-blue-50 text-blue-700"
                 }`}
               >
                 {tip.content}
@@ -422,7 +388,7 @@ export function BodyViewer({
         )}
         {/* Actions */}
         {allActions.length > 0 && (
-          <div className="flex items-center gap-2 w-full">
+          <div className="flex w-full items-center gap-2">
             {allActions.map((action) => (
               <div key={action.id}>{action.render()}</div>
             ))}

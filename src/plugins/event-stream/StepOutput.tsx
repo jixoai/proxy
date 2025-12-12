@@ -12,13 +12,7 @@ function escapeHTML(input: string) {
     .replace(/'/g, "&#39;");
 }
 
-export function StepOutput({
-  value,
-  className,
-}: {
-  value: unknown;
-  className?: string;
-}) {
+export function StepOutput({ value, className }: { value: unknown; className?: string }) {
   const highlightable = isHighlightValue(value);
   const [html, setHtml] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -38,9 +32,7 @@ export function StepOutput({
       })
       .catch(() => {
         if (!cancelled) {
-          setHtml(
-            `<pre class="whitespace-pre-wrap text-xs">${escapeHTML(value.toString())}</pre>`,
-          );
+          setHtml(`<pre class="whitespace-pre-wrap text-xs">${escapeHTML(value.toString())}</pre>`);
         }
       })
       .finally(() => {
@@ -61,10 +53,7 @@ export function StepOutput({
     }
     if (html) {
       return (
-        <div
-          className={cn("text-xs", className)}
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+        <div className={cn("text-xs", className)} dangerouslySetInnerHTML={{ __html: html }} />
       );
     }
     return (
@@ -76,9 +65,7 @@ export function StepOutput({
 
   return (
     <div className={cn("text-xs", className)}>
-      <pre className="whitespace-pre-wrap">
-        {formatIntermediateValue(value)}
-      </pre>
+      <pre className="whitespace-pre-wrap">{formatIntermediateValue(value)}</pre>
     </div>
   );
 }

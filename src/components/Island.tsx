@@ -25,7 +25,7 @@ export function Island() {
     <div
       ref={popoverRef}
       popover="manual"
-      className="m-0 border-0 bg-transparent p-0 pointer-events-auto overflow-visible"
+      className="pointer-events-auto m-0 overflow-visible border-0 bg-transparent p-0"
       style={{
         // Popover 默认居中，我们需要定位到顶部
         inset: "unset",
@@ -52,7 +52,7 @@ function IslandTipItem({ tip }: { tip: IslandTip }) {
 
   return (
     <div
-      className="bg-black text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 cursor-pointer hover:scale-105 transition-all duration-300 animate-in slide-in-from-top-2"
+      className="animate-in slide-in-from-top-2 flex cursor-pointer items-center gap-3 rounded-full bg-black px-6 py-3 text-white shadow-2xl transition-all duration-300 hover:scale-105"
       onClick={handleClick}
     >
       <div className="flex items-center gap-2">

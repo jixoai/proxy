@@ -3,6 +3,7 @@ import * as https from "node:https";
 import { URL } from "node:url";
 import type { Socket } from "node:net";
 import { createWebSocketMessage } from "./db-requests";
+import { createLogger } from "./logger";
 import type { Duplex } from "node:stream";
 
 // WebSocket 帧解析器（简化版本）
@@ -124,10 +125,12 @@ export function handleWebSocketProxy(
   instanceName: string,
   forwardName: string | null,
 ) {
-  console.log("\n" + "🔌".repeat(40));
-  console.log(`[WebSocket] 升级请求`);
-  console.log(`目标 URL: ${targetUrl.href.replace("http", "ws")}`);
-  console.log("🔌".repeat(40) + "\n");
+  const log = createLogger("proxy:websocket");
+
+  log.debug("\n" + "🔌".repeat(40));
+  log.info(`[WebSocket] 升级请求`);
+  log.info(`目标 URL: ${targetUrl.href.replace("http", "ws")}`);
+  log.debug("🔌".repeat(40) + "\n");
 
   const connectionId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
   let messageIndex = 0;
@@ -156,12 +159,10 @@ export function handleWebSocketProxy(
 
   // 处理升级响应
   proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
-    console.log(`[WebSocket] 连接已建立`);
+    log.info(`[WebSocket] 连接已建立`);
 
     // 将升级响应发送给客户端
-    clientSocket.write(
-      `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`,
-    );
+    clientSocket.write(`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`);
     Object.entries(proxyRes.headers).forEach(([key, value]) => {
       clientSocket.write(`${key}: ${value}\r\n`);
     });
@@ -187,9 +188,7 @@ export function handleWebSocketProxy(
             ? frame.payload.toString("utf-8")
             : `<binary ${frame.payload.length} bytes>`;
 
-        console.log(
-          `[WebSocket → Server] ${messageType}: ${displayPayload.substring(0, 200)}`,
-        );
+        log.debug(`[WebSocket → Server] ${messageType}: ${displayPayload.substring(0, 200)}`);
 
         // 记录到数据库
         try {
@@ -223,9 +222,7 @@ export function handleWebSocketProxy(
             ? frame.payload.toString("utf-8")
             : `<binary ${frame.payload.length} bytes>`;
 
-        console.log(
-          `[WebSocket ← Server] ${messageType}: ${displayPayload.substring(0, 200)}`,
-        );
+        log.debug(`[WebSocket ← Server] ${messageType}: ${displayPayload.substring(0, 200)}`);
 
         // 记录到数据库
         try {
@@ -249,7 +246,7 @@ export function handleWebSocketProxy(
 
     // 错误处理
     const cleanup = () => {
-      console.log(`[WebSocket] 连接关闭: ${wsUrl}`);
+      log.info(`[WebSocket] 连接关闭: ${wsUrl}`);
       clientSocket.end();
       proxySocket.end();
     };

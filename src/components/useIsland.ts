@@ -43,10 +43,7 @@ export function useIsland() {
       const existing = currentTips[existingIndex];
       if (existing) {
         // 如果内容相同，不需要更新
-        if (
-          existing.text === tip.text &&
-          existing.subtext === tip.subtext
-        ) {
+        if (existing.text === tip.text && existing.subtext === tip.subtext) {
           // 只更新 onClick，不触发重新渲染
           if (tip.onClick) {
             currentTips[existingIndex] = { ...existing, onClick: tip.onClick };

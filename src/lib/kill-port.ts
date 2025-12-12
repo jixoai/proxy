@@ -1,10 +1,7 @@
 // 参考 github.com/tiaanduplessis/kill-port
 import { $ } from "bun";
 import process from "node:process";
-export const killPort = async (
-  port: number,
-  method = "tcp",
-): Promise<boolean> => {
+export const killPort = async (port: number, method = "tcp"): Promise<boolean> => {
   try {
     port = +port;
 
@@ -43,11 +40,7 @@ const win32KillPort = async (port: number, method: string) => {
     const localAddress = parts[1];
     const pid = parts[parts.length - 1];
 
-    if (
-      protocol === method &&
-      pid !== "0" &&
-      localAddress?.endsWith(":" + port)
-    ) {
+    if (protocol === method && pid !== "0" && localAddress?.endsWith(":" + port)) {
       console.log("端口占用，准备清理\n", line.trim());
 
       // 确保 PID 是一个有效的数字字符串
@@ -71,9 +64,7 @@ const win32KillPort = async (port: number, method: string) => {
   }
 };
 const unixKillPort = async (port: number, method: string) => {
-  const stdout = (
-    await $`lsof -i ${method === "udp" ? "UDP" : "TCP"}:${port}`.text()
-  ).trim();
+  const stdout = (await $`lsof -i ${method === "udp" ? "UDP" : "TCP"}:${port}`.text()).trim();
   if (stdout) {
     for (const line of stdout.split("\n")) {
       if (line.includes(method === "udp" ? "UDP" : "LISTEN")) {

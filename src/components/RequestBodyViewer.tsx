@@ -12,9 +12,7 @@ interface RequestBodyViewerProps {
  * 将 data URL 格式的 body 转换为 Uint8Array
  */
 export function RequestBodyViewer({ body, headers }: RequestBodyViewerProps) {
-  const [bodyUint8Array, setBodyUint8Array] = useState<Uint8Array>(
-    new Uint8Array(0),
-  );
+  const [bodyUint8Array, setBodyUint8Array] = useState<Uint8Array>(new Uint8Array(0));
 
   // 将 data URL 转换为 Uint8Array
   useEffect(() => {

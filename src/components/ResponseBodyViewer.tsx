@@ -13,9 +13,7 @@ interface ResponseBodyViewerProps {
  * 数据库中存储的 body 是 data URL 格式，需要转换为 Uint8Array
  */
 export function ResponseBodyViewer({ body, headers }: ResponseBodyViewerProps) {
-  const [bodyUint8Array, setBodyUint8Array] = useState<Uint8Array>(
-    new Uint8Array(0),
-  );
+  const [bodyUint8Array, setBodyUint8Array] = useState<Uint8Array>(new Uint8Array(0));
 
   // 将 data URL 转换为 Uint8Array
   useEffect(() => {

@@ -1,22 +1,30 @@
-import { ProxyManager, type ProxyStatus, type ProxyLogMessage, type ForwardConfig } from "./lib/proxy-manager";
-import { getAllInstances, getForwardsByInstanceName } from "./lib/config-store";
+import {
+  ProxyManager,
+  type ProxyStatus,
+  type ProxyLogMessage,
+  type ForwardConfig,
+} from "./lib/proxy-manager";
+import { getAllInstances, getNormalizedForwards, getInstanceByName } from "./lib/config-store";
 import { killPort } from "./lib/kill-port";
+import { createLogger, type Logger } from "./lib/logger";
+import type { InstanceRuntimeConfig } from "./types/worker-messages";
 
 type LogCallback = (log: ProxyLogMessage) => void;
 
 export class ProxyInstancesManager {
   private managers = new Map<string, ProxyManager>();
   private logCallbacks = new Set<LogCallback>();
+  private readonly log: Logger = createLogger("proxy:instances");
 
   async startInstance(instanceName: string): Promise<void> {
     const instance = getAllInstances().find((i) => i.name === instanceName);
     if (!instance) throw new Error("Instance not found");
     if (this.managers.has(instanceName)) throw new Error("Instance already running");
 
-    console.log(`[ProxyInstancesManager] Cleaning port ${instance.port} before starting...`);
+    this.log.debug(`[ProxyInstancesManager] Cleaning port ${instance.port} before starting...`);
     await killPort(instance.port);
 
-    const forwards = getForwardsByInstanceName(instanceName);
+    const forwards = getNormalizedForwards(instanceName);
     const validForwards: ForwardConfig[] = forwards.map((f) => ({
       name: f.name,
       target: f.target,
@@ -28,13 +36,18 @@ export class ProxyInstancesManager {
       hooks: f.hooks ?? null,
     }));
 
-    const manager = new ProxyManager(instanceName, instance.port, instance.headers ?? null);
+    const manager = new ProxyManager(
+      instanceName,
+      instance.port,
+      instance.headers ?? null,
+      instance.hooks ?? null,
+    );
     manager.onLog((log) => {
       this.logCallbacks.forEach((cb) => {
         try {
           cb(log);
         } catch (error) {
-          console.error("[ProxyInstancesManager] Error in log callback:", error);
+          this.log.error("[ProxyInstancesManager] Error in log callback:", error as Error);
         }
       });
     });
@@ -64,7 +77,7 @@ export class ProxyInstancesManager {
     if (!instance) {
       throw new Error("Instance not found");
     }
-    const forwards = getForwardsByInstanceName(instanceName);
+    const forwards = getNormalizedForwards(instanceName);
     const validForwards: ForwardConfig[] = forwards.map((f) => ({
       name: f.name,
       target: f.target,
@@ -82,7 +95,28 @@ export class ProxyInstancesManager {
       return;
     }
 
-    await manager.reload(validForwards);
+    await manager.reload(validForwards, instance.headers ?? null, instance.hooks ?? null);
+  }
+
+  /** 获取实例当前配置（从 worker 获取） */
+  async getInstanceWorkerConfig(instanceName: string): Promise<InstanceRuntimeConfig | null> {
+    const manager = this.managers.get(instanceName);
+    if (!manager) return null;
+    return manager.getWorkerConfig();
+  }
+
+  /** 检查实例配置是否同步 */
+  async checkInstanceConfigSync(instanceName: string): Promise<boolean> {
+    const manager = this.managers.get(instanceName);
+    if (!manager) return true; // 未运行的实例视为同步
+    return manager.checkConfigSync();
+  }
+
+  /** 获取实例期望的配置 */
+  getInstanceExpectedConfig(instanceName: string): InstanceRuntimeConfig | null {
+    const manager = this.managers.get(instanceName);
+    if (!manager) return null;
+    return manager.getExpectedConfig();
   }
 
   getInstanceStatus(instanceName: string): ProxyStatus {
@@ -115,14 +149,18 @@ export class ProxyInstancesManager {
   async autoStartEnabledInstances(): Promise<void> {
     const enabledInstances = getAllInstances().filter((inst) => inst.enabled);
     if (enabledInstances.length === 0) {
-      console.log("[ProxyInstancesManager] No enabled instances to auto-start");
+      this.log.info("[ProxyInstancesManager] No enabled instances to auto-start");
       return;
     }
-    console.log(`\n[ProxyInstancesManager] Auto-starting ${enabledInstances.length} enabled instance(s)...`);
+    console.log(
+      `\n[ProxyInstancesManager] Auto-starting ${enabledInstances.length} enabled instance(s)...`,
+    );
     for (const instance of enabledInstances) {
       try {
         await this.startInstance(instance.name);
-        console.log(`[ProxyInstancesManager] Instance ${instance.name} (port ${instance.port}) started`);
+        console.log(
+          `[ProxyInstancesManager] Instance ${instance.name} (port ${instance.port}) started`,
+        );
       } catch (error) {
         console.error(`[ProxyInstancesManager] Instance ${instance.name} failed to start:`, error);
       }
@@ -131,7 +169,9 @@ export class ProxyInstancesManager {
   }
 
   async stopAll(): Promise<void> {
-    console.log(`\n[ProxyInstancesManager] Stopping all ${this.managers.size} running instance(s)...`);
+    console.log(
+      `\n[ProxyInstancesManager] Stopping all ${this.managers.size} running instance(s)...`,
+    );
     const stopPromises = Array.from(this.managers.keys()).map(async (name) => {
       try {
         await this.stopInstance(name);

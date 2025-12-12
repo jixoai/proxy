@@ -1,8 +1,4 @@
-import type {
-  BodyViewerPlugin,
-  PluginContext,
-  Content,
-} from "@/contexts/BodyViewerPlugin";
+import type { BodyViewerPlugin, PluginContext, Content } from "@/contexts/BodyViewerPlugin";
 import type { DecompressRequest, DecompressResponse } from "@/lib/decompress";
 import { dataUrlToUint8Array } from "@/lib/data-url";
 
@@ -32,9 +28,7 @@ function uint8ArrayToBase64(data: Uint8Array): string {
  * 负责检测和解压 gzip/br/deflate 压缩的内容
  * 通过调用服务器端的 /api/decompress API 进行解压
  */
-export function decompressPlugin(
-  options: DecompressPluginOptions = {},
-): BodyViewerPlugin {
+export function decompressPlugin(options: DecompressPluginOptions = {}): BodyViewerPlugin {
   const { showStats = true } = options;
 
   return {
@@ -44,10 +38,7 @@ export function decompressPlugin(
     /**
      * Transform 钩子：检测并解压压缩内容
      */
-    async transform(
-      content: Content,
-      ctx: PluginContext,
-    ): Promise<Content | null> {
+    async transform(content: Content, ctx: PluginContext): Promise<Content | null> {
       // 1. 检查是否有 content-encoding
       const contentEncoding = ctx.headers["content-encoding"];
       if (!contentEncoding) {
@@ -91,10 +82,7 @@ export function decompressPlugin(
         const result: DecompressResponse = await response.json();
 
         if (!result.success || !result.data) {
-          console.error(
-            "[decompressPlugin] Decompression failed:",
-            result.error,
-          );
+          console.error("[decompressPlugin] Decompression failed:", result.error);
           return null;
         }
 
@@ -102,9 +90,7 @@ export function decompressPlugin(
         // result.data 是 data URL 格式，使用自定义函数解析（不依赖 fetch API）
         const decompressedData = dataUrlToUint8Array(result.data);
         if (!decompressedData) {
-          console.error(
-            "[decompressPlugin] Failed to parse decompressed data URL",
-          );
+          console.error("[decompressPlugin] Failed to parse decompressed data URL");
           return null;
         }
 

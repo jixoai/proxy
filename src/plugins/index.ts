@@ -3,10 +3,7 @@
  * 统一导出所有插件，方便使用
  */
 
-export {
-  decompressPlugin,
-  type DecompressPluginOptions,
-} from "./decompressPlugin";
+export { decompressPlugin, type DecompressPluginOptions } from "./decompressPlugin";
 export { textViewerPlugin } from "./textViewerPlugin";
 export { imageViewerPlugin } from "./imageViewerPlugin";
 export { binaryViewerPlugin } from "./binaryViewerPlugin";

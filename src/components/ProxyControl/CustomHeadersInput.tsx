@@ -17,10 +17,7 @@ interface CustomHeadersInputProps {
   onChange: (value: string) => void;
 }
 
-export function CustomHeadersInput({
-  value,
-  onChange,
-}: CustomHeadersInputProps) {
+export function CustomHeadersInput({ value, onChange }: CustomHeadersInputProps) {
   const [headers, setHeaders] = useState<HeaderRow[]>([]);
   const [mode, setMode] = useState<"table" | "json">("table");
   const [jsonText, setJsonText] = useState("");
@@ -119,27 +116,22 @@ export function CustomHeadersInput({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <Label className="flex items-center gap-1">
-          自定义 Headers
-        </Label>
+        <Label className="flex items-center gap-1">自定义 Headers</Label>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
               className="text-muted-foreground hover:text-foreground inline-flex items-center justify-center"
             >
-              <Info className="w-4 h-4" />
+              <Info className="h-4 w-4" />
             </button>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs text-xs leading-relaxed">
-            <p className="mb-1">
-              支持使用 JSON 形式编辑 Headers，也可以在表格模式中逐行编辑。
-            </p>
+            <p className="mb-1">支持使用 JSON 形式编辑 Headers，也可以在表格模式中逐行编辑。</p>
             <p className="mb-1">
               特殊语法：
               <br />- 值设置为 <code>/DELETE</code> 表示删除匹配的 Header。
-              <br />- 键可以使用正则表达式，例如 <code>/^x-foo-.*/</code>{" "}
-              用于批量匹配。
+              <br />- 键可以使用正则表达式，例如 <code>/^x-foo-.*/</code> 用于批量匹配。
             </p>
           </TooltipContent>
         </Tooltip>
@@ -152,13 +144,13 @@ export function CustomHeadersInput({
         </TabsList>
         <TabsContent value="table" className="mt-2 space-y-2">
           {headers.length === 0 ? (
-            <div className="text-sm text-muted-foreground py-2">
+            <div className="text-muted-foreground py-2 text-sm">
               暂无自定义 Header，点击下方按钮添加。
             </div>
           ) : (
             <div className="space-y-2">
               {headers.map((row, index) => (
-                <div key={index} className="flex gap-2 items-center">
+                <div key={index} className="flex items-center gap-2">
                   <Input
                     placeholder="Header Name"
                     value={row.key}
@@ -178,21 +170,15 @@ export function CustomHeadersInput({
                     onClick={() => removeRow(index)}
                     className="shrink-0"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
               ))}
             </div>
           )}
 
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={addRow}
-            className="w-full"
-          >
-            <Plus className="w-4 h-4 mr-2" />
+          <Button type="button" variant="outline" size="sm" onClick={addRow} className="w-full">
+            <Plus className="mr-2 h-4 w-4" />
             添加 Header
           </Button>
         </TabsContent>
@@ -205,20 +191,18 @@ export function CustomHeadersInput({
             rows={6}
           />
           {jsonError ? (
-            <p className="text-xs text-destructive">{jsonError}</p>
+            <p className="text-destructive text-xs">{jsonError}</p>
           ) : (
-            <p className="text-xs text-muted-foreground">
-              JSON 对象的每个字段都会被视作一个 Header。键为 Header 名，值为
-              Header 值。
+            <p className="text-muted-foreground text-xs">
+              JSON 对象的每个字段都会被视作一个 Header。键为 Header 名，值为 Header 值。
             </p>
           )}
         </TabsContent>
       </Tabs>
 
-      <p className="text-xs text-muted-foreground">
+      <p className="text-muted-foreground text-xs">
         这些 Headers 会在转发请求时附加或修改请求头，可用于注入认证信息、移除敏感 Header 等。
       </p>
     </div>
   );
 }
-

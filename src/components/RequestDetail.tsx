@@ -31,7 +31,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { generateFetchCode, generateNodeFetchCode, copyToClipboard } from "@/components/copy-as-fetch";
+import {
+  generateFetchCode,
+  generateNodeFetchCode,
+  copyToClipboard,
+} from "@/components/copy-as-fetch";
 import { AddForwardFromRequestDialog } from "@/components/AddForwardFromRequestDialog";
 
 export function RequestDetail() {
@@ -75,7 +79,7 @@ export function RequestDetail() {
 
   if (detailLoading) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex h-full items-center justify-center">
         <div className="text-muted-foreground">Loading detail...</div>
       </div>
     );
@@ -83,7 +87,7 @@ export function RequestDetail() {
 
   if (!selectedDetail) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex h-full items-center justify-center">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -100,38 +104,34 @@ export function RequestDetail() {
   return (
     <div className="space-y-6">
       {/* Copy Actions */}
-      <div className="flex items-center gap-2 pb-2 border-b">
+      <div className="flex items-center gap-2 border-b pb-2">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className="flex items-center gap-2"
-            >
+            <Button variant="outline" size="sm" className="flex items-center gap-2">
               {copiedType ? (
-                <CheckCheck className="w-4 h-4 text-green-600" />
+                <CheckCheck className="h-4 w-4 text-green-600" />
               ) : (
-                <Copy className="w-4 h-4" />
+                <Copy className="h-4 w-4" />
               )}
               <span>Copy</span>
-              <ChevronDown className="w-4 h-4 ml-auto" />
+              <ChevronDown className="ml-auto h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-48">
             <DropdownMenuItem onClick={() => handleCopyAsFetch("via-proxy")}>
               {copiedType === "via-proxy" ? (
-                <CheckCheck className="w-4 h-4 mr-2 text-green-600" />
+                <CheckCheck className="mr-2 h-4 w-4 text-green-600" />
               ) : (
-                <Copy className="w-4 h-4 mr-2" />
+                <Copy className="mr-2 h-4 w-4" />
               )}
               <span>Copy via Proxy</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => handleCopyAsFetch("to-target")}>
               {copiedType === "to-target" ? (
-                <CheckCheck className="w-4 h-4 mr-2 text-green-600" />
+                <CheckCheck className="mr-2 h-4 w-4 text-green-600" />
               ) : (
-                <Copy className="w-4 h-4 mr-2" />
+                <Copy className="mr-2 h-4 w-4" />
               )}
               <span>Copy to Target</span>
             </DropdownMenuItem>
@@ -144,7 +144,7 @@ export function RequestDetail() {
               request={selectedDetail}
               trigger={
                 <Button variant="outline" size="sm" className="flex items-center gap-1">
-                  <PlusCircle className="w-4 h-4" />
+                  <PlusCircle className="h-4 w-4" />
                   <span>添加到转发规则</span>
                 </Button>
               }
@@ -161,7 +161,7 @@ export function RequestDetail() {
                 }
               }}
             >
-              <ArrowRightCircle className="w-4 h-4" />
+              <ArrowRightCircle className="h-4 w-4" />
               <span>跳转到转发规则</span>
             </Button>
           </>
@@ -169,27 +169,24 @@ export function RequestDetail() {
       </div>
 
       {/* Request & Response Info - Two columns on wide screens */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <RequestInfoCard metadata={selectedDetail.metadata} />
         <ResponseInfoCard metadata={selectedDetail.metadata} />
       </div>
 
       {/* Request & Response Headers - Two columns on wide screens */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {hasHookedRequest ? (
           <Tabs defaultValue="hooked" className="w-full">
             <TabsList>
               <TabsTrigger value="hooked" className="gap-1">
-                <Zap className="w-3 h-3" />
+                <Zap className="h-3 w-3" />
                 Hooked Headers
               </TabsTrigger>
               <TabsTrigger value="original">Original Headers</TabsTrigger>
             </TabsList>
             <TabsContent value="hooked">
-              <HeadersCard
-                title="Request Headers (Hooked)"
-                headers={hookedRequestHeaders}
-              />
+              <HeadersCard title="Request Headers (Hooked)" headers={hookedRequestHeaders} />
             </TabsContent>
             <TabsContent value="original">
               <HeadersCard
@@ -211,14 +208,14 @@ export function RequestDetail() {
 
       {/* Request & Response Body - 使用容器查询实现响应式布局 */}
       <div className="@container">
-        <div className="grid grid-cols-1 @[1280px]:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 @[1280px]:grid-cols-2">
           {/* Request Body - 如果有 hooked 数据，使用 tabs */}
-          {selectedDetail.requestBody && (
-            hasHookedRequest ? (
+          {selectedDetail.requestBody &&
+            (hasHookedRequest ? (
               <Tabs defaultValue="hooked" className="w-full">
                 <TabsList>
                   <TabsTrigger value="hooked" className="gap-1">
-                    <Zap className="w-3 h-3" />
+                    <Zap className="h-3 w-3" />
                     Hooked
                   </TabsTrigger>
                   <TabsTrigger value="original">Original</TabsTrigger>
@@ -230,25 +227,15 @@ export function RequestDetail() {
                   />
                 </TabsContent>
                 <TabsContent value="original">
-                  <RequestBodyViewer
-                    body={selectedDetail.requestBody}
-                    headers={requestHeaders}
-                  />
+                  <RequestBodyViewer body={selectedDetail.requestBody} headers={requestHeaders} />
                 </TabsContent>
               </Tabs>
             ) : (
-              <RequestBodyViewer
-                body={selectedDetail.requestBody}
-                headers={requestHeaders}
-              />
-            )
-          )}
+              <RequestBodyViewer body={selectedDetail.requestBody} headers={requestHeaders} />
+            ))}
 
           {/* Response Body - 使用 ResponseBodyViewer 支持自动解压 */}
-          <ResponseBodyViewer
-            body={selectedDetail.responseBody || ""}
-            headers={responseHeaders}
-          />
+          <ResponseBodyViewer body={selectedDetail.responseBody || ""} headers={responseHeaders} />
         </div>
       </div>
     </div>

@@ -39,12 +39,8 @@ export function initDatabase() {
     )
   `);
 
-  db.run(
-    "CREATE INDEX IF NOT EXISTS idx_proxy_requests_time ON proxy_requests(timestamp DESC)",
-  );
-  db.run(
-    "CREATE INDEX IF NOT EXISTS idx_proxy_requests_group ON proxy_requests(group_name)",
-  );
+  db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_time ON proxy_requests(timestamp DESC)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_group ON proxy_requests(group_name)");
 
   console.log("[Database] proxy_requests initialized");
 }

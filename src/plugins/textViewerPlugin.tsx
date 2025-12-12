@@ -9,19 +9,8 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  FileText,
-  Copy,
-  Wand2,
-  MoreHorizontal,
-  ChevronsUpDown,
-  FileJson2,
-} from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { FileText, Copy, Wand2, MoreHorizontal, ChevronsUpDown, FileJson2 } from "lucide-react";
 import {
   BiText,
   BiCodeAlt,
@@ -39,12 +28,7 @@ import {
 } from "react-icons/bi";
 import { DiRuby } from "react-icons/di";
 import { SiYaml } from "react-icons/si";
-import {
-  BsFiletypeJson,
-  BsFiletypeJsx,
-  BsFiletypeSh,
-  BsFiletypeSql,
-} from "react-icons/bs";
+import { BsFiletypeJson, BsFiletypeJsx, BsFiletypeSh, BsFiletypeSql } from "react-icons/bs";
 import {
   TbBrandKotlin,
   TbBrandCarbon,
@@ -64,11 +48,7 @@ import {
 
 import { Highlighter } from "@/components/Highlighter";
 import { detectContentType } from "@/components/utils";
-import type {
-  BodyViewerPlugin,
-  PluginContext,
-  Content,
-} from "@/contexts/BodyViewerPlugin";
+import type { BodyViewerPlugin, PluginContext, Content } from "@/contexts/BodyViewerPlugin";
 
 const SUPPORTED_LANGUAGES = [
   "text",
@@ -214,11 +194,7 @@ function getLanguageIcon(language: string) {
 }
 
 function isTextMime(mime: string) {
-  return (
-    mime.startsWith("text/") ||
-    mime === "application/json" ||
-    mime === "application/xml"
-  );
+  return mime.startsWith("text/") || mime === "application/json" || mime === "application/xml";
 }
 
 /**
@@ -252,11 +228,7 @@ export function TextViewerPanel({
 
   // 计算当前使用的语言
   const currentLanguage =
-    syntaxMode === "text"
-      ? "text"
-      : syntaxMode === "mime"
-        ? mimeLanguage
-        : customLanguage;
+    syntaxMode === "text" ? "text" : syntaxMode === "mime" ? mimeLanguage : customLanguage;
 
   // 同步外部传入的新文本
   useEffect(() => {
@@ -352,10 +324,7 @@ export function TextViewerPanel({
       setCode(originalCodeRef.current);
       return;
     }
-    if (
-      lastFormattedLanguageRef.current === currentLanguage &&
-      formattedCode
-    ) {
+    if (lastFormattedLanguageRef.current === currentLanguage && formattedCode) {
       setCode(formattedCode);
       return;
     }
@@ -412,11 +381,7 @@ export function TextViewerPanel({
             <Popover open={comboboxOpen} onOpenChange={setComboboxOpen}>
               <PopoverTrigger asChild>
                 <Button
-                  variant={
-                    syntaxMode !== "text" && syntaxMode !== "mime"
-                      ? "default"
-                      : "outline"
-                  }
+                  variant={syntaxMode !== "text" && syntaxMode !== "mime" ? "default" : "outline"}
                   size="sm"
                   role="combobox"
                   aria-expanded={comboboxOpen}
@@ -438,9 +403,7 @@ export function TextViewerPanel({
                   <CommandList>
                     <CommandEmpty>No language found.</CommandEmpty>
                     <CommandGroup>
-                      {SUPPORTED_LANGUAGES.filter(
-                        (lang) => lang !== "text",
-                      ).map((lang) => (
+                      {SUPPORTED_LANGUAGES.filter((lang) => lang !== "text").map((lang) => (
                         <CommandItem
                           key={lang}
                           value={lang}
@@ -506,9 +469,7 @@ export function TextViewerPanel({
             }}
           >
             <Copy className="size-4" />
-            <span className="ml-1">
-              {isFormatEnabled ? "Copy formatted" : "Copy"}
-            </span>
+            <span className="ml-1">{isFormatEnabled ? "Copy formatted" : "Copy"}</span>
           </Button>
         ),
       },
@@ -528,13 +489,9 @@ export function TextViewerPanel({
   ]);
 
   return (
-    <div className="rounded-lg overflow-hidden border border-border">
+    <div className="border-border overflow-hidden rounded-lg border">
       <div className="max-h-[600px] overflow-auto text-xs">
-        <Highlighter
-          code={code}
-          language={currentLanguage}
-          theme="github-dark-default"
-        />
+        <Highlighter code={code} language={currentLanguage} theme="github-dark-default" />
       </div>
     </div>
   );
@@ -574,12 +531,7 @@ export function textViewerPlugin(): BodyViewerPlugin {
           </span>
         ),
         content: (
-          <TextViewerPanel
-            key="text-viewer"
-            code={textValue}
-            mimeLanguage={language}
-            ctx={ctx}
-          />
+          <TextViewerPanel key="text-viewer" code={textValue} mimeLanguage={language} ctx={ctx} />
         ),
       });
 

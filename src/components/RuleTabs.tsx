@@ -1,10 +1,6 @@
 import { useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
-import {
-  Tabs,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useProxyViewer, type RequestData } from "@/components/ProxyViewerContext";
 
 interface RuleTabsProps {
@@ -12,12 +8,7 @@ interface RuleTabsProps {
 }
 
 export function RuleTabs({ instanceId }: RuleTabsProps) {
-  const {
-    requests,
-    availableRules,
-    activeRuleId,
-    setActiveRuleId,
-  } = useProxyViewer();
+  const { requests, availableRules, activeRuleId, setActiveRuleId } = useProxyViewer();
 
   // 过滤当前实例的请求
   const instanceRequests = useMemo(() => {
@@ -60,12 +51,12 @@ export function RuleTabs({ instanceId }: RuleTabsProps) {
   });
 
   return (
-    <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <div className="bg-background/95 supports-[backdrop-filter]:bg-background/60 border-b backdrop-blur">
       <Tabs value={currentValue} onValueChange={handleTabChange}>
-        <TabsList className="w-full justify-start rounded-none border-b-0 bg-transparent p-0 h-auto">
+        <TabsList className="h-auto w-full justify-start rounded-none border-b-0 bg-transparent p-0">
           <TabsTrigger
             value="all"
-            className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent"
+            className="data-[state=active]:border-primary rounded-none border-b-2 border-transparent data-[state=active]:bg-transparent"
           >
             全部
             <Badge variant="secondary" className="ml-2">
@@ -78,7 +69,7 @@ export function RuleTabs({ instanceId }: RuleTabsProps) {
               <TabsTrigger
                 key={rule.id}
                 value={rule.id.toString()}
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent"
+                className="data-[state=active]:border-primary rounded-none border-b-2 border-transparent data-[state=active]:bg-transparent"
               >
                 {rule.name}
                 <Badge variant="secondary" className="ml-2">
@@ -90,7 +81,7 @@ export function RuleTabs({ instanceId }: RuleTabsProps) {
           {ruleRequestCounts.has("unknown") && ruleRequestCounts.get("unknown")! > 0 && (
             <TabsTrigger
               value="unknown"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent"
+              className="data-[state=active]:border-primary rounded-none border-b-2 border-transparent data-[state=active]:bg-transparent"
             >
               未知规则
               <Badge variant="secondary" className="ml-2">

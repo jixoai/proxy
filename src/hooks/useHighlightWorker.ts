@@ -16,7 +16,7 @@ export interface UseHighlightWorkerResult {
 export function useHighlightWorker(
   code: string,
   language: string,
-  theme: string = "github-dark-default"
+  theme: string = "github-dark-default",
 ): UseHighlightWorkerResult {
   const [highlightedHTML, setHighlightedHTML] = useState<string | null>(null);
   const [highlighting, setHighlighting] = useState(true);

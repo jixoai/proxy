@@ -1,11 +1,5 @@
-import {
-  createContext,
-  useContext,
-  useState,
-  useCallback,
-  useEffect,
-  type ReactNode,
-} from "react";
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import type { ProxyInstance } from "@/types/proxy";
 
 export type RequestStatus = "pending" | "streaming" | "completed" | "error";
@@ -68,8 +62,6 @@ interface ProxyViewerContextValue {
   loading: boolean;
   currentPage: number;
   setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
-  activeView: "requests" | "control";
-  setActiveView: (view: "requests" | "control") => void;
 
   livePush: boolean;
   setLivePush: (enabled: boolean) => void;
@@ -124,39 +116,29 @@ export function useProxyViewer() {
 }
 
 export function ProxyViewerProvider({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
   const [requests, setRequests] = useState<RequestData[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedDetail, setSelectedDetail] = useState<RequestData | null>(
-    null,
-  );
+  const [selectedDetail, setSelectedDetail] = useState<RequestData | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [livePush, setLivePush] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
-  const [activeView, setActiveView] = useState<"requests" | "control">(
-    "requests",
-  );
 
   const [filterMethod, setFilterMethod] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("");
   const [filterUrl, setFilterUrl] = useState<string>("");
   const [filterRule, setFilterRule] = useState<string>("");
 
-  const [availableRules, setAvailableRules] = useState<
-    Array<{ id: number; name: string }>
-  >([]);
+  const [availableRules, setAvailableRules] = useState<Array<{ id: number; name: string }>>([]);
 
   const [instances, setInstances] = useState<ProxyInstance[]>([]);
   const [instancesLoading, setInstancesLoading] = useState(true);
   const [activeInstanceId, setActiveInstanceId] = useState<number | null>(null);
   const [activeRuleId, setActiveRuleId] = useState<string | null>(null);
-  const [controlFocusInstanceId, setControlFocusInstanceId] = useState<
-    number | null
-  >(null);
-  const [controlFocusForwardId, setControlFocusForwardId] = useState<
-    number | null
-  >(null);
+  const [controlFocusInstanceId, setControlFocusInstanceId] = useState<number | null>(null);
+  const [controlFocusForwardId, setControlFocusForwardId] = useState<number | null>(null);
 
   const [jsonDialogOpen, setJsonDialogOpen] = useState(false);
   const [dialogJSONSnapshot, setDialogJSONSnapshot] = useState<string[]>([]);
@@ -257,9 +239,9 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     (instanceId: number, forwardId: number) => {
       setControlFocusInstanceId(instanceId);
       setControlFocusForwardId(forwardId);
-      setActiveView("control");
+      navigate({ to: "/control" });
     },
-    [],
+    [navigate],
   );
 
   const clearControlFocus = useCallback(() => {
@@ -296,9 +278,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
           setCurrentPage(1);
         } else if (message.type === "update-request" && message.data) {
           const updatedId = String(message.id);
-          setRequests((prev) =>
-            prev.map((req) => (req.id === updatedId ? message.data : req)),
-          );
+          setRequests((prev) => prev.map((req) => (req.id === updatedId ? message.data : req)));
 
           setSelectedDetail((prev) => {
             if (prev && prev.id === updatedId) {
@@ -318,6 +298,10 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
           setSelectedId(null);
           setSelectedDetail(null);
           setCurrentPage(1);
+        } else if (message.type === "config-reloaded") {
+          // 配置文件更新，刷新实例列表
+          reloadInstances();
+          loadRules();
         }
       } catch (error) {
         console.error("Failed to parse WebSocket message:", error);
@@ -337,15 +321,13 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     return () => {
       ws.close();
     };
-  }, [livePush, selectedId]);
+  }, [livePush, selectedId, reloadInstances, loadRules]);
 
   const value: ProxyViewerContextValue = {
     requests,
     loading,
     currentPage,
     setCurrentPage,
-    activeView,
-    setActiveView,
     livePush,
     setLivePush,
     wsConnected,
@@ -382,9 +364,5 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     deleteRequest,
   };
 
-  return (
-    <ProxyViewerContext.Provider value={value}>
-      {children}
-    </ProxyViewerContext.Provider>
-  );
+  return <ProxyViewerContext.Provider value={value}>{children}</ProxyViewerContext.Provider>;
 }

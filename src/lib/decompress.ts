@@ -24,9 +24,7 @@ export interface DecompressResponse {
  * @param request 解压请求
  * @returns 解压结果（始终返回 data URL 格式）
  */
-export async function decompressData(
-  request: DecompressRequest,
-): Promise<DecompressResponse> {
+export async function decompressData(request: DecompressRequest): Promise<DecompressResponse> {
   const { data, encoding, mime } = request;
 
   try {

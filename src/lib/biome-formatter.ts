@@ -22,21 +22,15 @@ export type FormatResponse =
  *   filename: 'test.js'
  * });
  */
-export async function formatCode(
-  request: FormatRequest,
-): Promise<FormatResponse> {
+export async function formatCode(request: FormatRequest): Promise<FormatResponse> {
   const { code, filename } = request;
 
   return new Promise((resolve) => {
     // 使用 bun @biomejs/biome format 命令，从 stdin 读取代码
     // --stdin-file-path 用于推断文件类型
-    const biomeProcess = spawn(
-      "bun",
-      ["biome", "format", "--stdin-file-path", filename],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const biomeProcess = spawn("bun", ["biome", "format", "--stdin-file-path", filename], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     let stdout = "";
     let stderr = "";

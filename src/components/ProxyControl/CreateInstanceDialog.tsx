@@ -20,10 +20,7 @@ interface CreateInstanceDialogProps {
   onCreated: () => void;
 }
 
-export function CreateInstanceDialog({
-  trigger,
-  onCreated,
-}: CreateInstanceDialogProps) {
+export function CreateInstanceDialog({ trigger, onCreated }: CreateInstanceDialogProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [port, setPort] = useState("");
@@ -74,7 +71,7 @@ export function CreateInstanceDialog({
       <DialogTrigger asChild>
         {trigger || (
           <Button>
-            <Plus className="w-4 h-4 mr-2" />
+            <Plus className="mr-2 h-4 w-4" />
             创建实例
           </Button>
         )}
@@ -88,7 +85,7 @@ export function CreateInstanceDialog({
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="name" className="flex items-center gap-2">
-                <Tag className="w-3.5 h-3.5" />
+                <Tag className="h-3.5 w-3.5" />
                 实例名称
               </Label>
               <Input
@@ -108,13 +105,10 @@ export function CreateInstanceDialog({
                 placeholder="例如：转发到内部 OpenAI 兼容接口，用于日常开发调试"
               />
             </div>
-            <CustomHeadersInput
-              value={instanceHeaders}
-              onChange={setInstanceHeaders}
-            />
+            <CustomHeadersInput value={instanceHeaders} onChange={setInstanceHeaders} />
             <div className="space-y-2">
               <Label htmlFor="port" className="flex items-center gap-2">
-                <Network className="w-3.5 h-3.5" />
+                <Network className="h-3.5 w-3.5" />
                 端口号
               </Label>
               <Input
@@ -128,14 +122,10 @@ export function CreateInstanceDialog({
                 required
               />
             </div>
-            {error && <div className="text-sm text-destructive">{error}</div>}
+            {error && <div className="text-destructive text-sm">{error}</div>}
           </div>
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-            >
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
             <Button type="submit" disabled={loading}>

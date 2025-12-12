@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -15,6 +15,9 @@ import {
   AlertTriangle,
   RotateCw,
   Trash2,
+  RefreshCw,
+  CheckCircle,
+  AlertCircle,
 } from "lucide-react";
 import type { ProxyInstance } from "@/types/proxy";
 import { EditInstanceDialog } from "./EditInstanceDialog";
@@ -44,13 +47,12 @@ const parseInstanceHeaders = (raw?: string | null) => {
   }
 };
 
-export function InstanceControls({
-  instance,
-  onUpdate,
-  focusedForwardId,
-}: InstanceControlsProps) {
+export function InstanceControls({ instance, onUpdate, focusedForwardId }: InstanceControlsProps) {
   const [status, setStatus] = useState<ProxyStatus | null>(null);
   const [loading, setLoading] = useState(false);
+  const [configSynced, setConfigSynced] = useState<boolean | null>(null);
+  const [pushingConfig, setPushingConfig] = useState(false);
+  const [autoPushConfig, setAutoPushConfig] = useState(true); // 默认开启
   const globalHeaderEntries = useMemo(
     () => parseInstanceHeaders(instance.instance_headers),
     [instance.instance_headers],
@@ -67,12 +69,64 @@ export function InstanceControls({
     }
   };
 
+  const checkConfigSync = useCallback(async () => {
+    if (!instance.id || !status?.running) {
+      setConfigSynced(null);
+      return;
+    }
+    try {
+      const response = await fetch(`/api/instances/${instance.id}/config-sync`);
+      const data = await response.json();
+      setConfigSynced(data.synced ?? null);
+    } catch (error) {
+      console.error("Failed to check config sync:", error);
+      setConfigSynced(null);
+    }
+  }, [instance.id, status?.running]);
+
+  const handlePushConfig = useCallback(async () => {
+    if (!instance.id) return;
+    setPushingConfig(true);
+    try {
+      const response = await fetch(`/api/instances/${instance.id}/push-config`, { method: "POST" });
+      const data = await response.json();
+      if (data.success) {
+        await checkConfigSync();
+      } else {
+        alert(`推送配置失败：${data.error}`);
+      }
+    } catch (error) {
+      console.error("Failed to push config:", error);
+      alert("推送配置失败");
+    } finally {
+      setPushingConfig(false);
+    }
+  }, [instance.id, checkConfigSync]);
+
   useEffect(() => {
     fetchStatus();
     const interval = setInterval(fetchStatus, 2000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id]);
+
+  // 定期检查配置同步状态
+  useEffect(() => {
+    if (!status?.running) {
+      setConfigSynced(null);
+      return;
+    }
+    checkConfigSync();
+    const interval = setInterval(checkConfigSync, 3000);
+    return () => clearInterval(interval);
+  }, [status?.running, checkConfigSync]);
+
+  // 自动推送配置
+  useEffect(() => {
+    if (autoPushConfig && configSynced === false && status?.running) {
+      handlePushConfig();
+    }
+  }, [autoPushConfig, configSynced, status?.running, handlePushConfig]);
 
   const handleStart = async () => {
     if (!instance.id) return;
@@ -217,7 +271,7 @@ export function InstanceControls({
   };
 
   return (
-    <div className="space-y-5 rounded-2xl border bg-card/40 p-5 shadow-sm">
+    <div className="bg-card/40 space-y-5 rounded-2xl border p-5 shadow-sm">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="space-y-2">
           <div className="flex items-center gap-3">
@@ -227,103 +281,79 @@ export function InstanceControls({
             </Badge>
           </div>
           {instance.description && (
-            <p className="text-sm text-muted-foreground">
-              {instance.description}
-            </p>
+            <p className="text-muted-foreground text-sm">{instance.description}</p>
           )}
           {globalHeaderEntries.length > 0 && (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-muted-foreground text-xs">
               全局自定义 Header：{globalHeaderEntries.length} 个，所有转发规则都会继承。
             </p>
           )}
         </div>
         <div className="flex gap-2">
           <EditInstanceDialog instance={instance} onUpdated={onUpdate} />
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={handleDelete}
-            disabled={loading}
-          >
-            <Trash2 className="w-4 h-4 text-destructive mr-1" />
+          <Button size="sm" variant="ghost" onClick={handleDelete} disabled={loading}>
+            <Trash2 className="text-destructive mr-1 h-4 w-4" />
             删除
           </Button>
         </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-        <div className="rounded-xl border bg-background p-4 space-y-3">
-          <div className="text-sm font-medium text-muted-foreground">
-            访问地址
-          </div>
-          <div className="flex items-center gap-2 rounded-lg border bg-muted/20 px-3 py-2">
-            <ServerIcon className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+        <div className="bg-background space-y-3 rounded-xl border p-4">
+          <div className="text-muted-foreground text-sm font-medium">访问地址</div>
+          <div className="bg-muted/20 flex items-center gap-2 rounded-lg border px-3 py-2">
+            <ServerIcon className="text-muted-foreground h-4 w-4 flex-shrink-0" />
             <a
               href={proxyUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm font-mono text-primary hover:underline flex items-center gap-1 flex-1 min-w-0"
+              className="text-primary flex min-w-0 flex-1 items-center gap-1 font-mono text-sm hover:underline"
             >
               {proxyUrl}
-              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+              <ExternalLink className="h-3 w-3 flex-shrink-0" />
             </a>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={handleCopyUrl}
-              className="flex-shrink-0"
-            >
-              <Copy className="w-4 h-4" />
+            <Button size="sm" variant="ghost" onClick={handleCopyUrl} className="flex-shrink-0">
+              <Copy className="h-4 w-4" />
             </Button>
           </div>
           {portChanged && (
             <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
-              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+              <AlertTriangle className="h-4 w-4 flex-shrink-0" />
               <span>
-                配置端口已修改为{" "}
-                <span className="font-mono font-semibold">
-                  {instance.port}
-                </span>
+                配置端口已修改为 <span className="font-mono font-semibold">{instance.port}</span>
                 ，当前仍监听{" "}
-                <span className="font-mono font-semibold">
-                  {status?.listeningPort}
-                </span>
+                <span className="font-mono font-semibold">{status?.listeningPort}</span>
                 ，请重启实例使新端口生效。
               </span>
             </div>
           )}
         </div>
 
-        <div className="rounded-xl border bg-background p-4 space-y-3 text-sm text-muted-foreground">
-          <div className="text-sm font-medium text-muted-foreground">
-            运行状态
-          </div>
+        <div className="bg-background text-muted-foreground space-y-3 rounded-xl border p-4 text-sm">
+          <div className="text-muted-foreground text-sm font-medium">运行状态</div>
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <Activity className="w-4 h-4" />
+              <Activity className="h-4 w-4" />
               <span>
                 状态：
-                <Badge
-                  variant={status?.running ? "default" : "secondary"}
-                  className="ml-1"
-                >
+                <Badge variant={status?.running ? "default" : "secondary"} className="ml-1">
                   {status?.running ? "运行中" : "已停止"}
                 </Badge>
               </span>
             </div>
             {status?.running && status.pid && (
               <div className="flex items-center gap-2">
-                <Hash className="w-4 h-4" />
+                <Hash className="h-4 w-4" />
                 <span>PID：{status.pid}</span>
               </div>
             )}
             <div className="flex items-center gap-2">
-              <ServerIcon className="w-4 h-4" />
+              <ServerIcon className="h-4 w-4" />
               <span>当前端口：{currentPort}</span>
             </div>
             {status?.running && status.uptime && (
               <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4" />
+                <Clock className="h-4 w-4" />
                 <span>运行时长：{formatUptime(status.uptime)}</span>
               </div>
             )}
@@ -332,15 +362,15 @@ export function InstanceControls({
       </div>
 
       {globalHeaderEntries.length > 0 && (
-        <div className="rounded-xl border bg-background p-4">
-          <div className="text-sm font-medium text-muted-foreground mb-2">
+        <div className="bg-background rounded-xl border p-4">
+          <div className="text-muted-foreground mb-2 text-sm font-medium">
             实例全局 Headers（只读）
           </div>
           <div className="grid gap-1 font-mono text-xs">
             {globalHeaderEntries.map(([key, value]) => (
               <div
                 key={key}
-                className="flex items-center justify-between gap-2 border-b border-border/60 py-1"
+                className="border-border/60 flex items-center justify-between gap-2 border-b py-1"
               >
                 <span className="text-muted-foreground">{key}</span>
                 <span className="text-right break-all">{value}</span>
@@ -350,21 +380,18 @@ export function InstanceControls({
         </div>
       )}
 
-      <div className="rounded-xl border bg-background px-4 py-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div className="bg-background flex flex-col gap-3 rounded-xl border px-4 py-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <div className="text-sm font-medium leading-none">自动启动</div>
-          <p className="text-xs text-muted-foreground mt-1">
+          <div className="text-sm leading-none font-medium">自动启动</div>
+          <p className="text-muted-foreground mt-1 text-xs">
             Viewer 启动时自动拉起该内核。仅影响下次启动，不会中断当前实例。
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">
+          <span className="text-muted-foreground text-xs">
             {instance.enabled ? "已开启" : "已关闭"}
           </span>
-          <Switch
-            checked={instance.enabled}
-            onCheckedChange={handleToggleAutoStart}
-          />
+          <Switch checked={instance.enabled} onCheckedChange={handleToggleAutoStart} />
         </div>
       </div>
 
@@ -375,7 +402,7 @@ export function InstanceControls({
           onClick={handleStart}
           disabled={loading || status?.running === true}
         >
-          <Play className="w-4 h-4 mr-1" />
+          <Play className="mr-1 h-4 w-4" />
           启动
         </Button>
         <Button
@@ -384,7 +411,7 @@ export function InstanceControls({
           onClick={handleRestart}
           disabled={loading || status?.running === false}
         >
-          <RotateCw className="w-4 h-4 mr-1" />
+          <RotateCw className="mr-1 h-4 w-4" />
           重启
         </Button>
         <Button
@@ -393,14 +420,60 @@ export function InstanceControls({
           onClick={handleStop}
           disabled={loading || status?.running === false}
         >
-          <Square className="w-4 h-4 mr-1" />
+          <Square className="mr-1 h-4 w-4" />
           停止
         </Button>
+
+        {/* 配置同步状态和推送按钮 */}
+        {status?.running && (
+          <div className="ml-2 flex items-center gap-3 border-l pl-2">
+            {configSynced === true && (
+              <span className="flex items-center gap-1 text-xs text-green-600">
+                <CheckCircle className="h-3.5 w-3.5" />
+                配置已同步
+              </span>
+            )}
+            {configSynced === false && (
+              <>
+                <span className="flex items-center gap-1 text-xs text-amber-600">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  配置待同步
+                </span>
+                {!autoPushConfig && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePushConfig}
+                    disabled={pushingConfig}
+                    className="h-7 text-xs"
+                  >
+                    <RefreshCw className={`mr-1 h-3 w-3 ${pushingConfig ? "animate-spin" : ""}`} />
+                    {pushingConfig ? "推送中..." : "推送配置"}
+                  </Button>
+                )}
+              </>
+            )}
+            {configSynced === null && (
+              <span className="text-muted-foreground text-xs">检查中...</span>
+            )}
+
+            {/* 自动推送开关 */}
+            <div className="ml-2 flex items-center gap-1.5 border-l pl-2">
+              <Switch
+                checked={autoPushConfig}
+                onCheckedChange={setAutoPushConfig}
+                className="scale-75"
+              />
+              <span className="text-muted-foreground text-xs">自动推送</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {typeof instance.id === "number" && (
         <ForwardRulesList
           instanceId={instance.id}
+          instanceName={instance.name}
           instanceHeaders={instance.instance_headers ?? null}
           focusedForwardId={focusedForwardId ?? null}
         />

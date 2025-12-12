@@ -22,20 +22,12 @@ interface EditInstanceDialogProps {
   onUpdated: () => void;
 }
 
-export function EditInstanceDialog({
-  instance,
-  trigger,
-  onUpdated,
-}: EditInstanceDialogProps) {
+export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanceDialogProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(instance.name);
   const [port, setPort] = useState(instance.port.toString());
-  const [description, setDescription] = useState(
-    instance.description || "",
-  );
-  const [instanceHeaders, setInstanceHeaders] = useState(
-    instance.instance_headers || "",
-  );
+  const [description, setDescription] = useState(instance.description || "");
+  const [instanceHeaders, setInstanceHeaders] = useState(instance.instance_headers || "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -87,7 +79,7 @@ export function EditInstanceDialog({
       <DialogTrigger asChild>
         {trigger || (
           <Button size="sm" variant="ghost">
-            <Edit className="w-4 h-4 mr-1" />
+            <Edit className="mr-1 h-4 w-4" />
             编辑
           </Button>
         )}
@@ -101,7 +93,7 @@ export function EditInstanceDialog({
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="edit-name" className="flex items-center gap-2">
-                <Tag className="w-3.5 h-3.5" />
+                <Tag className="h-3.5 w-3.5" />
                 实例名称
               </Label>
               <Input
@@ -114,7 +106,7 @@ export function EditInstanceDialog({
             </div>
             <div className="space-y-2">
               <Label htmlFor="edit-port" className="flex items-center gap-2">
-                <Network className="w-3.5 h-3.5" />
+                <Network className="h-3.5 w-3.5" />
                 端口号
               </Label>
               <Input
@@ -127,9 +119,7 @@ export function EditInstanceDialog({
                 max="65535"
                 required
               />
-              <p className="text-xs text-muted-foreground">
-                修改端口后需要重启实例才能生效。
-              </p>
+              <p className="text-muted-foreground text-xs">修改端口后需要重启实例才能生效。</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="edit-description">实例描述（可选）</Label>
@@ -140,18 +130,11 @@ export function EditInstanceDialog({
                 placeholder="例如：转发到内部 OpenAI 兼容接口，用于日常开发调试"
               />
             </div>
-            <CustomHeadersInput
-              value={instanceHeaders}
-              onChange={setInstanceHeaders}
-            />
-            {error && <div className="text-sm text-destructive">{error}</div>}
+            <CustomHeadersInput value={instanceHeaders} onChange={setInstanceHeaders} />
+            {error && <div className="text-destructive text-sm">{error}</div>}
           </div>
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-            >
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
             <Button type="submit" disabled={loading}>

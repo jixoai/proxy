@@ -47,9 +47,7 @@ export function AddForwardFromRequestDialog({
       const methodFromRequest = request.metadata.request.method || "GET";
 
       const target =
-        request.metadata.targetUrl ||
-        request.metadata.originUrl ||
-        request.metadata.request.url;
+        request.metadata.targetUrl || request.metadata.originUrl || request.metadata.request.url;
       const targetOrigin = (() => {
         try {
           const u = new URL(target);
@@ -63,14 +61,10 @@ export function AddForwardFromRequestDialog({
       setPath(pathFromRequest);
       setTargetUrl(targetOrigin);
       setMethod(methodFromRequest);
-      setDescription(
-        `基于请求 ${methodFromRequest} ${pathFromRequest} 生成的转发规则`,
-      );
+      setDescription(`基于请求 ${methodFromRequest} ${pathFromRequest} 生成的转发规则`);
 
       if (request.metadata.forwardedHeaders) {
-        setCustomHeaders(
-          JSON.stringify(request.metadata.forwardedHeaders, null, 2),
-        );
+        setCustomHeaders(JSON.stringify(request.metadata.forwardedHeaders, null, 2));
       } else {
         setCustomHeaders("");
       }
@@ -120,7 +114,7 @@ export function AddForwardFromRequestDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="sm:max-w-2xl p-2 *:p-4">
+      <DialogContent className="p-2 *:p-4 sm:max-w-2xl">
         <form onSubmit={handleSubmit} className="flex h-full flex-col">
           <DialogHeader className="sticky top-0 backdrop-blur-sm">
             <DialogTitle>从请求创建转发规则</DialogTitle>
@@ -131,11 +125,8 @@ export function AddForwardFromRequestDialog({
           <ScrollArea className="max-h-[65vh] overflow-y-auto p-2!">
             <div className="space-y-4 p-2">
               <div className="space-y-2">
-                <Label
-                  htmlFor="from-request-name"
-                  className="flex items-center gap-2"
-                >
-                  <Tag className="w-3.5 h-3.5" />
+                <Label htmlFor="from-request-name" className="flex items-center gap-2">
+                  <Tag className="h-3.5 w-3.5" />
                   规则名称
                 </Label>
                 <Input
@@ -154,9 +145,8 @@ export function AddForwardFromRequestDialog({
                   onChange={(e) => setMethod(e.target.value)}
                   placeholder="* 或 GET,POST"
                 />
-                <p className="text-xs text-muted-foreground">
-                  留空或输入 * 表示匹配所有方法；支持使用逗号分隔多个方法，例如
-                  GET,POST。
+                <p className="text-muted-foreground text-xs">
+                  留空或输入 * 表示匹配所有方法；支持使用逗号分隔多个方法，例如 GET,POST。
                 </p>
               </div>
               <div className="space-y-2">
@@ -167,16 +157,13 @@ export function AddForwardFromRequestDialog({
                   onChange={(e) => setPath(e.target.value)}
                   placeholder="/api 或 /openai"
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   默认为当前请求的路径。后续所有以该前缀开头的路径将匹配此规则。
                 </p>
               </div>
               <div className="space-y-2">
-                <Label
-                  htmlFor="from-request-target-url"
-                  className="flex items-center gap-2"
-                >
-                  <LinkIcon className="w-3.5 h-3.5" />
+                <Label htmlFor="from-request-target-url" className="flex items-center gap-2">
+                  <LinkIcon className="h-3.5 w-3.5" />
                   目标 URL
                 </Label>
                 <Input
@@ -187,14 +174,12 @@ export function AddForwardFromRequestDialog({
                   placeholder="https://api.example.com"
                   required
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   默认使用当前请求已转发到的目标服务地址（只保留协议和主机部分）。
                 </p>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="from-request-description">
-                  规则描述（可选）
-                </Label>
+                <Label htmlFor="from-request-description">规则描述（可选）</Label>
                 <Input
                   id="from-request-description"
                   value={description}
@@ -202,19 +187,12 @@ export function AddForwardFromRequestDialog({
                   placeholder="例如：将 /openai 转发到 DeepSeek 的 /api 接口"
                 />
               </div>
-              <CustomHeadersInput
-                value={customHeaders}
-                onChange={setCustomHeaders}
-              />
-              {error && <div className="text-sm text-destructive">{error}</div>}
+              <CustomHeadersInput value={customHeaders} onChange={setCustomHeaders} />
+              {error && <div className="text-destructive text-sm">{error}</div>}
             </div>
           </ScrollArea>
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-            >
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
             <Button type="submit" disabled={loading}>

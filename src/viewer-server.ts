@@ -4,20 +4,9 @@ import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import viewerHtml from "./viewer.html";
 import { codeToHtml } from "shiki";
-import type {
-  HighlightRequest,
-  HighlightResponse,
-} from "./services/highlight.protocol";
-import {
-  formatCode,
-  type FormatRequest,
-  type FormatResponse,
-} from "./lib/biome-formatter";
-import {
-  decompressData,
-  type DecompressRequest,
-  type DecompressResponse,
-} from "./lib/decompress";
+import type { HighlightRequest, HighlightResponse } from "./services/highlight.protocol";
+import { formatCode, type FormatRequest, type FormatResponse } from "./lib/biome-formatter";
+import { decompressData, type DecompressRequest, type DecompressResponse } from "./lib/decompress";
 import type { ProxyLogMessage } from "./lib/proxy-manager";
 import type { ProxyInstancesManager } from "./proxy-instances-manager";
 import { db } from "./lib/db";
@@ -29,8 +18,10 @@ import {
   deleteInstance,
   getForwardsByInstanceName,
   upsertForward,
-  deleteForward,
-  reorderForwards,
+  addForward,
+  deleteForwardByIndex,
+  updateForwardByIndex,
+  reorderForwardsByIndexes,
   getConfigFilePath,
   loadConfig,
 } from "./lib/config-store";
@@ -45,14 +36,16 @@ import {
 } from "./lib/db-requests";
 import { dbListener } from "./lib/db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, isDataUrl } from "./lib/data-url";
-import {
-  extractContentTypeFromHeaders,
-  isTextLikeMime,
-} from "./lib/http-utils";
+import { extractContentTypeFromHeaders, isTextLikeMime } from "./lib/http-utils";
+import { createLogger, installGlobalErrorLogger } from "./lib/logger";
+import { forwardStatsManager, type ForwardEndpointStats } from "./lib/forward-stats-manager";
+import { reorderForwardsByIndexes as reorderForwardsByIndexesDirect } from "./lib/config-store";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROXY_DIR = path.join(__dirname, ".tmp", "proxy");
+const log = createLogger("proxy:viewer");
+installGlobalErrorLogger("proxy-viewer");
 
 interface RequestData {
   id: string;
@@ -72,9 +65,7 @@ function coerceBodyDataUrl(
 ): string | null {
   if (!body) return null;
   if (typeof body === "string") {
-    return isDataUrl(body)
-      ? body
-      : bufferToDataUrl(Buffer.from(body, "utf-8"), mime);
+    return isDataUrl(body) ? body : bufferToDataUrl(Buffer.from(body, "utf-8"), mime);
   }
   const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
   return bufferToDataUrl(buffer, mime);
@@ -82,24 +73,27 @@ function coerceBodyDataUrl(
 
 interface ForwardKey {
   instanceName: string;
+  forwardIndex: number;
   forwardName: string;
 }
 
 interface ConfigCache {
   instanceNameToId: Map<string, number>;
   instanceIdToName: Map<number, string>;
-  forwardKeyToId: Map<string, number>;
   forwardIdToKey: Map<number, ForwardKey>;
-  forwardKeyToConfig: Map<string, ProxyForwardConfig>;
+  forwardIndexToId: Map<string, number>;
+  forwardIndexToConfig: Map<string, ProxyForwardConfig>;
+  forwardNameFirstId: Map<string, number>;
 }
 
 function buildConfigCache(): ConfigCache {
   const instances = getAllInstances();
   const instanceNameToId = new Map<string, number>();
   const instanceIdToName = new Map<number, string>();
-  const forwardKeyToId = new Map<string, number>();
   const forwardIdToKey = new Map<number, ForwardKey>();
-  const forwardKeyToConfig = new Map<string, ProxyForwardConfig>();
+  const forwardIndexToId = new Map<string, number>();
+  const forwardIndexToConfig = new Map<string, ProxyForwardConfig>();
+  const forwardNameFirstId = new Map<string, number>();
 
   let forwardCounter = 1;
 
@@ -108,24 +102,32 @@ function buildConfigCache(): ConfigCache {
     instanceNameToId.set(instance.name, instanceId);
     instanceIdToName.set(instanceId, instance.name);
 
-    instance.forwards.forEach((forward) => {
-      const key = `${instance.name}:${forward.name}`;
-      forwardKeyToId.set(key, forwardCounter);
-      forwardIdToKey.set(forwardCounter, {
+    instance.forwards.forEach((forward, forwardIndex) => {
+      const forwardId = forwardCounter++;
+      const keyWithIndex = `${instance.name}:${forwardIndex}`;
+
+      forwardIdToKey.set(forwardId, {
         instanceName: instance.name,
+        forwardIndex,
         forwardName: forward.name,
       });
-      forwardKeyToConfig.set(key, forward);
-      forwardCounter++;
+      forwardIndexToId.set(keyWithIndex, forwardId);
+      forwardIndexToConfig.set(keyWithIndex, forward);
+
+      const nameKey = `${instance.name}:${forward.name}`;
+      if (!forwardNameFirstId.has(nameKey)) {
+        forwardNameFirstId.set(nameKey, forwardId);
+      }
     });
   });
 
   return {
     instanceNameToId,
     instanceIdToName,
-    forwardKeyToId,
     forwardIdToKey,
-    forwardKeyToConfig,
+    forwardIndexToId,
+    forwardIndexToConfig,
+    forwardNameFirstId,
   };
 }
 
@@ -150,11 +152,15 @@ function getForwardIdByNames(
 ): number | null {
   if (!instanceName || !forwardName) return null;
   const key = `${instanceName}:${forwardName}`;
-  return configCache.forwardKeyToId.get(key) ?? null;
+  return configCache.forwardNameFirstId.get(key) ?? null;
 }
 
 function getForwardKeyById(id: number): ForwardKey | null {
   return configCache.forwardIdToKey.get(id) ?? null;
+}
+
+function getForwardIdByIndex(instanceName: string, forwardIndex: number): number | null {
+  return configCache.forwardIndexToId.get(`${instanceName}:${forwardIndex}`) ?? null;
 }
 
 function getForwardConfig(
@@ -162,8 +168,11 @@ function getForwardConfig(
   forwardName: string | null | undefined,
 ): ProxyForwardConfig | null {
   if (!instanceName || !forwardName) return null;
-  const key = `${instanceName}:${forwardName}`;
-  return configCache.forwardKeyToConfig.get(key) ?? null;
+  const firstId = getForwardIdByNames(instanceName, forwardName);
+  if (!firstId) return null;
+  const key = getForwardKeyById(firstId);
+  if (!key) return null;
+  return configCache.forwardIndexToConfig.get(`${key.instanceName}:${key.forwardIndex}`) ?? null;
 }
 
 function parseHeadersValue(value: unknown): Record<string, string> | null {
@@ -174,9 +183,9 @@ function parseHeadersValue(value: unknown): Record<string, string> | null {
     if (typeof parsed !== "object" || parsed === null) {
       throw new Error("Invalid headers format");
     }
-    const entries = Object.entries(parsed).filter(
-      ([, v]) => typeof v === "string",
-    ) as Array<[string, string]>;
+    const entries = Object.entries(parsed).filter(([, v]) => typeof v === "string") as Array<
+      [string, string]
+    >;
     if (entries.length === 0) {
       return null;
     }
@@ -218,6 +227,7 @@ function parseForwardIdParam(param: string | undefined): {
   id: number;
   instanceName: string;
   forwardName: string;
+  forwardIndex: number;
 } {
   if (!param) {
     throw new Error("Forward id is required");
@@ -230,7 +240,12 @@ function parseForwardIdParam(param: string | undefined): {
   if (!key) {
     throw new Error("Forward not found");
   }
-  return { id, instanceName: key.instanceName, forwardName: key.forwardName };
+  return {
+    id,
+    instanceName: key.instanceName,
+    forwardName: key.forwardName,
+    forwardIndex: key.forwardIndex,
+  };
 }
 
 function serializeInstance(instance: ProxyInstanceConfig, instanceId: number) {
@@ -240,17 +255,11 @@ function serializeInstance(instance: ProxyInstanceConfig, instanceId: number) {
     port: instance.port,
     enabled: instance.enabled,
     description: instance.description ?? null,
-    instance_headers: instance.headers
-      ? JSON.stringify(instance.headers)
-      : null,
+    instance_headers: instance.headers ? JSON.stringify(instance.headers) : null,
   };
 }
 
-function serializeForward(
-  instanceId: number,
-  forward: ProxyForwardConfig,
-  forwardId: number,
-) {
+function serializeForward(instanceId: number, forward: ProxyForwardConfig, forwardId: number) {
   return {
     id: forwardId,
     instance_id: instanceId,
@@ -258,14 +267,9 @@ function serializeForward(
     target_url: forward.target,
     enabled: forward.enabled,
     description: forward.description ?? null,
-    method:
-      !forward.methods || forward.methods.length === 0
-        ? "*"
-        : forward.methods.join(","),
+    method: !forward.methods || forward.methods.length === 0 ? "*" : forward.methods.join(","),
     path: forward.path ?? null,
-    custom_headers: forward.headers
-      ? JSON.stringify(forward.headers)
-      : null,
+    custom_headers: forward.headers ? JSON.stringify(forward.headers) : null,
   };
 }
 
@@ -351,16 +355,107 @@ function getAllRequestsFiltered(filters?: {
  * @param port 监听端口
  * @returns Bun Server 实例
  */
-export function startViewerServer(
-  manager: ProxyInstancesManager,
-  port: number,
-) {
+export function startViewerServer(manager: ProxyInstancesManager, port: number) {
   // WebSocket 客户端管理
   const wsClients = new Set<ServerWebSocket<unknown>>();
   const logClients = new Set<ServerWebSocket<unknown>>();
+  const statsClients = new Set<ServerWebSocket<unknown>>();
   let configWatcher: fs.FSWatcher | null = null;
   let watchDebounce: NodeJS.Timeout | null = null;
   let watchEnabled = false;
+
+  // 初始化统计管理器
+  forwardStatsManager.init();
+
+  // 广播统计数据到所有订阅的客户端
+  const broadcastStats = () => {
+    if (statsClients.size === 0) return;
+    const stats = forwardStatsManager.getAllStats();
+    const message = JSON.stringify({ type: "stats-update", stats });
+    for (const client of statsClients) {
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error("Failed to send stats to client:", error);
+        statsClients.delete(client);
+      }
+    }
+  };
+
+  // 监听统计更新事件
+  forwardStatsManager.on("stats-updated", () => {
+    broadcastStats();
+  });
+
+  // 监听自动排序事件
+  forwardStatsManager.on("auto-sort-needed", async (instanceName: string) => {
+    log.info(`[AutoSort] Auto-sort triggered for instance: ${instanceName}`);
+
+    const instance = getInstanceByName(instanceName);
+    if (!instance) return;
+
+    // 按 forwardName 分组
+    const groups = new Map<string, number[]>();
+    instance.forwards.forEach((f, idx) => {
+      const list = groups.get(f.name) ?? [];
+      list.push(idx);
+      groups.set(f.name, list);
+    });
+
+    let anyChanged = false;
+
+    for (const [forwardName, currentIndexes] of groups) {
+      if (currentIndexes.length < 2) continue;
+
+      const newOrder = forwardStatsManager.computeOptimalOrder(
+        instanceName,
+        forwardName,
+        currentIndexes,
+      );
+
+      if (newOrder) {
+        log.info(
+          `[AutoSort] Reordering ${instanceName}/${forwardName}: ${currentIndexes.join(",")} -> ${newOrder.join(",")}`,
+        );
+
+        // 重新计算完整的新顺序
+        const fullNewOrder = instance.forwards.map((_, idx) => {
+          const groupIdx = currentIndexes.indexOf(idx);
+          if (groupIdx >= 0) {
+            return newOrder[groupIdx]!;
+          }
+          return idx;
+        });
+
+        try {
+          reorderForwardsByIndexesDirect(instanceName, fullNewOrder as number[]);
+          refreshConfigCache();
+          anyChanged = true;
+        } catch (error) {
+          console.error(`[AutoSort] Failed to reorder: ${error}`);
+        }
+      }
+    }
+
+    if (anyChanged) {
+      // 热更新到 worker
+      try {
+        await manager.reloadInstance(instanceName);
+      } catch (error) {
+        console.error(`[AutoSort] Failed to reload instance: ${error}`);
+      }
+
+      // 通知前端配置已更新
+      const message = JSON.stringify({ type: "config-reloaded" });
+      for (const client of wsClients) {
+        try {
+          client.send(message);
+        } catch (error) {
+          wsClients.delete(client);
+        }
+      }
+    }
+  });
 
   // 订阅 ProxyInstancesManager 的日志并广播给客户端
   manager.onLog((log: ProxyLogMessage) => {
@@ -382,7 +477,7 @@ export function startViewerServer(
   if (fs.existsSync(OLD_PROXY_DIR)) {
     try {
       fs.rmSync(OLD_PROXY_DIR, { recursive: true, force: true });
-      console.log("[Cleanup] Removed old filesystem request records");
+      log.info("[Cleanup] Removed old filesystem request records");
     } catch (error) {
       console.error("[Cleanup] Failed to remove old records:", error);
     }
@@ -404,6 +499,18 @@ export function startViewerServer(
         result.failed.push({ name, error: String(error) });
       }
     }
+
+    // 通知前端配置已更新
+    const message = JSON.stringify({ type: "config-reloaded" });
+    for (const client of wsClients) {
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error("Failed to send config-reloaded to client:", error);
+        wsClients.delete(client);
+      }
+    }
+
     return result;
   };
 
@@ -415,7 +522,7 @@ export function startViewerServer(
         clearTimeout(watchDebounce);
       }
       watchDebounce = setTimeout(async () => {
-        console.log("[Reload] Detected config change, applying reload...");
+        log.info("[Reload] Detected config change, applying reload...");
         try {
           await reloadInstancesFromConfig();
         } catch (error) {
@@ -424,7 +531,7 @@ export function startViewerServer(
       }, 300);
     });
     watchEnabled = true;
-    console.log(`[Reload] Watching config file: ${configFile}`);
+    log.info(`[Reload] Watching config file: ${configFile}`);
   };
 
   const disableConfigWatch = () => {
@@ -437,7 +544,7 @@ export function startViewerServer(
       watchDebounce = null;
     }
     watchEnabled = false;
-    console.log("[Reload] Stopped watching config file");
+    log.info("[Reload] Stopped watching config file");
   };
 
   // 读取单个请求的详细信息（从数据库）
@@ -570,9 +677,7 @@ export function startViewerServer(
           }
 
           const requests =
-            Object.keys(filters).length > 0
-              ? getAllRequestsFiltered(filters)
-              : getAllRequests();
+            Object.keys(filters).length > 0 ? getAllRequestsFiltered(filters) : getAllRequests();
           return Response.json(requests);
         },
       },
@@ -580,17 +685,11 @@ export function startViewerServer(
         async GET(req) {
           const id = parseInt(req.params.id);
           if (isNaN(id)) {
-            return Response.json(
-              { error: "Invalid request ID" },
-              { status: 400 },
-            );
+            return Response.json({ error: "Invalid request ID" }, { status: 400 });
           }
           const detail = getRequestDetail(id);
           if (!detail) {
-            return Response.json(
-              { error: "Request not found" },
-              { status: 404 },
-            );
+            return Response.json({ error: "Request not found" }, { status: 404 });
           }
           return Response.json(detail);
         },
@@ -614,17 +713,11 @@ export function startViewerServer(
                 message: "Request deleted",
               });
             } else {
-              return Response.json(
-                { success: false, error: "Request not found" },
-                { status: 404 },
-              );
+              return Response.json({ success: false, error: "Request not found" }, { status: 404 });
             }
           } catch (error) {
             console.error("Failed to delete request:", error);
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -641,10 +734,7 @@ export function startViewerServer(
             });
           } catch (error) {
             console.error("Failed to clear requests:", error);
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -660,11 +750,8 @@ export function startViewerServer(
 
             instances.forEach((instance, index) => {
               const instanceId = index + 1;
-              instance.forwards.forEach((forward) => {
-                const forwardId = getForwardIdByNames(
-                  instance.name,
-                  forward.name,
-                );
+              instance.forwards.forEach((forward, forwardIndex) => {
+                const forwardId = getForwardIdByIndex(instance.name, forwardIndex);
                 if (forwardId && forward.enabled) {
                   list.push({
                     id: forwardId,
@@ -707,16 +794,17 @@ export function startViewerServer(
               methods: normalizeMethods(body.method),
               headers: parseHeadersValue(body.custom_headers),
             };
-            upsertForward(instanceName, forward);
+            addForward(instanceName, forward);
             refreshConfigCache();
-            const createdId = getForwardIdByNames(instanceName, forward.name);
+            const instance = getInstanceByName(instanceName);
+            const forwardIndex =
+              instance && instance.forwards.length > 0 ? instance.forwards.length - 1 : null;
+            const createdId =
+              forwardIndex != null ? getForwardIdByIndex(instanceName, forwardIndex) : null;
             return Response.json({ id: createdId, success: true });
           } catch (error) {
             console.error("Failed to create forward:", error);
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -726,10 +814,7 @@ export function startViewerServer(
             const result = await reloadInstancesFromConfig();
             return Response.json({ success: true, ...result });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -750,10 +835,84 @@ export function startViewerServer(
             }
             return Response.json({ success: true, watching: watchEnabled });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+      // ========== 统计数据 API ==========
+      "/api/stats": {
+        async GET() {
+          const stats = forwardStatsManager.getAllStats();
+          return Response.json(stats);
+        },
+      },
+      "/api/stats/instance/:name": {
+        async GET(req) {
+          const instanceName = req.params.name;
+          const stats = forwardStatsManager.getInstanceStats(instanceName);
+          return Response.json(stats);
+        },
+      },
+      "/api/auto-sort/status": {
+        async GET() {
+          return Response.json({ enabled: forwardStatsManager.isAutoSortEnabled() });
+        },
+      },
+      "/api/auto-sort/toggle": {
+        async POST(req) {
+          try {
+            const body = await req.json();
+            const enabled = Boolean(body?.enabled);
+            forwardStatsManager.setAutoSortEnabled(enabled);
+            return Response.json({ success: true, enabled });
+          } catch (error) {
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+      // 配置同步检查
+      "/api/instances/:id/config-sync": {
+        async GET(req) {
+          try {
+            const { name } = parseInstanceIdParam(req.params.id);
+            const synced = await manager.checkInstanceConfigSync(name);
+            return Response.json({ synced });
+          } catch (error) {
+            return Response.json({ error: String(error) }, { status: 400 });
+          }
+        },
+      },
+      // 获取实例的 worker 当前配置
+      "/api/instances/:id/worker-config": {
+        async GET(req) {
+          try {
+            const { name } = parseInstanceIdParam(req.params.id);
+            const config = await manager.getInstanceWorkerConfig(name);
+            if (!config) {
+              return Response.json({ error: "Instance not running" }, { status: 404 });
+            }
+            return Response.json(config);
+          } catch (error) {
+            return Response.json({ error: String(error) }, { status: 400 });
+          }
+        },
+      },
+      // 推送配置到 worker（热更新）
+      "/api/instances/:id/push-config": {
+        async POST(req) {
+          try {
+            const { name } = parseInstanceIdParam(req.params.id);
+            const status = manager.getInstanceStatus(name);
+            if (!status.running) {
+              return Response.json(
+                { success: false, error: "Instance not running" },
+                { status: 400 },
+              );
+            }
+            await manager.reloadInstance(name);
+            return Response.json({ success: true });
+          } catch (error) {
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -766,19 +925,13 @@ export function startViewerServer(
             const workerPath = path.join(standaloneBaseDir, workerName);
             // 路径安全检查
             if (!workerPath.startsWith(standaloneBaseDir)) {
-              return Response.json(
-                { error: `Invalid worker name:${workerName}` },
-                { status: 400 },
-              );
+              return Response.json({ error: `Invalid worker name:${workerName}` }, { status: 400 });
             }
 
             // 检查文件是否存在
             const sourceFile = Bun.file(workerPath);
             if (!(await sourceFile.exists())) {
-              return Response.json(
-                { error: `Worker not found: ${workerName}` },
-                { status: 404 },
-              );
+              return Response.json({ error: `Worker not found: ${workerName}` }, { status: 404 });
             }
 
             const outdir = path.join(__dirname, ".standalone");
@@ -803,10 +956,7 @@ export function startViewerServer(
 
             const workerFile = Bun.file(path.join(outdir, outFileName));
             if (!(await workerFile.exists())) {
-              return Response.json(
-                { error: "Worker build failed" },
-                { status: 500 },
-              );
+              return Response.json({ error: "Worker build failed" }, { status: 500 });
             }
 
             return new Response(await workerFile.arrayBuffer(), {
@@ -918,10 +1068,7 @@ export function startViewerServer(
               instanceId: id,
             });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -936,10 +1083,7 @@ export function startViewerServer(
               instanceId: id,
             });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -952,10 +1096,7 @@ export function startViewerServer(
               ...manager.getInstanceStatus(name),
             });
           } catch (error) {
-            return Response.json(
-              { error: String(error) },
-              { status: 400 },
-            );
+            return Response.json({ error: String(error) }, { status: 400 });
           }
         },
       },
@@ -990,9 +1131,7 @@ export function startViewerServer(
         async GET() {
           const instances = getAllInstances();
           return Response.json(
-            instances.map((instance, index) =>
-              serializeInstance(instance, index + 1),
-            ),
+            instances.map((instance, index) => serializeInstance(instance, index + 1)),
           );
         },
         async POST(req) {
@@ -1028,10 +1167,7 @@ export function startViewerServer(
             const newId = getInstanceIdByName(instance.name);
             return Response.json({ id: newId, success: true });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -1041,17 +1177,11 @@ export function startViewerServer(
             const { id, name } = parseInstanceIdParam(req.params.id);
             const instance = getInstanceByName(name);
             if (!instance) {
-              return Response.json(
-                { error: "Instance not found" },
-                { status: 404 },
-              );
+              return Response.json({ error: "Instance not found" }, { status: 404 });
             }
             return Response.json(serializeInstance(instance, id));
           } catch (error) {
-            return Response.json(
-              { error: String(error) },
-              { status: 400 },
-            );
+            return Response.json({ error: String(error) }, { status: 400 });
           }
         },
         async PUT(req) {
@@ -1061,33 +1191,23 @@ export function startViewerServer(
             const headers = parseHeadersValue(body.instance_headers);
             const existing = getInstanceByName(name);
             if (!existing) {
-              return Response.json(
-                { error: "Instance not found" },
-                { status: 404 },
-              );
+              return Response.json({ error: "Instance not found" }, { status: 404 });
             }
 
             upsertInstance({
               ...existing,
               name,
-              port:
-                body.port !== undefined ? Number(body.port) : existing.port,
-              enabled:
-                body.enabled !== undefined ? Boolean(body.enabled) : existing.enabled,
+              port: body.port !== undefined ? Number(body.port) : existing.port,
+              enabled: body.enabled !== undefined ? Boolean(body.enabled) : existing.enabled,
               description:
-                body.description !== undefined
-                  ? body.description
-                  : existing.description ?? null,
+                body.description !== undefined ? body.description : (existing.description ?? null),
               headers: headers ?? existing.headers ?? null,
             });
 
             refreshConfigCache();
             return Response.json({ success: true });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
         async DELETE(req) {
@@ -1099,18 +1219,12 @@ export function startViewerServer(
             }
             const success = deleteInstance(name);
             if (!success) {
-              return Response.json(
-                { error: "Instance not found" },
-                { status: 404 },
-              );
+              return Response.json({ error: "Instance not found" }, { status: 404 });
             }
             refreshConfigCache();
             return Response.json({ success: true });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -1121,21 +1235,16 @@ export function startViewerServer(
             const { id, name } = parseInstanceIdParam(req.params.id);
             const instance = getInstanceByName(name);
             if (!instance) {
-              return Response.json(
-                { error: "Instance not found" },
-                { status: 404 },
-              );
+              return Response.json({ error: "Instance not found" }, { status: 404 });
             }
             const forwards = instance.forwards.map((forward) => {
-              const forwardId = getForwardIdByNames(name, forward.name);
+              const forwardIndex = instance.forwards.indexOf(forward);
+              const forwardId = getForwardIdByIndex(name, forwardIndex);
               return serializeForward(id, forward, forwardId ?? 0);
             });
             return Response.json(forwards);
           } catch (error) {
-            return Response.json(
-              { error: String(error) },
-              { status: 400 },
-            );
+            return Response.json({ error: String(error) }, { status: 400 });
           }
         },
       },
@@ -1144,98 +1253,94 @@ export function startViewerServer(
           try {
             const { name } = parseInstanceIdParam(req.params.id);
             const body = await req.json();
-            const orderedNames = Array.isArray(body.order)
-              ? (body.order as string[])
-              : [];
+            const orderedIds = Array.isArray(body.order) ? (body.order as number[]) : [];
 
-            if (orderedNames.length === 0) {
+            if (orderedIds.length === 0) {
+              return Response.json({ error: "Order array is empty" }, { status: 400 });
+            }
+
+            const indexes: number[] = [];
+            const seen = new Set<number>();
+            for (const id of orderedIds) {
+              const key = getForwardKeyById(Number(id));
+              if (!key || key.instanceName !== name) {
+                return Response.json(
+                  { error: "Order contains invalid forward id" },
+                  { status: 400 },
+                );
+              }
+              if (seen.has(key.forwardIndex)) {
+                return Response.json(
+                  { error: "Order contains duplicate entries" },
+                  { status: 400 },
+                );
+              }
+              seen.add(key.forwardIndex);
+              indexes.push(key.forwardIndex);
+            }
+
+            const instance = getInstanceByName(name);
+            if (!instance || instance.forwards.length !== indexes.length) {
               return Response.json(
-                { error: "Order array is empty" },
+                { error: "Order must include all forwards of the instance" },
                 { status: 400 },
               );
             }
 
-            reorderForwards(name, orderedNames);
+            reorderForwardsByIndexes(name, indexes);
             refreshConfigCache();
             return Response.json({ success: true });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 400 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 400 });
           }
         },
       },
       "/api/forwards/:id": {
         async PUT(req) {
           try {
-            const { instanceName, forwardName } = parseForwardIdParam(
-              req.params.id,
-            );
+            const { instanceName, forwardIndex } = parseForwardIdParam(req.params.id);
             const body = await req.json();
             const instance = getInstanceByName(instanceName);
-            const existingForward = instance?.forwards.find(
-              (f) => f.name === forwardName,
-            );
-            if (!existingForward) {
-              return Response.json(
-                { error: "Forward not found" },
-                { status: 404 },
-              );
+            const existingForward = instance && instance.forwards[forwardIndex];
+            if (!existingForward || !instance) {
+              return Response.json({ error: "Forward not found" }, { status: 404 });
             }
 
-            upsertForward(instanceName, {
+            updateForwardByIndex(instanceName, forwardIndex, {
               ...existingForward,
-              name: forwardName,
+              name: existingForward.name,
               target: body.target_url ?? existingForward.target,
-              enabled:
-                body.enabled !== undefined
-                  ? Boolean(body.enabled)
-                  : existingForward.enabled,
+              enabled: body.enabled !== undefined ? Boolean(body.enabled) : existingForward.enabled,
               description:
                 body.description !== undefined
                   ? body.description
-                  : existingForward.description ?? null,
-              path:
-                body.path !== undefined ? body.path : existingForward.path ?? null,
+                  : (existingForward.description ?? null),
+              path: body.path !== undefined ? body.path : (existingForward.path ?? null),
               methods:
-                body.method !== undefined
-                  ? normalizeMethods(body.method)
-                  : existingForward.methods,
+                body.method !== undefined ? normalizeMethods(body.method) : existingForward.methods,
               headers:
                 body.custom_headers !== undefined
                   ? parseHeadersValue(body.custom_headers)
-                  : existingForward.headers ?? null,
+                  : (existingForward.headers ?? null),
             });
 
             refreshConfigCache();
             return Response.json({ success: true });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
         async DELETE(req) {
           try {
-            const { instanceName, forwardName } = parseForwardIdParam(
-              req.params.id,
-            );
-            const success = deleteForward(instanceName, forwardName);
+            const { instanceName, forwardIndex } = parseForwardIdParam(req.params.id);
+            const success = deleteForwardByIndex(instanceName, forwardIndex);
             if (!success) {
-              return Response.json(
-                { error: "Forward not found" },
-                { status: 404 },
-              );
+              return Response.json({ error: "Forward not found" }, { status: 404 });
             }
             refreshConfigCache();
             return Response.json({ success: true });
           } catch (error) {
-            return Response.json(
-              { success: false, error: String(error) },
-              { status: 500 },
-            );
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
@@ -1279,6 +1384,21 @@ export function startViewerServer(
           return; // 升级成功
         }
       }
+
+      // WebSocket 升级 - 处理统计数据流
+      if (url.pathname === "/stats") {
+        const upgraded = (
+          server.upgrade as unknown as (
+            req: Request,
+            options: { data: { type: string } },
+          ) => boolean
+        )(req, {
+          data: { type: "stats" },
+        });
+        if (upgraded) {
+          return; // 升级成功
+        }
+      }
     },
 
     websocket: {
@@ -1287,10 +1407,16 @@ export function startViewerServer(
 
         if (type === "logs") {
           logClients.add(ws);
-          console.log(`Log client connected (total: ${logClients.size})`);
+          log.info(`Log client connected (total: ${logClients.size})`);
+        } else if (type === "stats") {
+          statsClients.add(ws);
+          log.info(`Stats client connected (total: ${statsClients.size})`);
+          // 立即发送当前统计数据
+          const stats = forwardStatsManager.getAllStats();
+          ws.send(JSON.stringify({ type: "stats-update", stats }));
         } else {
           wsClients.add(ws);
-          console.log(`Request client connected (total: ${wsClients.size})`);
+          log.info(`Request client connected (total: ${wsClients.size})`);
         }
       },
       message(ws, message) {
@@ -1304,10 +1430,13 @@ export function startViewerServer(
 
         if (type === "logs") {
           logClients.delete(ws);
-          console.log(`Log client disconnected (total: ${logClients.size})`);
+          log.info(`Log client disconnected (total: ${logClients.size})`);
+        } else if (type === "stats") {
+          statsClients.delete(ws);
+          log.info(`Stats client disconnected (total: ${statsClients.size})`);
         } else {
           wsClients.delete(ws);
-          console.log(`Request client disconnected (total: ${wsClients.size})`);
+          log.info(`Request client disconnected (total: ${wsClients.size})`);
         }
       },
     },
@@ -1325,7 +1454,7 @@ export function startViewerServer(
   // 注意：由于 proxy-server 和 viewer-server 在不同进程，EventEmitter 不共享
   // 因此这个事件监听器只能捕获 viewer-server 自己创建的请求（实际上不会有）
   requestEvents.on("created", (request: LoggedRequest) => {
-    console.log("[Event] Received 'created' event for request:", request.id);
+    log.debug(`[Event] Received 'created' event for request: ${request.id}`);
     const formatted = formatProxyRequest(request);
     const message = JSON.stringify({
       type: "new-request",
@@ -1343,10 +1472,7 @@ export function startViewerServer(
     }
   });
 
-  // 使用 UDP 组播监听数据库变更（模拟 SQLite update_hook）
-  // 方案1：轮询（兜底方案）- 已移除，使用 UDP 通知
-  // 方案2：PRAGMA data_version - 已移除，使用 UDP 通知
-  // 方案3：UDP 组播通知（激进方案，真正的实时）
+  // 使用 BroadcastChannel 监听数据库变更（跨 worker 线程）
   let lastRequestId = 0;
 
   // 初始化 lastRequestId
@@ -1355,42 +1481,34 @@ export function startViewerServer(
     const result = query.get() as { maxId: number | null };
     lastRequestId = result.maxId || 0;
 
-    console.log(`[DbListener] Initialized lastRequestId: ${lastRequestId}`);
+    log.info(`[DbListener] Initialized lastRequestId: ${lastRequestId}`);
 
-    // 启动 UDP 监听器
+    // 启动 BroadcastChannel 监听器
     dbListener.start();
 
     // 监听 proxy_requests 表的 insert 事件
     dbListener.on("proxy_requests:insert", (notification) => {
-      console.log(
-        `[DbListener] Received insert notification for request #${notification.id}`,
-      );
+      log.debug(`[DbListener] Received insert notification for request #${notification.id}`);
 
       // 查询新请求
       const newRequests = getRequestsAfterId(lastRequestId);
 
       if (newRequests.length > 0) {
-        console.log(
-          `[DbListener] Broadcasting ${newRequests.length} new requests`,
-        );
+        log.debug(`[DbListener] Broadcasting ${newRequests.length} new requests`);
         broadcastNewRequests(newRequests);
       }
     });
 
     // 监听 proxy_requests 表的 update 事件
     dbListener.on("proxy_requests:update", (notification) => {
-      console.log(
-        `[DbListener] Received update notification for request #${notification.id}`,
-      );
+      log.debug(`[DbListener] Received update notification for request #${notification.id}`);
 
       // 查询更新后的请求
       const updatedRequest =
-        typeof notification.id === "number"
-          ? getProxyRequestById(notification.id)
-          : null;
+        typeof notification.id === "number" ? getProxyRequestById(notification.id) : null;
 
       if (updatedRequest) {
-        console.log(
+        log.debug(
           `[DbListener] Broadcasting update for request #${updatedRequest.id}, status: ${updatedRequest.status}`,
         );
         broadcastUpdatedRequest(updatedRequest);

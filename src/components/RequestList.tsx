@@ -16,11 +16,7 @@ import {
   type RequestData,
   type RequestStatus,
 } from "@/components/ProxyViewerContext";
-import {
-  formatBytes,
-  getMethodColor,
-  getStatusClass,
-} from "@/components/utils";
+import { formatBytes, getMethodColor, getStatusClass } from "@/components/utils";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -49,11 +45,7 @@ import {
   PaginationPrevious,
   PaginationNext,
 } from "@/components/ui/pagination";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AddForwardFromRequestDialog } from "@/components/AddForwardFromRequestDialog";
 
 const ITEMS_PER_PAGE = 50;
@@ -63,8 +55,7 @@ function StatusBadge({ status }: { status: RequestStatus }) {
   const configs = {
     pending: {
       variant: "secondary" as const,
-      className:
-        "bg-yellow-500/10 text-yellow-700 border-yellow-500/20 animate-pulse",
+      className: "bg-yellow-500/10 text-yellow-700 border-yellow-500/20 animate-pulse",
       icon: Loader2,
       label: "pending",
     },
@@ -94,9 +85,9 @@ function StatusBadge({ status }: { status: RequestStatus }) {
   return (
     <Badge
       variant={config.variant}
-      className={`text-xs flex items-center gap-1 ${config.className}`}
+      className={`flex items-center gap-1 text-xs ${config.className}`}
     >
-      <Icon className="w-3 h-3" />
+      <Icon className="h-3 w-3" />
       <span>{config.label}</span>
     </Badge>
   );
@@ -147,24 +138,12 @@ export function RequestList() {
           return false;
         }
       }
-      if (
-        filterUrl &&
-        !req.metadata.request.url
-          .toLowerCase()
-          .includes(filterUrl.toLowerCase())
-      ) {
+      if (filterUrl && !req.metadata.request.url.toLowerCase().includes(filterUrl.toLowerCase())) {
         return false;
       }
       return true;
     });
-  }, [
-    requests,
-    activeInstanceId,
-    activeRuleId,
-    filterMethod,
-    filterStatus,
-    filterUrl,
-  ]);
+  }, [requests, activeInstanceId, activeRuleId, filterMethod, filterStatus, filterUrl]);
 
   // Pagination
   const totalPages = Math.ceil(filteredRequests.length / ITEMS_PER_PAGE);
@@ -185,7 +164,7 @@ export function RequestList() {
   };
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Request Table */}
       <div className="flex-1 overflow-auto">
         {paginatedRequests.length === 0 ? (
@@ -217,9 +196,7 @@ export function RequestList() {
                 <ContextMenu key={req.id}>
                   <ContextMenuTrigger asChild>
                     <TableRow
-                      data-state={
-                        selectedId === req.id ? "selected" : undefined
-                      }
+                      data-state={selectedId === req.id ? "selected" : undefined}
                       onClick={() => selectRequest(req.id)}
                       className="cursor-pointer"
                     >
@@ -229,13 +206,13 @@ export function RequestList() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           {req.metadata.isWebSocket ? (
-                            <Badge className="bg-purple-500/10 text-purple-700 border-purple-500/20 text-xs flex items-center gap-1">
-                              <Cable className="w-3 h-3" />
+                            <Badge className="flex items-center gap-1 border-purple-500/20 bg-purple-500/10 text-xs text-purple-700">
+                              <Cable className="h-3 w-3" />
                               <span>WS</span>
                             </Badge>
                           ) : (
                             <Badge
-                              className={`${getMethodColor(req.metadata.request.method)} text-white border-0 text-xs`}
+                              className={`${getMethodColor(req.metadata.request.method)} border-0 text-xs text-white`}
                             >
                               {req.metadata.request.method}
                             </Badge>
@@ -249,13 +226,9 @@ export function RequestList() {
                         {req.metadata.response?.statusCode ? (
                           <Badge
                             variant={
-                              getStatusClass(
-                                req.metadata.response.statusCode,
-                              ) === "success"
+                              getStatusClass(req.metadata.response.statusCode) === "success"
                                 ? "default"
-                                : getStatusClass(
-                                      req.metadata.response.statusCode,
-                                    ) === "redirect"
+                                : getStatusClass(req.metadata.response.statusCode) === "redirect"
                                   ? "secondary"
                                   : "destructive"
                             }
@@ -264,35 +237,30 @@ export function RequestList() {
                             {req.metadata.response.statusCode}
                           </Badge>
                         ) : (
-                          <span className="text-xs text-muted-foreground">
-                            -
-                          </span>
+                          <span className="text-muted-foreground text-xs">-</span>
                         )}
                       </TableCell>
-                      <TableCell className="font-mono text-xs truncate max-w-[300px]">
+                      <TableCell className="max-w-[300px] truncate font-mono text-xs">
                         <Tooltip>
                           <TooltipTrigger>
                             {new URL(req.metadata.request.url).pathname}
                           </TooltipTrigger>
-                          <TooltipContent>
-                            {req.metadata.request.url}
-                          </TooltipContent>
+                          <TooltipContent>{req.metadata.request.url}</TooltipContent>
                         </Tooltip>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
+                      <TableCell className="text-muted-foreground text-xs">
                         {formatBytes(req.metadata.request.bodySize)}
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
+                      <TableCell className="text-muted-foreground text-xs">
                         {req.metadata.status === "streaming" ? (
-                          <span className="text-blue-600 font-medium animate-pulse">
-                            {formatBytes(req.metadata.response?.bodySize || 0)}{" "}
-                            ⚡
+                          <span className="animate-pulse font-medium text-blue-600">
+                            {formatBytes(req.metadata.response?.bodySize || 0)} ⚡
                           </span>
                         ) : (
                           formatBytes(req.metadata.response?.bodySize || 0)
                         )}
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
+                      <TableCell className="text-muted-foreground text-xs">
                         {req.metadata.duration}
                       </TableCell>
                     </TableRow>
@@ -302,7 +270,7 @@ export function RequestList() {
                       request={req}
                       trigger={
                         <ContextMenuItem className="flex items-center gap-2">
-                          <PlusCircle className="w-4 h-4" />
+                          <PlusCircle className="h-4 w-4" />
                           <span>添加到转发规则</span>
                         </ContextMenuItem>
                       }
@@ -312,21 +280,19 @@ export function RequestList() {
                       onClick={() => {
                         const fr = req.metadata.forwardRule;
                         if (fr?.id) {
-                          jumpToForwardRule(
-                            req.metadata.instanceId,
-                            fr.id,
-                          );
+                          jumpToForwardRule(req.metadata.instanceId, fr.id);
                         }
                       }}
                       className="flex items-center gap-2"
                     >
-                      <ArrowRightCircle className="w-4 h-4" />
+                      <ArrowRightCircle className="h-4 w-4" />
                       <span>跳转到转发规则</span>
                     </ContextMenuItem>
-                    <ContextMenuItem className="border-t mt-1 pt-1 flex items-center gap-2 text-destructive"
+                    <ContextMenuItem
+                      className="text-destructive mt-1 flex items-center gap-2 border-t pt-1"
                       onClick={() => deleteRequest(req.id)}
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="h-4 w-4" />
                       <span>删除请求</span>
                     </ContextMenuItem>
                   </ContextMenuContent>
@@ -350,14 +316,12 @@ export function RequestList() {
                     }
                   }}
                   className={
-                    currentPage === 1
-                      ? "pointer-events-none opacity-50"
-                      : "cursor-pointer"
+                    currentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"
                   }
                 />
               </PaginationItem>
               <PaginationItem>
-                <span className="text-sm text-muted-foreground px-4">
+                <span className="text-muted-foreground px-4 text-sm">
                   Page {currentPage} of {totalPages}
                 </span>
               </PaginationItem>
@@ -369,9 +333,7 @@ export function RequestList() {
                     }
                   }}
                   className={
-                    currentPage === totalPages
-                      ? "pointer-events-none opacity-50"
-                      : "cursor-pointer"
+                    currentPage === totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"
                   }
                 />
               </PaginationItem>

@@ -52,10 +52,7 @@ export function filterResponseProxyHeaders(
     const lowerCaseKey = key.toLowerCase();
 
     // 3. 核心过滤逻辑：如果头部是标准的逐跳头部，或在 'Connection' 头中被指定为逐跳，则跳过。
-    if (
-      HOP_BY_HOP_HEADERS.has(lowerCaseKey) ||
-      additionalHops.has(lowerCaseKey)
-    ) {
+    if (HOP_BY_HOP_HEADERS.has(lowerCaseKey) || additionalHops.has(lowerCaseKey)) {
       continue;
     }
 

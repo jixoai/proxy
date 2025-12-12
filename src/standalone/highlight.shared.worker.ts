@@ -1,16 +1,11 @@
 import { codeToHtml } from "shiki";
-import type {
-  HighlightRequest,
-  HighlightResponse,
-} from "../services/highlight.protocol";
+import type { HighlightRequest, HighlightResponse } from "../services/highlight.protocol";
 
 interface SharedWorkerGlobalScopeLike {
   onconnect: ((event: MessageEvent) => void) | null;
 }
 
-async function handleHighlight(
-  request: HighlightRequest,
-): Promise<HighlightResponse> {
+async function handleHighlight(request: HighlightRequest): Promise<HighlightResponse> {
   const { requestId, code, lang, theme } = request;
 
   try {

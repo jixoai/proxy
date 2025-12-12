@@ -8,9 +8,7 @@
  * @param headersJson JSON 字符串格式的 headers
  * @returns Content-Type 值，如果不存在则返回 null
  */
-export function extractContentTypeFromJson(
-  headersJson: string | null | undefined,
-): string | null {
+export function extractContentTypeFromJson(headersJson: string | null | undefined): string | null {
   if (!headersJson) return null;
   try {
     const headers = JSON.parse(headersJson) as Record<string, unknown>;
@@ -25,9 +23,7 @@ export function extractContentTypeFromJson(
  * @param headers Headers 对象
  * @returns Content-Type 值，如果不存在则返回 null
  */
-export function extractContentTypeFromHeaders(
-  headers: Record<string, unknown>,
-): string | null {
+export function extractContentTypeFromHeaders(headers: Record<string, unknown>): string | null {
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === "content-type") {
       const value = headers[key];
@@ -61,9 +57,7 @@ export function isTextLikeMime(mime: string | null | undefined): boolean {
  * @param contentType 完整的 Content-Type 字符串
  * @returns 纯 MIME 类型
  */
-export function extractMimeType(
-  contentType: string | null | undefined,
-): string | null {
+export function extractMimeType(contentType: string | null | undefined): string | null {
   if (!contentType) return null;
   return contentType.split(";")[0]?.trim() || null;
 }

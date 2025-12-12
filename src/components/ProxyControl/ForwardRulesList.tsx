@@ -1,42 +1,83 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import {
-  Empty,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-  EmptyContent,
-} from "@/components/ui/empty";
-import { ArrowRight } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyContent } from "@/components/ui/empty";
+import { ArrowRight, GripVertical } from "lucide-react";
 import { CreateForwardDialog } from "./CreateForwardDialog";
 import { ForwardRuleItem } from "./ForwardRuleItem";
-import type { ProxyForward } from "@/types/proxy";
+import type { ProxyForward, ProxyInstance } from "@/types/proxy";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
+import { normalizeForwardGroups, normalizePathname } from "@/lib/forward-utils";
+import { useForwardStats } from "@/hooks/useForwardStats";
 
 interface ForwardRulesListProps {
   instanceId: number;
+  instanceName: string;
   instanceHeaders?: string | null;
   focusedForwardId?: number | null;
 }
 
 export function ForwardRulesList({
   instanceId,
+  instanceName,
   instanceHeaders,
   focusedForwardId,
 }: ForwardRulesListProps) {
   const [forwards, setForwards] = useState<ProxyForward[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingOrder, setSavingOrder] = useState(false);
-  const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+  const [autoSortEnabled, setAutoSortEnabled] = useState(true);
+  const [draggingGroupIndex, setDraggingGroupIndex] = useState<number | null>(null);
+  const [draggingItemIndex, setDraggingItemIndex] = useState<{
+    groupIndex: number;
+    itemIndex: number;
+  } | null>(null);
   const itemRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const { clearControlFocus } = useProxyViewer();
+  const { getForwardGroupStats } = useForwardStats();
+
+  // 获取自动排序状态
+  useEffect(() => {
+    fetch("/api/auto-sort/status")
+      .then((res) => res.json())
+      .then((data) => setAutoSortEnabled(data.enabled))
+      .catch(console.error);
+  }, []);
+
+  const handleAutoSortToggle = async (enabled: boolean) => {
+    setAutoSortEnabled(enabled);
+    try {
+      await fetch("/api/auto-sort/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+    } catch (error) {
+      console.error("Failed to toggle auto-sort:", error);
+      setAutoSortEnabled(!enabled);
+    }
+  };
+
+  const buildGroups = (list: ProxyForward[]) => {
+    const grouped: Array<{ name: string; items: ProxyForward[] }> = [];
+    for (const item of list) {
+      const last = grouped.at(-1);
+      if (!last || last.name !== item.name) {
+        grouped.push({ name: item.name, items: [item] });
+      } else {
+        last.items.push(item);
+      }
+    }
+    return grouped;
+  };
 
   const loadForwards = async () => {
     try {
       const response = await fetch(`/api/instances/${instanceId}/forwards`);
       const data = await response.json();
-      setForwards(data);
+      setForwards(normalizeForwardGroups(data));
     } catch (error) {
       console.error("Failed to load forwards:", error);
     } finally {
@@ -51,38 +92,24 @@ export function ForwardRulesList({
 
   const handleAutoSort = async () => {
     if (forwards.length === 0) return;
-
-    const sorted = [...forwards].sort((a, b) => {
-      const aHasPath = !!(a.path && a.path.length > 0);
-      const bHasPath = !!(b.path && b.path.length > 0);
-
-      if (aHasPath && !bHasPath) return -1;
-      if (!aHasPath && bHasPath) return 1;
-
-      if (aHasPath && bHasPath) {
-        const aLen = a.path!.length;
-        const bLen = b.path!.length;
-        if (aLen !== bLen) return bLen - aLen;
-      }
-
-      return (a.id ?? 0) - (b.id ?? 0);
-    });
-
+    const sorted = normalizeForwardGroups(forwards);
     setForwards(sorted);
     await saveOrder(sorted);
   };
 
   const saveOrder = async (currentForwards: ProxyForward[]) => {
-    const orderedNames = currentForwards.map((f) => f.name);
+    const orderedIds = currentForwards
+      .map((f) => f.id)
+      .filter((id): id is number => typeof id === "number");
 
-    if (orderedNames.length === 0) return;
+    if (orderedIds.length === 0) return;
 
     setSavingOrder(true);
     try {
       const resp = await fetch(`/api/instances/${instanceId}/forwards/reorder`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order: orderedNames }),
+        body: JSON.stringify({ order: orderedIds }),
       });
       const data = await resp.json();
       if (!resp.ok || data.error) {
@@ -97,31 +124,65 @@ export function ForwardRulesList({
     }
   };
 
-  const handleDragStart = (index: number) => {
-    setDraggingIndex(index);
+  const groups = useMemo(() => buildGroups(forwards), [forwards]);
+
+  const handleGroupDragStart = (index: number) => {
+    setDraggingGroupIndex(index);
   };
 
-  const handleDragOver = (
-    event: React.DragEvent<HTMLDivElement>,
-    index: number,
-  ) => {
+  const handleGroupDragOver = (event: React.DragEvent<HTMLDivElement>, index: number) => {
     event.preventDefault();
-    if (draggingIndex === null || draggingIndex === index) return;
-
-    const fromIndex = draggingIndex;
+    if (draggingGroupIndex === null || draggingGroupIndex === index) return;
     setForwards((prev) => {
-      const next = [...prev];
-      const [moved] = next.splice(fromIndex, 1);
+      const prevGroups = buildGroups(prev);
+      const nextGroups = [...prevGroups];
+      const [moved] = nextGroups.splice(draggingGroupIndex, 1);
       if (!moved) return prev;
-      next.splice(index, 0, moved);
-      return next;
+      nextGroups.splice(index, 0, moved);
+      return nextGroups.flatMap((g) => g.items);
     });
-    setDraggingIndex(index);
+    setDraggingGroupIndex(index);
   };
 
-  const handleDragEnd = async () => {
-    if (draggingIndex === null) return;
-    setDraggingIndex(null);
+  const handleGroupDragEnd = async () => {
+    if (draggingGroupIndex === null) return;
+    setDraggingGroupIndex(null);
+    await saveOrder(forwards);
+  };
+
+  // 组内 item 拖动
+  const handleItemDragStart = (e: React.DragEvent, groupIndex: number, itemIndex: number) => {
+    e.stopPropagation();
+    setDraggingItemIndex({ groupIndex, itemIndex });
+  };
+
+  const handleItemDragOver = (e: React.DragEvent, groupIndex: number, itemIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!draggingItemIndex) return;
+    if (draggingItemIndex.groupIndex !== groupIndex) return;
+    if (draggingItemIndex.itemIndex === itemIndex) return;
+
+    setForwards((prev) => {
+      const prevGroups = buildGroups(prev);
+      const group = prevGroups[groupIndex];
+      if (!group) return prev;
+
+      const newItems = [...group.items];
+      const [moved] = newItems.splice(draggingItemIndex.itemIndex, 1);
+      if (!moved) return prev;
+      newItems.splice(itemIndex, 0, moved);
+
+      const newGroups = [...prevGroups];
+      newGroups[groupIndex] = { ...group, items: newItems };
+      return newGroups.flatMap((g) => g.items);
+    });
+    setDraggingItemIndex({ groupIndex, itemIndex });
+  };
+
+  const handleItemDragEnd = async () => {
+    if (!draggingItemIndex) return;
+    setDraggingItemIndex(null);
     await saveOrder(forwards);
   };
 
@@ -133,6 +194,20 @@ export function ForwardRulesList({
     }
   }, [focusedForwardId]);
 
+  const unreachableFlags = useMemo(() => {
+    const seen = new Map<string, string>();
+    const flags = new Map<number, boolean>();
+    forwards.forEach((forward) => {
+      if (forward.id == null) return;
+      const pathKey = normalizePathname(forward.path ?? "/");
+      const ownerName = seen.get(pathKey);
+      const unreachable = ownerName !== undefined && ownerName !== forward.name;
+      flags.set(forward.id, unreachable);
+      if (!ownerName) seen.set(pathKey, forward.name);
+    });
+    return flags;
+  }, [forwards]);
+
   if (loading) {
     return (
       <Card>
@@ -140,7 +215,7 @@ export function ForwardRulesList({
           <CardTitle className="text-base">转发规则</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-sm text-muted-foreground">加载中...</div>
+          <div className="text-muted-foreground text-sm">加载中...</div>
         </CardContent>
       </Card>
     );
@@ -149,16 +224,21 @@ export function ForwardRulesList({
   return (
     <Card>
       <CardHeader>
-        <div className="flex justify-between items-center">
+        <div className="flex items-center justify-between">
           <CardTitle className="text-base">转发规则</CardTitle>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Switch
+                id="auto-sort"
+                checked={autoSortEnabled}
+                onCheckedChange={handleAutoSortToggle}
+              />
+              <Label htmlFor="auto-sort" className="text-muted-foreground cursor-pointer text-xs">
+                智能排序
+              </Label>
+            </div>
             {forwards.length > 1 && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleAutoSort}
-                disabled={savingOrder}
-              >
+              <Button size="sm" variant="outline" onClick={handleAutoSort} disabled={savingOrder}>
                 自动排序
               </Button>
             )}
@@ -179,52 +259,100 @@ export function ForwardRulesList({
               <CreateForwardDialog
                 instanceId={instanceId}
                 trigger={
-                  <button className="text-sm text-primary hover:underline">
-                    添加第一条规则
-                  </button>
+                  <button className="text-primary text-sm hover:underline">添加第一条规则</button>
                 }
                 onCreated={loadForwards}
               />
             </EmptyContent>
           </Empty>
         ) : (
-          <div className="space-y-2">
-            {forwards.map((forward, index) => (
-              <div
-                key={forward.id}
-                ref={(el) => {
-                  if (forward.id != null && el) {
-                    itemRefs.current.set(forward.id, el);
-                  }
-                }}
-                draggable
-                onDragStart={() => handleDragStart(index)}
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragEnd={handleDragEnd}
-                onClick={() => {
-                  if (
-                    typeof focusedForwardId === "number" &&
-                    forward.id === focusedForwardId
-                  ) {
-                    clearControlFocus();
-                  }
-                }}
-                className={`rounded-lg border bg-card transition-opacity ${
-                  draggingIndex === index ? "opacity-60" : ""
-                }`}
-              >
-                <ForwardRuleItem
-                  forward={forward}
-                  onUpdate={loadForwards}
-                  highlighted={
-                    typeof focusedForwardId === "number" &&
-                    typeof forward.id === "number" &&
-                    forward.id === focusedForwardId
-                  }
-                  instanceHeaders={instanceHeaders}
-                />
-              </div>
-            ))}
+          <div className="space-y-3">
+            {groups.map((group, groupIndex) => {
+              const isMultiItemGroup = group.items.length > 1;
+              return (
+                <div
+                  key={`${group.name}-${groupIndex}`}
+                  onDragOver={(e) => {
+                    if (draggingGroupIndex !== null) {
+                      handleGroupDragOver(e, groupIndex);
+                    }
+                  }}
+                  onDragEnd={handleGroupDragEnd}
+                  className={`bg-card/50 rounded-lg border transition-all ${
+                    draggingGroupIndex === groupIndex ? "opacity-60" : ""
+                  }`}
+                >
+                  <div
+                    draggable
+                    onDragStart={() => handleGroupDragStart(groupIndex)}
+                    className="bg-muted/40 flex cursor-grab items-center gap-2 border-b px-3 py-2"
+                  >
+                    <GripVertical className="text-muted-foreground h-4 w-4" />
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <span>{group.name}</span>
+                      {isMultiItemGroup && (
+                        <span className="text-muted-foreground text-xs">
+                          同名规则为一组，失败自动在组内切换
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-2 p-2">
+                    {group.items.map((forward, itemIndex) => (
+                      <div
+                        key={forward.id}
+                        ref={(el) => {
+                          if (forward.id != null && el) {
+                            itemRefs.current.set(forward.id, el);
+                          }
+                        }}
+                        draggable={isMultiItemGroup}
+                        onDragStart={(e) =>
+                          isMultiItemGroup && handleItemDragStart(e, groupIndex, itemIndex)
+                        }
+                        onDragOver={(e) =>
+                          isMultiItemGroup && handleItemDragOver(e, groupIndex, itemIndex)
+                        }
+                        onDragEnd={handleItemDragEnd}
+                        onClick={() => {
+                          if (
+                            typeof focusedForwardId === "number" &&
+                            forward.id === focusedForwardId
+                          ) {
+                            clearControlFocus();
+                          }
+                        }}
+                        className={
+                          draggingItemIndex?.groupIndex === groupIndex &&
+                          draggingItemIndex?.itemIndex === itemIndex
+                            ? "opacity-60"
+                            : ""
+                        }
+                      >
+                        <ForwardRuleItem
+                          forward={forward}
+                          onUpdate={loadForwards}
+                          highlighted={
+                            typeof focusedForwardId === "number" &&
+                            typeof forward.id === "number" &&
+                            forward.id === focusedForwardId
+                          }
+                          instanceHeaders={instanceHeaders}
+                          unreachable={
+                            forward.id != null ? (unreachableFlags.get(forward.id) ?? false) : false
+                          }
+                          showName={false}
+                          showDragHandle={isMultiItemGroup}
+                          stats={
+                            getForwardGroupStats(instanceName, forward.name)[itemIndex] ?? null
+                          }
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </CardContent>

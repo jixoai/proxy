@@ -13,9 +13,7 @@ export function generateFetchCode(
   // via-proxy: 使用代理 URL (http://localhost:10001)
   // to-target: 使用目标 URL (https://api.deepseek.com)
   const targetUrl =
-    mode === "to-target" && request.metadata.targetUrl
-      ? request.metadata.targetUrl
-      : url;
+    mode === "to-target" && request.metadata.targetUrl ? request.metadata.targetUrl : url;
   const useHeaders =
     mode === "to-target" && request.metadata.forwardedHeaders
       ? request.metadata.forwardedHeaders
@@ -90,9 +88,7 @@ export function generateNodeFetchCode(
   // via-proxy: 使用代理 URL (http://localhost:10001)
   // to-target: 使用目标 URL (https://api.deepseek.com)
   const targetUrl =
-    mode === "to-target" && request.metadata.targetUrl
-      ? request.metadata.targetUrl
-      : url;
+    mode === "to-target" && request.metadata.targetUrl ? request.metadata.targetUrl : url;
   const useHeaders =
     mode === "to-target" && request.metadata.forwardedHeaders
       ? request.metadata.forwardedHeaders

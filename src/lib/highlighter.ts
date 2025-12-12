@@ -5,18 +5,10 @@ export interface HighlightValue {
   toHTML(): Promise<string>;
 }
 
-type TemplateValue =
-  | HighlightValue
-  | string
-  | number
-  | boolean
-  | null
-  | undefined;
+type TemplateValue = HighlightValue | string | number | boolean | null | undefined;
 type HighlightPart = string | HighlightValue;
 
-function isTemplateValueHighlight(
-  value: TemplateValue,
-): value is HighlightValue {
+function isTemplateValueHighlight(value: TemplateValue): value is HighlightValue {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -34,10 +26,7 @@ export function isHighlightValue(value: unknown): value is HighlightValue {
   );
 }
 
-function buildParts(
-  strings: TemplateStringsArray,
-  values: TemplateValue[],
-): HighlightPart[] {
+function buildParts(strings: TemplateStringsArray, values: TemplateValue[]): HighlightPart[] {
   const parts: HighlightPart[] = [];
   strings.forEach((segment, index) => {
     if (segment) parts.push(segment);
@@ -59,15 +48,9 @@ function flatten(parts: HighlightPart[]) {
   return parts.map((p) => (typeof p === "string" ? p : p.toString())).join("");
 }
 
-export function createHighlightTag(
-  language: string,
-  options: { theme?: string } = {},
-) {
+export function createHighlightTag(language: string, options: { theme?: string } = {}) {
   const theme = options.theme ?? "github-dark-default";
-  return (
-    strings: TemplateStringsArray,
-    ...values: TemplateValue[]
-  ): HighlightValue => {
+  return (strings: TemplateStringsArray, ...values: TemplateValue[]): HighlightValue => {
     const parts = buildParts(strings, values);
     const plain = flatten(parts);
     return {
@@ -75,11 +58,7 @@ export function createHighlightTag(
         return plain;
       },
       async toHTML() {
-        const response = await highlightWorkerService.highlight(
-          plain,
-          language,
-          theme,
-        );
+        const response = await highlightWorkerService.highlight(plain, language, theme);
         if (response.success) return response.html;
         throw new Error(response.error || "Highlight failed");
       },
@@ -128,10 +107,7 @@ export const PYTHON = createHighlightTag("python");
 export const PY = PYTHON;
 export const SQL = createHighlightTag("sql");
 
-export function html(
-  strings: TemplateStringsArray,
-  ...values: TemplateValue[]
-) {
+export function html(strings: TemplateStringsArray, ...values: TemplateValue[]) {
   const parts = buildParts(strings, values);
   return (text: string): HighlightValue => {
     return {

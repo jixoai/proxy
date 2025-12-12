@@ -106,7 +106,7 @@ describe("Proxy Server Error Handling", () => {
       "Test Forward",
       "http://localhost:7860/",
       1,
-      customHeaders
+      customHeaders,
     );
     const forwardId = Number(forwardResult.lastInsertRowid);
 
@@ -122,10 +122,12 @@ describe("Proxy Server Error Handling", () => {
     const requestId = "test-req-001";
     const timestamp = new Date().toISOString();
     const requestHeaders = JSON.stringify({ "user-agent": "test" });
-    const responseBody = Buffer.from(JSON.stringify({
-      error: "代理请求失败",
-      message: "ECONNREFUSED",
-    }));
+    const responseBody = Buffer.from(
+      JSON.stringify({
+        error: "代理请求失败",
+        message: "ECONNREFUSED",
+      }),
+    );
 
     const result = requestQuery.run(
       instanceId,
@@ -142,7 +144,7 @@ describe("Proxy Server Error Handling", () => {
       "Bad Gateway",
       JSON.stringify({}),
       responseBody,
-      responseBody.length
+      responseBody.length,
     );
 
     expect(Number(result.lastInsertRowid)).toBeGreaterThan(0);
@@ -174,7 +176,7 @@ describe("Proxy Server Error Handling", () => {
 
     const customHeaders = JSON.stringify({
       "x-api-key": "secret-key",
-      "Authorization": "Bearer token123",
+      Authorization: "Bearer token123",
     });
 
     const result = forwardQuery.run(
@@ -182,7 +184,7 @@ describe("Proxy Server Error Handling", () => {
       "API Forward",
       "http://api.example.com/",
       1,
-      customHeaders
+      customHeaders,
     );
 
     expect(Number(result.lastInsertRowid)).toBeGreaterThan(0);
@@ -224,10 +226,12 @@ describe("Proxy Server Error Handling", () => {
     ];
 
     errors.forEach((error, index) => {
-      const responseBody = Buffer.from(JSON.stringify({
-        error: "代理请求失败",
-        message: error.message,
-      }));
+      const responseBody = Buffer.from(
+        JSON.stringify({
+          error: "代理请求失败",
+          message: error.message,
+        }),
+      );
 
       requestQuery.run(
         instanceId,
@@ -243,13 +247,13 @@ describe("Proxy Server Error Handling", () => {
         "Bad Gateway",
         JSON.stringify({}),
         responseBody,
-        responseBody.length
+        responseBody.length,
       );
     });
 
     // 验证所有错误请求都被保存
     const countQuery = testDb.query(
-      "SELECT COUNT(*) as count FROM proxy_requests WHERE instance_id = ? AND status_code = 502"
+      "SELECT COUNT(*) as count FROM proxy_requests WHERE instance_id = ? AND status_code = 502",
     );
     const result = countQuery.get(instanceId) as any;
 

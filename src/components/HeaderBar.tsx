@@ -44,32 +44,28 @@ export function HeaderBar() {
 
   // 计算过滤后的请求数
   const filteredCount = requests.filter((req) => {
-    if (filterMethod && req.metadata.request.method !== filterMethod)
-      return false;
+    if (filterMethod && req.metadata.request.method !== filterMethod) return false;
     if (filterStatus) {
       const statusCode = req.metadata.response?.statusCode?.toString() || "";
       if (statusCode !== filterStatus) return false;
     }
-    if (
-      filterUrl &&
-      !req.metadata.request.url.toLowerCase().includes(filterUrl.toLowerCase())
-    )
+    if (filterUrl && !req.metadata.request.url.toLowerCase().includes(filterUrl.toLowerCase()))
       return false;
     return true;
   }).length;
 
   return (
     <header className="bg-card w-full">
-      <div className="flex items-center justify-between mb-3">
+      <div className="mb-3 flex items-center justify-between">
         <div>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             {filteredCount} / {requests.length} requests
           </p>
         </div>
         <div className="flex items-center gap-2">
           {wsConnected && (
             <span className="inline-flex items-center gap-1 text-xs text-green-500">
-              <Radio className="w-3 h-3 animate-pulse" />
+              <Radio className="h-3 w-3 animate-pulse" />
               Live
             </span>
           )}
@@ -81,13 +77,13 @@ export function HeaderBar() {
             {livePush ? "Push ON" : "Push OFF"}
           </Button>
           <Button variant="outline" size="sm" onClick={() => loadRequests()}>
-            <RefreshCw className="w-4 h-4 mr-1" />
+            <RefreshCw className="mr-1 h-4 w-4" />
             Refresh
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="destructive" size="sm">
-                <Trash2 className="w-4 h-4 mr-1" />
+                <Trash2 className="mr-1 h-4 w-4" />
                 Clear All
               </Button>
             </AlertDialogTrigger>
@@ -100,9 +96,7 @@ export function HeaderBar() {
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction onClick={handleClearAll}>
-                  确认清空
-                </AlertDialogAction>
+                <AlertDialogAction onClick={handleClearAll}>确认清空</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -200,7 +194,7 @@ export function HeaderBar() {
               setCurrentPage(1);
             }}
           >
-            <X className="w-4 h-4 mr-1" />
+            <X className="mr-1 h-4 w-4" />
             Clear Filters
           </Button>
         )}

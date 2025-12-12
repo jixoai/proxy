@@ -24,7 +24,7 @@ export function ProxyControl() {
   } = useProxyViewer();
 
   const [reloadLoading, setReloadLoading] = useState(false);
-  const [watching, setWatching] = useState(false);
+  const [watching, setWatching] = useState(true); // 默认开启
   const [watchLoading, setWatchLoading] = useState(false);
   const [lastReloadMessage, setLastReloadMessage] = useState<string | null>(null);
 
@@ -55,6 +55,8 @@ export function ProxyControl() {
             ? `重载完成：成功 ${successCount} 个，失败 ${failCount} 个`
             : `已重载 ${successCount} 个实例`,
         );
+        // 刷新实例列表以反映配置文件的变更
+        await reloadInstances();
       } else {
         setLastReloadMessage(data.error || "重载失败");
       }
@@ -98,7 +100,7 @@ export function ProxyControl() {
           <Button onClick={handleReload} disabled={reloadLoading}>
             {reloadLoading ? "重载中..." : "重载配置"}
           </Button>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="text-muted-foreground flex items-center gap-2 text-sm">
             <Switch
               checked={watching}
               disabled={watchLoading}
@@ -106,13 +108,11 @@ export function ProxyControl() {
             />
             <span>自动监听配置文件</span>
           </div>
-          {instances.length > 0 && (
-            <CreateInstanceDialog onCreated={reloadInstances} />
-          )}
+          {instances.length > 0 && <CreateInstanceDialog onCreated={reloadInstances} />}
         </div>
       </div>
       {lastReloadMessage && (
-        <div className="text-xs text-muted-foreground">{lastReloadMessage}</div>
+        <div className="text-muted-foreground text-xs">{lastReloadMessage}</div>
       )}
 
       {instances.length === 0 ? (
@@ -122,15 +122,10 @@ export function ProxyControl() {
               <Server />
             </EmptyMedia>
             <EmptyTitle>暂无代理实例</EmptyTitle>
-            <EmptyDescription>
-              创建第一个代理实例开始使用 Proxy Viewer
-            </EmptyDescription>
+            <EmptyDescription>创建第一个代理实例开始使用 Proxy Viewer</EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <CreateInstanceDialog
-              trigger={<Button>创建实例</Button>}
-              onCreated={reloadInstances}
-            />
+            <CreateInstanceDialog trigger={<Button>创建实例</Button>} onCreated={reloadInstances} />
           </EmptyContent>
         </Empty>
       ) : (

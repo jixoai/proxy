@@ -11,9 +11,7 @@ export type HighlightResponse =
   | { success: true; requestId: number; html: string }
   | { success: false; requestId: number; error: string };
 
-self.onmessage = async (
-  event: MessageEvent<HighlightRequest>
-): Promise<void> => {
+self.onmessage = async (event: MessageEvent<HighlightRequest>): Promise<void> => {
   const { requestId, code, lang, theme } = event.data;
 
   try {

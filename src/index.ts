@@ -38,9 +38,7 @@ const server = startViewerServer(manager, PORT);
 
 // 优雅退出处理
 const shutdown = async () => {
-  console.log(
-    "\n\n[Shutdown] Received shutdown signal, gracefully shutting down...",
-  );
+  console.log("\n\n[Shutdown] Received shutdown signal, gracefully shutting down...");
 
   try {
     // 停止所有代理实例

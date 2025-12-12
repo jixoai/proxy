@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-  BodyViewerPlugin,
-  Content,
-  PluginContext,
-} from "@/contexts/BodyViewerPlugin";
+import type { BodyViewerPlugin, Content, PluginContext } from "@/contexts/BodyViewerPlugin";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import type {
   EventStreamMessage,
   ConverterInstance,
@@ -53,7 +56,10 @@ function EventStreamViewerPanel({ content, ctx }: { content: Content; ctx: Plugi
     [content.value],
   );
 
-  const initialConfigRef = useRef<{ converters: ConverterInstance[]; visibility?: StepVisibilityMap } | null>(null);
+  const initialConfigRef = useRef<{
+    converters: ConverterInstance[];
+    visibility?: StepVisibilityMap;
+  } | null>(null);
   if (initialConfigRef.current === null) {
     initialConfigRef.current = (ctx.getConfig?.() as any) ?? null;
   }
@@ -178,7 +184,8 @@ function EventStreamViewerPanel({ content, ctx }: { content: Content; ctx: Plugi
 
   const handleEditorSave = () => {
     if (!editorState) return;
-    const name = editorState.name.trim() || (editorState.mode === "expression" ? "JS 表达式" : "JS 转换器");
+    const name =
+      editorState.name.trim() || (editorState.mode === "expression" ? "JS 表达式" : "JS 转换器");
     const code = editorState.code;
     if (editorState.targetId) {
       setConverters((prev) =>
@@ -224,10 +231,10 @@ function EventStreamViewerPanel({ content, ctx }: { content: Content; ctx: Plugi
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-medium flex items-center gap-2">
+          <p className="flex items-center gap-2 text-sm font-medium">
             <Workflow className="size-4" /> Event Stream ({messages.length})
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             管线对每条 message 生效；转换器可返回高亮对象，自由组合展示
           </p>
         </div>
@@ -260,9 +267,7 @@ function EventStreamViewerPanel({ content, ctx }: { content: Content; ctx: Plugi
       <Dialog open={!!editorState} onOpenChange={(open) => !open && setEditorState(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>
-              {editorState?.targetId ? "编辑转换器" : "新增转换器"}
-            </DialogTitle>
+            <DialogTitle>{editorState?.targetId ? "编辑转换器" : "新增转换器"}</DialogTitle>
             <DialogDescription>
               {editorState?.mode === "expression"
                 ? "JS 表达式会被包装成 export async function transform(text, json, context) { return (EXPR); }"
@@ -279,9 +284,7 @@ function EventStreamViewerPanel({ content, ctx }: { content: Content; ctx: Plugi
                   id="conv-name"
                   value={editorState.name}
                   onChange={(event) =>
-                    setEditorState((prev) =>
-                      prev ? { ...prev, name: event.target.value } : prev,
-                    )
+                    setEditorState((prev) => (prev ? { ...prev, name: event.target.value } : prev))
                   }
                 />
               </div>
@@ -294,9 +297,7 @@ function EventStreamViewerPanel({ content, ctx }: { content: Content; ctx: Plugi
                   className="min-h-[220px] font-mono text-xs"
                   value={editorState.code}
                   onChange={(event) =>
-                    setEditorState((prev) =>
-                      prev ? { ...prev, code: event.target.value } : prev,
-                    )
+                    setEditorState((prev) => (prev ? { ...prev, code: event.target.value } : prev))
                   }
                 />
               </div>

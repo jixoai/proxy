@@ -21,11 +21,7 @@ interface CreateForwardDialogProps {
   onCreated: () => void;
 }
 
-export function CreateForwardDialog({
-  instanceId,
-  trigger,
-  onCreated,
-}: CreateForwardDialogProps) {
+export function CreateForwardDialog({ instanceId, trigger, onCreated }: CreateForwardDialogProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -83,12 +79,12 @@ export function CreateForwardDialog({
       <DialogTrigger asChild>
         {trigger || (
           <Button size="sm" variant="outline">
-            <Plus className="w-3 h-3 mr-1" />
+            <Plus className="mr-1 h-3 w-3" />
             添加转发
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="sm:max-w-2xl p-2 *:p-4">
+      <DialogContent className="p-2 *:p-4 sm:max-w-2xl">
         <form onSubmit={handleSubmit} className="flex h-full flex-col">
           <DialogHeader>
             <DialogTitle>添加转发规则</DialogTitle>
@@ -97,11 +93,8 @@ export function CreateForwardDialog({
           <ScrollArea className="max-h-[65vh] overflow-y-auto p-2!">
             <div className="space-y-4 p-2">
               <div className="space-y-2">
-                <Label
-                  htmlFor="forward-name"
-                  className="flex items-center gap-2"
-                >
-                  <Tag className="w-3.5 h-3.5" />
+                <Label htmlFor="forward-name" className="flex items-center gap-2">
+                  <Tag className="h-3.5 w-3.5" />
                   规则名称
                 </Label>
                 <Input
@@ -120,9 +113,8 @@ export function CreateForwardDialog({
                   onChange={(e) => setMethod(e.target.value)}
                   placeholder="* 或 GET,POST"
                 />
-                <p className="text-xs text-muted-foreground">
-                  留空或输入 * 表示匹配所有方法；支持使用逗号分隔多个方法，例如
-                  GET,POST。
+                <p className="text-muted-foreground text-xs">
+                  留空或输入 * 表示匹配所有方法；支持使用逗号分隔多个方法，例如 GET,POST。
                 </p>
               </div>
               <div className="space-y-2">
@@ -142,13 +134,13 @@ export function CreateForwardDialog({
                   onChange={(e) => setPath(e.target.value)}
                   placeholder="/api 或 /v1"
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   按路径前缀匹配请求，留空时作为默认规则。
                 </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="target-url" className="flex items-center gap-2">
-                  <LinkIcon className="w-3.5 h-3.5" />
+                  <LinkIcon className="h-3.5 w-3.5" />
                   目标 URL
                 </Label>
                 <Input
@@ -160,19 +152,12 @@ export function CreateForwardDialog({
                   required
                 />
               </div>
-              <CustomHeadersInput
-                value={customHeaders}
-                onChange={setCustomHeaders}
-              />
-              {error && <div className="text-sm text-destructive">{error}</div>}
+              <CustomHeadersInput value={customHeaders} onChange={setCustomHeaders} />
+              {error && <div className="text-destructive text-sm">{error}</div>}
             </div>
           </ScrollArea>
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-            >
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
             <Button type="submit" disabled={loading}>

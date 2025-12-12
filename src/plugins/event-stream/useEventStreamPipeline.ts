@@ -17,9 +17,7 @@ export function useEventStreamPipeline(
   messages: EventStreamMessage[],
   converters: ConverterInstance[],
 ) {
-  const [messageStates, setMessageStates] = useState<
-    Record<number, MessagePipelineState>
-  >({});
+  const [messageStates, setMessageStates] = useState<Record<number, MessagePipelineState>>({});
 
   const executePipeline = useCallback(
     async (message: EventStreamMessage) => {
@@ -71,9 +69,7 @@ export function useEventStreamPipeline(
             error: error instanceof Error ? error.message : String(error),
             value: current,
           });
-          const pipelineError = new Error(
-            (error as Error)?.message || "转换失败",
-          );
+          const pipelineError = new Error((error as Error)?.message || "转换失败");
           (pipelineError as any).steps = steps.slice();
           throw pipelineError;
         }

@@ -20,11 +20,7 @@ const HighlighterInner = ({
   className = "",
   style = {},
 }: HighlighterProps) => {
-  const { highlightedHTML, highlighting, error } = useHighlightWorker(
-    code,
-    language,
-    theme,
-  );
+  const { highlightedHTML, highlighting, error } = useHighlightWorker(code, language, theme);
 
   // 使用 useMemo 缓存渲染结果，避免不必要的重新渲染
   const renderedContent = useMemo(() => {
@@ -32,7 +28,7 @@ const HighlighterInner = ({
       return (
         <div
           dangerouslySetInnerHTML={{ __html: highlightedHTML }}
-          className={`*:p-2 shiki-container ${className} *:whitespace-break-spaces **:text-xs`}
+          className={`shiki-container *:p-2 ${className} *:whitespace-break-spaces **:text-xs`}
           style={{ margin: 0, fontSize: "0.875rem", ...style }}
         />
       );
@@ -40,13 +36,13 @@ const HighlighterInner = ({
     return (
       <div className={`bg-muted relative ${className}`} style={style}>
         {error ? (
-          <div className="bg-destructive/10 text-destructive text-xs px-3 py-2 border-b border-destructive/20">
+          <div className="bg-destructive/10 text-destructive border-destructive/20 border-b px-3 py-2 text-xs">
             Highlight failed: {error}
           </div>
         ) : highlighting ? (
           <div className="absolute inset-0">
-            <div className="flex flex-row items-center justify-center gap-2 mt-1 text-muted-foreground">
-              <LoaderCircle className="animate-spin size-4" />
+            <div className="text-muted-foreground mt-1 flex flex-row items-center justify-center gap-2">
+              <LoaderCircle className="size-4 animate-spin" />
               <span className="text-xs">Highlighting code...</span>
             </div>
           </div>

@@ -106,20 +106,17 @@ export function EditForwardDialog({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="sm:max-w-2xl p-2 *:p-4">
+      <DialogContent className="p-2 *:p-4 sm:max-w-2xl">
         <form onSubmit={handleSubmit} className="flex h-full flex-col">
           <DialogHeader>
             <DialogTitle>编辑转发规则</DialogTitle>
             <DialogDescription>修改转发配置</DialogDescription>
           </DialogHeader>
           <ScrollArea className="max-h-[65vh] overflow-y-auto p-2!">
-            <div className="space-y-4  p-2">
+            <div className="space-y-4 p-2">
               <div className="space-y-2">
-                <Label
-                  htmlFor="edit-forward-name"
-                  className="flex items-center gap-2"
-                >
-                  <Tag className="w-3.5 h-3.5" />
+                <Label htmlFor="edit-forward-name" className="flex items-center gap-2">
+                  <Tag className="h-3.5 w-3.5" />
                   规则名称
                 </Label>
                 <Input
@@ -138,14 +135,12 @@ export function EditForwardDialog({
                   onChange={(e) => setMethod(e.target.value)}
                   placeholder="* 或 GET,POST"
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   留空或输入 * 表示匹配所有方法；支持使用逗号分隔的多种方法。
                 </p>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="edit-forward-description">
-                  规则描述（可选）
-                </Label>
+                <Label htmlFor="edit-forward-description">规则描述（可选）</Label>
                 <Input
                   id="edit-forward-description"
                   value={description}
@@ -161,16 +156,13 @@ export function EditForwardDialog({
                   onChange={(e) => setPath(e.target.value)}
                   placeholder="/api 或 /v1"
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   按路径前缀匹配请求，留空时作为默认规则。
                 </p>
               </div>
               <div className="space-y-2">
-                <Label
-                  htmlFor="edit-target-url"
-                  className="flex items-center gap-2"
-                >
-                  <LinkIcon className="w-3.5 h-3.5" />
+                <Label htmlFor="edit-target-url" className="flex items-center gap-2">
+                  <LinkIcon className="h-3.5 w-3.5" />
                   目标 URL
                 </Label>
                 <Input
@@ -183,16 +175,13 @@ export function EditForwardDialog({
                 />
               </div>
               {instanceHeaderEntries.length > 0 && (
-                <div className="rounded-md border bg-muted/40 p-3 text-xs">
-                  <div className="text-sm font-medium text-muted-foreground mb-2">
+                <div className="bg-muted/40 rounded-md border p-3 text-xs">
+                  <div className="text-muted-foreground mb-2 text-sm font-medium">
                     实例全局 Headers（只读）
                   </div>
                   <div className="space-y-1 font-mono">
                     {instanceHeaderEntries.map(([key, value]) => (
-                      <div
-                        key={key}
-                        className="flex items-center justify-between gap-2"
-                      >
+                      <div key={key} className="flex items-center justify-between gap-2">
                         <span className="text-muted-foreground">{key}</span>
                         <span className="text-right break-all">{value}</span>
                       </div>
@@ -200,19 +189,12 @@ export function EditForwardDialog({
                   </div>
                 </div>
               )}
-              <CustomHeadersInput
-                value={customHeaders}
-                onChange={setCustomHeaders}
-              />
-              {error && <div className="text-sm text-destructive">{error}</div>}
+              <CustomHeadersInput value={customHeaders} onChange={setCustomHeaders} />
+              {error && <div className="text-destructive text-sm">{error}</div>}
             </div>
           </ScrollArea>
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-            >
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
             <Button type="submit" disabled={loading}>

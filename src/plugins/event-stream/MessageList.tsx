@@ -4,11 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Copy } from "lucide-react";
-import type {
-  EventStreamMessage,
-  MessagePipelineState,
-  StepVisibilityMap,
-} from "./types";
+import type { EventStreamMessage, MessagePipelineState, StepVisibilityMap } from "./types";
 import { StepOutput } from "./StepOutput";
 
 interface MessageListProps {
@@ -18,25 +14,20 @@ interface MessageListProps {
   onCopyMessage(message: EventStreamMessage): void;
 }
 
-export function MessageList({
-  messages,
-  states,
-  visibility,
-  onCopyMessage,
-}: MessageListProps) {
+export function MessageList({ messages, states, visibility, onCopyMessage }: MessageListProps) {
   return (
     <div className="rounded-lg border">
       <ScrollArea className="max-h-[70vh] overflow-y-auto">
         <div className="divide-y">
           {messages.length === 0 && (
-            <div className="py-6 text-center text-xs text-muted-foreground">
+            <div className="text-muted-foreground py-6 text-center text-xs">
               没有可解析的 event-stream 消息
             </div>
           )}
           {messages.map((message, index) => {
             const state = states[index];
             return (
-              <div key={message.index} className="p-3 space-y-2">
+              <div key={message.index} className="space-y-2 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="outline" className="text-[10px] uppercase">
@@ -45,12 +36,10 @@ export function MessageList({
                     {message.event ? (
                       <Badge variant="secondary">{message.event}</Badge>
                     ) : (
-                      <span className="text-xs text-muted-foreground">
-                        (event)
-                      </span>
+                      <span className="text-muted-foreground text-xs">(event)</span>
                     )}
                     {message.id && (
-                      <span className="text-[11px] text-muted-foreground truncate">
+                      <span className="text-muted-foreground truncate text-[11px]">
                         id: {message.id}
                       </span>
                     )}
@@ -89,22 +78,18 @@ export function MessageList({
                 </div>
 
                 {state?.status === "running" && (
-                  <p className="text-xs text-muted-foreground">
-                    正在套用转换器…
-                  </p>
+                  <p className="text-muted-foreground text-xs">正在套用转换器…</p>
                 )}
 
                 {state?.status === "error" && state.error && (
                   <Alert variant="destructive">
                     <AlertTitle>转换失败</AlertTitle>
-                    <AlertDescription className="text-xs">
-                      {state.error}
-                    </AlertDescription>
+                    <AlertDescription className="text-xs">{state.error}</AlertDescription>
                   </Alert>
                 )}
 
                 {state?.steps?.length ? (
-                  <div className="rounded-md border bg-muted/40 p-2 space-y-2">
+                  <div className="bg-muted/40 space-y-2 rounded-md border p-2">
                     {state.steps.map((step, stepIndex) => {
                       const hidden =
                         step.instanceId === "raw"
@@ -113,16 +98,14 @@ export function MessageList({
                       if (hidden) return null;
                       return (
                         <div key={`${message.index}-${step.instanceId}`}>
-                          <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-1">
+                          <div className="text-muted-foreground mb-1 flex items-center justify-between text-[11px]">
                             <span>
-                              {stepIndex === 0
-                                ? "原始数据"
-                                : `${stepIndex}. ${step.name}`}
+                              {stepIndex === 0 ? "原始数据" : `${stepIndex}. ${step.name}`}
                             </span>
                             <span>{step.durationMs.toFixed(2)} ms</span>
                           </div>
                           <div
-                            className={`rounded border overflow-hidden ${
+                            className={`overflow-hidden rounded border ${
                               step.success
                                 ? "bg-background/80"
                                 : "bg-destructive/5 text-destructive border-destructive/40"
@@ -130,24 +113,14 @@ export function MessageList({
                           >
                             {step.error ? (
                               <>
-                                <p className="text-[11px] font-semibold mb-1">
-                                  {step.error}
-                                </p>
-                                <StepOutput
-                                  value={step.value}
-                                  className="*:p-2"
-                                />
+                                <p className="mb-1 text-[11px] font-semibold">{step.error}</p>
+                                <StepOutput value={step.value} className="*:p-2" />
                               </>
                             ) : (
-                              <StepOutput
-                                value={step.value}
-                                className="*:p-2"
-                              />
+                              <StepOutput value={step.value} className="*:p-2" />
                             )}
                           </div>
-                          {stepIndex !== state.steps.length - 1 && (
-                            <Separator className="my-2" />
-                          )}
+                          {stepIndex !== state.steps.length - 1 && <Separator className="my-2" />}
                         </div>
                       );
                     })}

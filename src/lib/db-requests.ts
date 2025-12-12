@@ -101,23 +101,25 @@ export function createProxyRequest(request: Omit<LoggedRequest, "id">): number {
 }
 
 export function getProxyRequestById(id: number): LoggedRequest | null {
-  const row = db
-    .query("SELECT id, data FROM proxy_requests WHERE id = ?")
-    .get(id) as { id: number; data: string } | null;
+  const row = db.query("SELECT id, data FROM proxy_requests WHERE id = ?").get(id) as {
+    id: number;
+    data: string;
+  } | null;
   if (!row) return null;
   return deserializeRequest(row);
 }
 
 export function getRequestsAfterId(lastId: number): LoggedRequest[] {
   const rows = db
-    .query(
-      "SELECT id, data FROM proxy_requests WHERE id > ? ORDER BY id ASC",
-    )
+    .query("SELECT id, data FROM proxy_requests WHERE id > ? ORDER BY id ASC")
     .all(lastId) as Array<{ id: number; data: string }>;
   return rows.map(deserializeRequest);
 }
 
-export function getAllRequests(filters?: ProxyRequestFilters, pagination?: ProxyRequestPagination): LoggedRequest[] {
+export function getAllRequests(
+  filters?: ProxyRequestFilters,
+  pagination?: ProxyRequestPagination,
+): LoggedRequest[] {
   const where: string[] = [];
   const params: any[] = [];
 
@@ -180,12 +182,13 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
     ...existing,
     ...updates,
     request: { ...existing.request, ...(updates as LoggedRequest).request },
-    response: updates.response
-      ? { ...existing.response, ...updates.response }
-      : existing.response,
+    response: updates.response ? { ...existing.response, ...updates.response } : existing.response,
     group_name:
       updates.group_name ??
-      coerceGroupName(updates.instance_name ?? existing.instance_name, updates.forward_name ?? existing.forward_name),
+      coerceGroupName(
+        updates.instance_name ?? existing.instance_name,
+        updates.forward_name ?? existing.forward_name,
+      ),
   };
 
   const data = serializeRequest(merged);
@@ -193,14 +196,7 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
     .query(
       "UPDATE proxy_requests SET timestamp = ?, instance_name = ?, forward_name = ?, group_name = ?, data = ? WHERE id = ?",
     )
-    .run(
-      merged.timestamp,
-      merged.instance_name,
-      merged.forward_name,
-      merged.group_name,
-      data,
-      id,
-    );
+    .run(merged.timestamp, merged.instance_name, merged.forward_name, merged.group_name, data, id);
 
   if (result.changes > 0) {
     const updated = getProxyRequestById(id);
@@ -213,14 +209,21 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
   return false;
 }
 
-export function appendResponseBody(id: number, chunk: Buffer, contentType?: string | null): boolean {
+export function appendResponseBody(
+  id: number,
+  chunk: Buffer,
+  contentType?: string | null,
+): boolean {
   const existing = getProxyRequestById(id);
   if (!existing) return false;
   const prev = existing.response?.bodyDataUrl
     ? dataUrlToBuffer(existing.response.bodyDataUrl).buffer
     : Buffer.alloc(0);
   const nextBuffer = Buffer.concat([prev, chunk]);
-  const nextDataUrl = bufferToDataUrl(nextBuffer, contentType ?? existing.response?.contentType ?? undefined);
+  const nextDataUrl = bufferToDataUrl(
+    nextBuffer,
+    contentType ?? existing.response?.contentType ?? undefined,
+  );
   const response = existing.response ?? {
     statusCode: null,
     statusMessage: null,
@@ -251,14 +254,10 @@ export function createWebSocketMessage(params: {
   timestamp?: string;
 }): number {
   const messageBuffer =
-    typeof params.message === "string"
-      ? Buffer.from(params.message, "utf-8")
-      : params.message;
+    typeof params.message === "string" ? Buffer.from(params.message, "utf-8") : params.message;
   const messageDataUrl = bufferToDataUrl(
     messageBuffer,
-    typeof params.message === "string"
-      ? "text/plain;charset=utf-8"
-      : "application/octet-stream",
+    typeof params.message === "string" ? "text/plain;charset=utf-8" : "application/octet-stream",
   );
 
   return createProxyRequest({

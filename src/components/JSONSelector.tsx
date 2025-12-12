@@ -107,14 +107,11 @@ export function JSONSelector() {
           id: "json-selector",
           icon:
             jsonObjects.length === 1 ? (
-              <Braces className="w-5 h-5" />
+              <Braces className="h-5 w-5" />
             ) : (
-              <Layers className="w-5 h-5" />
+              <Layers className="h-5 w-5" />
             ),
-          text:
-            jsonObjects.length === 1
-              ? "JSON detected"
-              : `${jsonObjects.length} JSONs detected`,
+          text: jsonObjects.length === 1 ? "JSON detected" : `${jsonObjects.length} JSONs detected`,
           subtext: "Click to view",
           onClick: () => {
             setDialogJSONSnapshot([...jsonObjects]);

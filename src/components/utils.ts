@@ -59,16 +59,23 @@ export function parseMarkdownHeaders(markdown: string): Record<string, string> {
   return headers;
 }
 
-export function detectContentType(headers: Record<string, string>, body: string): {
+export function detectContentType(
+  headers: Record<string, string>,
+  body: string,
+): {
   type: "json" | "html" | "css" | "javascript" | "xml" | "image" | "text";
   language: string;
 } {
   const contentType = headers["content-type"]?.toLowerCase() || "";
 
-  if (contentType.includes("json") || (body.trim().startsWith("{") || body.trim().startsWith("["))) {
+  if (contentType.includes("json") || body.trim().startsWith("{") || body.trim().startsWith("[")) {
     return { type: "json", language: "json" };
   }
-  if (contentType.includes("html") || body.trim().startsWith("<!DOCTYPE") || body.trim().startsWith("<html")) {
+  if (
+    contentType.includes("html") ||
+    body.trim().startsWith("<!DOCTYPE") ||
+    body.trim().startsWith("<html")
+  ) {
     return { type: "html", language: "html" };
   }
   if (contentType.includes("css")) {

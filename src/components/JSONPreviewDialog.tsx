@@ -1,10 +1,5 @@
 import { useState, useTransition, useEffect } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Highlighter } from "@/components/Highlighter";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
@@ -19,8 +14,7 @@ function tryFormatJSON(str: string): string {
 }
 
 export function JSONPreviewDialog() {
-  const { jsonDialogOpen, setJsonDialogOpen, dialogJSONSnapshot } =
-    useProxyViewer();
+  const { jsonDialogOpen, setJsonDialogOpen, dialogJSONSnapshot } = useProxyViewer();
   const [activeTab, setActiveTab] = useState("0");
   const [isPending, startTransition] = useTransition();
 
@@ -39,7 +33,7 @@ export function JSONPreviewDialog() {
 
   return (
     <Dialog open={jsonDialogOpen} onOpenChange={setJsonDialogOpen}>
-      <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+      <DialogContent className="flex max-h-[80vh] max-w-4xl flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>
             {dialogJSONSnapshot.length === 1
@@ -56,19 +50,11 @@ export function JSONPreviewDialog() {
               className="rounded-lg"
             />
           ) : dialogJSONSnapshot.length > 1 ? (
-            <Tabs
-              value={activeTab}
-              onValueChange={handleTabChange}
-              className="w-full"
-            >
-              <ScrollArea className="py-2 sticky top-0 z-10 backdrop-blur-xs">
-                <TabsList className="inline-flex space-x-1 w-auto min-w-full justify-start">
+            <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+              <ScrollArea className="sticky top-0 z-10 py-2 backdrop-blur-xs">
+                <TabsList className="inline-flex w-auto min-w-full justify-start space-x-1">
                   {dialogJSONSnapshot.map((_, index) => (
-                    <TabsTrigger
-                      key={index}
-                      value={String(index)}
-                      disabled={isPending}
-                    >
+                    <TabsTrigger key={index} value={String(index)} disabled={isPending}>
                       {index + 1}
                     </TabsTrigger>
                   ))}
@@ -77,7 +63,7 @@ export function JSONPreviewDialog() {
               </ScrollArea>
               {dialogJSONSnapshot.map((json, index) => (
                 <TabsContent key={index} value={String(index)} className="mt-4">
-                  <div className="rounded-lg overflow-hidden">
+                  <div className="overflow-hidden rounded-lg">
                     <Highlighter
                       code={tryFormatJSON(json)}
                       language="json"

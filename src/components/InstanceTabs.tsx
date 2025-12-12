@@ -4,8 +4,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
 
 export function InstanceTabs() {
-  const { requests, instances, activeInstanceId, setActiveInstanceId } =
-    useProxyViewer();
+  const { requests, instances, activeInstanceId, setActiveInstanceId } = useProxyViewer();
 
   // 统计每个实例的请求数
   const instanceRequestCounts = useMemo(() => {
@@ -29,8 +28,7 @@ export function InstanceTabs() {
     }
   };
 
-  const currentValue =
-    activeInstanceId === null ? "all" : String(activeInstanceId);
+  const currentValue = activeInstanceId === null ? "all" : String(activeInstanceId);
 
   return (
     <Tabs value={currentValue} onValueChange={handleTabChange}>
@@ -45,11 +43,7 @@ export function InstanceTabs() {
           if (typeof instance.id !== "number") return null;
           const count = instanceRequestCounts.get(instance.id) || 0;
           return (
-            <TabsTrigger
-              className="shrink-0 grow-0"
-              key={instance.id}
-              value={String(instance.id)}
-            >
+            <TabsTrigger className="shrink-0 grow-0" key={instance.id} value={String(instance.id)}>
               {instance.name}
               <Badge variant="secondary" className="ml-2">
                 {count}

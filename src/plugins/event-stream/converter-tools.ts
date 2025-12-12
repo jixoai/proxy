@@ -50,10 +50,7 @@ export function decodeBase64(text: string) {
   return utf8Decoder.decode(bytes);
 }
 
-export async function runBuiltInConverter(
-  id: BuiltInConverterId,
-  input: unknown,
-) {
+export async function runBuiltInConverter(id: BuiltInConverterId, input: unknown) {
   switch (id) {
     case "auto": {
       const str = ensureString(input);
@@ -76,8 +73,7 @@ export async function runBuiltInConverter(
     }
     case "base64": {
       const str = ensureString(input);
-      if (str === null)
-        throw new Error("Base64 converter requires string input");
+      if (str === null) throw new Error("Base64 converter requires string input");
       return decodeBase64(str);
     }
     case "json": {
@@ -135,15 +131,9 @@ export async function loadCustomModule(instance: ConverterInstance) {
   try {
     const module = await import(/* @vite-ignore */ url);
     if (typeof module.transform !== "function") {
-      throw new Error(
-        "Custom module must export function transform(text, json, context)",
-      );
+      throw new Error("Custom module must export function transform(text, json, context)");
     }
-    const transformer = module.transform as (
-      text: string,
-      json: any,
-      ctx: any,
-    ) => unknown;
+    const transformer = module.transform as (text: string, json: any, ctx: any) => unknown;
     customModuleCache.set(instance.instanceId, { source, transformer });
     return transformer;
   } finally {
