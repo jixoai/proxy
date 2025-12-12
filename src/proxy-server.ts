@@ -6,6 +6,7 @@ import { URL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { parentPort } from "node:worker_threads";
+import createDebug from "debug";
 import { createProxyRequest, updateProxyRequest } from "./lib/db-requests";
 import { dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl } from "./lib/data-url";
@@ -21,6 +22,8 @@ import type {
 import { normalizeForwardGroups, normalizePathname } from "./lib/forward-utils";
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
 import { forwardStatsManager } from "./lib/forward-stats-manager";
+
+const debugNotifier = createDebug("plugins:db-notifier");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -465,6 +468,9 @@ const server = http.createServer(async (req, res) => {
           : undefined,
         response: undefined,
       });
+      debugNotifier("about to notify insert, dbRecordId: %d", dbRecordId);
+      dbNotifier.notify("insert", "proxy_requests", dbRecordId);
+      debugNotifier("notify insert completed");
     }
 
     const attemptStart = Date.now();
@@ -623,6 +629,7 @@ const server = http.createServer(async (req, res) => {
       contentType: finalResult.contentType ?? null,
     },
   });
+  dbNotifier.notify("update", "proxy_requests", dbRecordId);
 
   res.writeHead(finalResult.statusCode, finalResult.statusMessage, finalResult.headers);
   res.end(finalResult.bodyBuffer);

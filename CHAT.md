@@ -800,3 +800,49 @@ BUG：这是我目前代理的配置文件`/Users/kzf/.claude/scripts/proxy/conf
 同样的，我在本地修改配置，界面上仍然没有实时变更。
 
 还有“自动监听配置文件”、“自动推送”这些配置，都应该反应在我们的配置文件中。以我们的配置文件为唯一可信新源。
+
+---
+
+我们现在正在进行对hooks的通讯进行重构的工作，因为我们发现stdio对于并发的支持有点问题，对于大数据包的支持也有问题，因此我决定废弃stdio，直接使用 http。
+也就是我们直接走http协议的管道。
+那么这里就有一个规范：hooks的type要改，目前只支持stdio，要改成只支持http，同时通过child_process启动的时候，我们需要通过env传递一个 `__CALLBACK_URL__`，目的是提供一个回调链接。
+child_process在启动完成监听之后，需要将最终的可访问的url，通过`__CALLBACK_URL__`来返回：`POST ${__CALLBACK_URL__} ${listen-url}`
+这样一来，我们可以完全放弃jsonrpc，完全改成使用请求转发即可。
+hooks的代码可以大大简化。但是要注意，我们仍然是区分request/response的hook
+也就是说request的hook是这样的：
+1. hook-req-requestBody（binary）会同时包含 `head-len + req-url-method-headers + req-body`，这个head-len是固定的是用来表示`req-url-method-headers`的长度，然后是流式的req-body内容。
+2. 处理完后，也是通过 hook-req-responseBody 来做响应：`head-len + req-url-method-headers + req-body`,也是流式返回完整内容
+2. 所以如果不做任何篡改，只需要原封不动地把所有requestBody内容转发会回去responseBody，虽然效率可能偏低，但是目前这个方案最保守，后续我们会提供一些其它的升级，比如通过 hook-req-responseCode 来代表不同的操作指令等等。如果你觉得第一版本有些指令可以内置，那你就直接做进去，不然当前实现这种最保守的方案就行。
+
+反过来response的hook是这样的：
+1. hook-res-requestBody（bianry）包含`head-len + res-status-headers + res-body`，因此同理，返回的 hook-res-responseBody也是`head-len + res-status-headers + res-body`，代表重写后的内容
+
+---
+
+plugins 也使用 debug 来输出日志：`debug:plugins:${}`
+
+---
+
+收到请求，但是前端还是没有推送，我们需要深入理解refresh按钮和推送的区别？
+我自己的猜测是，refresh是去查询数据库。推送只是推送有变更，但是不会包含变更详情。
+按照这个方向继续猜测：这里的本质问题是，推送变更，使用的是BroadcastChannel吧，而我们的viewer-server和我的proxy-server是不是两个独立的 process？
+如果是的话，BroadcaseChannel就无法跨process推送消息。
+因此我们需要有一个“server.ts”的程序，它负责使用两个Worker来启动viewer-server和proxy-server。
+这样做的话，我们需要优化一下我们的启动器，同时也要变更package.json等配置
+
+---
+
+我试着加入这行到测试（`tests/broadcast-channel.test.ts`）中：`import { Worker, BroadcastChannel } from "node:worker_threads";`发现测试仍然是通过的，所以你指责在bun中`node:worker_threads`存在问题是不应该的。除非你有更加客观的证据
+
+---
+
+我们需要编写更多基础功能的单元测试，优化好各个单元功能的模块的可靠性
+
+---
+
+BUG: 现在页面会突然跳回，比如我在`/control`，忽然会跳回`/?page=1`
+
+---
+
+BUG: `/control` 页面本质是用来读写 proxy-config.json 的地方。但是现在我在界面上做的编辑操作，并没有立刻更新到文件中。
+比如:“切换自动监听配置文件”、“拖动转发规则的顺序”

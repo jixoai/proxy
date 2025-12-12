@@ -13,12 +13,14 @@
 
 import { EventEmitter } from "node:events";
 import { BroadcastChannel } from "node:worker_threads";
+import createDebug from "debug";
 
 const STATS_CHANNEL_NAME = "proxy-forward-stats";
 const STATS_WINDOW_MS = 5 * 60 * 1000; // 5分钟
 const CLEANUP_INTERVAL_MS = 30 * 1000; // 30秒清理一次过期数据
 const AUTO_SORT_DEBOUNCE_MS = 10 * 1000; // 自动排序防抖10秒
 const AUTO_SORT_MIN_SAMPLES = 3; // 至少3个样本才参与排序
+const debugAutoSort = createDebug("plugins:auto-sort");
 
 export interface RequestSample {
   timestamp: number;
@@ -127,7 +129,7 @@ export class ForwardStatsManager extends EventEmitter {
   private cleanupTimer: NodeJS.Timer | null = null;
   private autoSortEnabled = true;
   private autoSortTimer: NodeJS.Timer | null = null;
-  private pendingAutoSortInstances = new Set<string>();
+  private pendingAutoSortInstances = new Set<string>(); // instanceName/forwardName
 
   /** 生成唯一 key: instanceName/forwardName/endpointIndex */
   private makeKey(instanceName: string, forwardName: string, endpointIndex: number): string {
@@ -249,7 +251,7 @@ export class ForwardStatsManager extends EventEmitter {
 
     // 触发自动排序 (防抖)
     if (this.autoSortEnabled && !success) {
-      this.scheduleAutoSort(instanceName);
+      this.scheduleAutoSort(instanceName, forwardName);
     }
 
     // 发送更新事件
@@ -317,18 +319,23 @@ export class ForwardStatsManager extends EventEmitter {
   }
 
   /** 调度自动排序 (防抖) */
-  private scheduleAutoSort(instanceName: string): void {
-    this.pendingAutoSortInstances.add(instanceName);
+  private scheduleAutoSort(instanceName: string, forwardName: string): void {
+    const key = `${instanceName}/${forwardName}`;
+    this.pendingAutoSortInstances.add(key);
 
     if (this.autoSortTimer) return;
 
     this.autoSortTimer = setTimeout(() => {
       this.autoSortTimer = null;
-      const instances = [...this.pendingAutoSortInstances];
+      const keys = [...this.pendingAutoSortInstances];
       this.pendingAutoSortInstances.clear();
 
-      for (const name of instances) {
-        this.emit("auto-sort-needed", name);
+      for (const key of keys) {
+        const [instanceName, forwardName] = key.split("/", 2);
+        if (instanceName && forwardName) {
+          debugAutoSort("Failure detected for %s, triggering sort check", key);
+          this.emit("auto-sort-needed", { instanceName, forwardName });
+        }
       }
     }, AUTO_SORT_DEBOUNCE_MS);
   }
@@ -380,11 +387,27 @@ export class ForwardStatsManager extends EventEmitter {
   ): number[] | null {
     const stats = this.getForwardGroupStats(instanceName, forwardName);
 
-    if (stats.length < 2) return null;
+    debugAutoSort(
+      "Computing optimal order for %s/%s, found %d endpoints",
+      instanceName,
+      forwardName,
+      stats.length,
+    );
+
+    if (stats.length < 2) {
+      debugAutoSort("Only %d endpoints, skipping sort", stats.length);
+      return null;
+    }
 
     // 检查是否有足够样本
     const hasSufficientData = stats.some((s) => s.computed.totalRequests >= AUTO_SORT_MIN_SAMPLES);
-    if (!hasSufficientData) return null;
+    if (!hasSufficientData) {
+      debugAutoSort(
+        "Insufficient samples (min: %d), skipping sort",
+        AUTO_SORT_MIN_SAMPLES,
+      );
+      return null;
+    }
 
     // 按健康度评分排序
     const sorted = [...stats].sort((a, b) => {
@@ -402,15 +425,28 @@ export class ForwardStatsManager extends EventEmitter {
 
     if (currentBest && newBest && currentBest.endpointIndex !== newBest.endpointIndex) {
       const scoreDiff = newBest.computed.healthScore - currentBest.computed.healthScore;
+      debugAutoSort(
+        "Score diff: %s (current best: %d, new best: %d)",
+        scoreDiff.toFixed(1),
+        currentBest.computed.healthScore,
+        newBest.computed.healthScore,
+      );
       if (scoreDiff < 15) {
+        debugAutoSort("Score diff < 15, skipping sort");
         return null; // 差距不够大，不需要重排
       }
     }
 
     // 检查顺序是否有变化
     const orderChanged = newOrder.some((idx, i) => idx !== currentIndexes[i]);
-    if (!orderChanged) return null;
+    if (!orderChanged) {
+      debugAutoSort("Order unchanged, skipping sort");
+      return null;
+    }
 
+    console.log(
+      `[AutoSort] New order computed: [${currentIndexes.join(",")}] -> [${newOrder.join(",")}]`,
+    );
     return newOrder;
   }
 

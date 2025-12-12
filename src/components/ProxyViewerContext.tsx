@@ -1,4 +1,13 @@
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ProxyInstance } from "@/types/proxy";
 
@@ -61,7 +70,7 @@ interface ProxyViewerContextValue {
   requests: RequestData[];
   loading: boolean;
   currentPage: number;
-  setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
+  setCurrentPage: (value: SetStateAction<number>, options?: { replace?: boolean }) => void;
 
   livePush: boolean;
   setLivePush: (enabled: boolean) => void;
@@ -93,12 +102,14 @@ interface ProxyViewerContextValue {
   selectedId: string | null;
   selectedDetail: RequestData | null;
   detailLoading: boolean;
-  selectRequest: (id: string | null) => Promise<void>;
+  selectRequest: (id: string | null, options?: { skipUrlSync?: boolean }) => Promise<void>;
 
   jsonDialogOpen: boolean;
   setJsonDialogOpen: (open: boolean) => void;
   dialogJSONSnapshot: string[];
   setDialogJSONSnapshot: (snapshot: string[]) => void;
+
+  applySearchState: (search: SearchParams) => void;
 
   loadRequests: () => Promise<void>;
   handleClearAll: () => Promise<void>;
@@ -106,6 +117,16 @@ interface ProxyViewerContextValue {
 }
 
 const ProxyViewerContext = createContext<ProxyViewerContextValue | null>(null);
+
+type SearchParams = {
+  requestId?: string;
+  dialog?: "json";
+  page?: number;
+  filterMethod?: string;
+  filterStatus?: string;
+  filterUrl?: string;
+  filterRule?: string;
+};
 
 export function useProxyViewer() {
   const context = useContext(ProxyViewerContext);
@@ -117,31 +138,58 @@ export function useProxyViewer() {
 
 export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const applyingSearchRef = useRef(false);
   const [requests, setRequests] = useState<RequestData[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<RequestData | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPageState] = useState(1);
+  const currentPageRef = useRef(1);
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
   const [livePush, setLivePush] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
 
-  const [filterMethod, setFilterMethod] = useState<string>("");
-  const [filterStatus, setFilterStatus] = useState<string>("");
-  const [filterUrl, setFilterUrl] = useState<string>("");
-  const [filterRule, setFilterRule] = useState<string>("");
+  const [filterMethod, setFilterMethodState] = useState<string>("");
+  const [filterStatus, setFilterStatusState] = useState<string>("");
+  const [filterUrl, setFilterUrlState] = useState<string>("");
+  const [filterRule, setFilterRuleState] = useState<string>("");
 
   const [availableRules, setAvailableRules] = useState<Array<{ id: number; name: string }>>([]);
 
   const [instances, setInstances] = useState<ProxyInstance[]>([]);
   const [instancesLoading, setInstancesLoading] = useState(true);
   const [activeInstanceId, setActiveInstanceId] = useState<number | null>(null);
-  const [activeRuleId, setActiveRuleId] = useState<string | null>(null);
+  const [activeRuleId, setActiveRuleIdState] = useState<string | null>(null);
   const [controlFocusInstanceId, setControlFocusInstanceId] = useState<number | null>(null);
   const [controlFocusForwardId, setControlFocusForwardId] = useState<number | null>(null);
 
-  const [jsonDialogOpen, setJsonDialogOpen] = useState(false);
+  const [jsonDialogOpen, setJsonDialogOpenState] = useState(false);
   const [dialogJSONSnapshot, setDialogJSONSnapshot] = useState<string[]>([]);
+
+  const cleanSearch = useCallback((search: SearchParams) => {
+    const next = { ...search };
+    Object.keys(next).forEach((key) => {
+      const k = key as keyof SearchParams;
+      if (next[k] === undefined || next[k] === null || next[k] === "") {
+        delete next[k];
+      }
+    });
+    return next;
+  }, []);
+
+  const updateSearch = useCallback(
+    (updater: (prev: SearchParams) => SearchParams, options?: { replace?: boolean }) => {
+      navigate({
+        to: "/",
+        search: (prev) => cleanSearch(updater(prev as SearchParams)),
+        replace: options?.replace,
+      });
+    },
+    [cleanSearch, navigate],
+  );
 
   const loadRequests = useCallback(async () => {
     try {
@@ -189,28 +237,35 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     [selectedId],
   );
 
-  const selectRequest = useCallback(async (id: string | null) => {
-    setSelectedId(id);
+  const selectRequest = useCallback(
+    async (id: string | null, options?: { skipUrlSync?: boolean }) => {
+      setSelectedId(id);
 
-    if (id === null) {
+      if (!options?.skipUrlSync && !applyingSearchRef.current) {
+        updateSearch((prev) => ({ ...prev, requestId: id ?? undefined }));
+      }
+
+      if (id === null) {
+        setSelectedDetail(null);
+        setDetailLoading(false);
+        return;
+      }
+
+      setDetailLoading(true);
       setSelectedDetail(null);
-      setDetailLoading(false);
-      return;
-    }
 
-    setDetailLoading(true);
-    setSelectedDetail(null);
-
-    try {
-      const response = await fetch(`/api/requests/${id}`);
-      const data = await response.json();
-      setSelectedDetail(data);
-    } catch (error) {
-      console.error("Failed to load request detail:", error);
-    } finally {
-      setDetailLoading(false);
-    }
-  }, []);
+      try {
+        const response = await fetch(`/api/requests/${id}`);
+        const data = await response.json();
+        setSelectedDetail(data);
+      } catch (error) {
+        console.error("Failed to load request detail:", error);
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [updateSearch],
+  );
 
   const loadRules = useCallback(async () => {
     try {
@@ -248,6 +303,126 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     setControlFocusInstanceId(null);
     setControlFocusForwardId(null);
   }, []);
+
+  const setCurrentPage = useCallback(
+    (value: SetStateAction<number>, options?: { replace?: boolean }) => {
+      setCurrentPageState(value);
+      const resolved = typeof value === "function" ? value(currentPageRef.current) : value;
+      if (!applyingSearchRef.current) {
+        updateSearch(
+          (prev) => ({
+            ...prev,
+            page: resolved,
+          }),
+          { replace: options?.replace },
+        );
+      }
+    },
+    [updateSearch],
+  );
+
+  const setJsonDialogOpen = useCallback(
+    (open: boolean) => {
+      setJsonDialogOpenState(open);
+      if (!applyingSearchRef.current) {
+        updateSearch((prev) => ({ ...prev, dialog: open ? "json" : undefined }));
+      }
+    },
+    [updateSearch],
+  );
+
+  const setFilterMethod = useCallback(
+    (method: string) => {
+      setFilterMethodState(method);
+      setCurrentPageState(1);
+      if (!applyingSearchRef.current) {
+        updateSearch((prev) => ({
+          ...prev,
+          filterMethod: method || undefined,
+          page: 1,
+        }));
+      }
+    },
+    [updateSearch],
+  );
+
+  const setFilterStatus = useCallback(
+    (status: string) => {
+      setFilterStatusState(status);
+      setCurrentPageState(1);
+      if (!applyingSearchRef.current) {
+        updateSearch((prev) => ({
+          ...prev,
+          filterStatus: status || undefined,
+          page: 1,
+        }));
+      }
+    },
+    [updateSearch],
+  );
+
+  const setFilterUrl = useCallback(
+    (url: string) => {
+      setFilterUrlState(url);
+      setCurrentPageState(1);
+      if (!applyingSearchRef.current) {
+        updateSearch((prev) => ({
+          ...prev,
+          filterUrl: url || undefined,
+          page: 1,
+        }));
+      }
+    },
+    [updateSearch],
+  );
+
+  const setFilterRule = useCallback(
+    (rule: string) => {
+      setFilterRuleState(rule);
+      setCurrentPageState(1);
+      if (!applyingSearchRef.current) {
+        updateSearch((prev) => ({
+          ...prev,
+          filterRule: rule || undefined,
+          page: 1,
+        }));
+      }
+    },
+    [updateSearch],
+  );
+
+  const setActiveRuleId = useCallback(
+    (id: string | null) => {
+      setActiveRuleIdState(id);
+      setFilterRule(id ?? "");
+    },
+    [setFilterRule],
+  );
+
+  const applySearchState = useCallback(
+    (search: SearchParams) => {
+      applyingSearchRef.current = true;
+      const nextPage = search.page ?? 1;
+      setCurrentPageState(nextPage);
+      setFilterMethodState(search.filterMethod ?? "");
+      setFilterStatusState(search.filterStatus ?? "");
+      setFilterUrlState(search.filterUrl ?? "");
+      setFilterRuleState(search.filterRule ?? "");
+      setActiveRuleIdState(search.filterRule ?? null);
+      setJsonDialogOpenState(search.dialog === "json");
+
+      if (search.requestId) {
+        void selectRequest(search.requestId, { skipUrlSync: true });
+      } else {
+        setSelectedId(null);
+        setSelectedDetail(null);
+        setDetailLoading(false);
+      }
+
+      applyingSearchRef.current = false;
+    },
+    [selectRequest],
+  );
 
   useEffect(() => {
     loadRequests();
@@ -359,6 +534,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     setJsonDialogOpen,
     dialogJSONSnapshot,
     setDialogJSONSnapshot,
+    applySearchState,
     loadRequests,
     handleClearAll,
     deleteRequest,

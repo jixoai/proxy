@@ -2,6 +2,7 @@ import { serve, type ServerWebSocket } from "bun";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
+import createDebug from "debug";
 import viewerHtml from "./viewer.html";
 import { codeToHtml } from "shiki";
 import type { HighlightRequest, HighlightResponse } from "./services/highlight.protocol";
@@ -45,6 +46,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROXY_DIR = path.join(__dirname, ".tmp", "proxy");
 const log = createLogger("proxy:viewer");
+const debugAutoSort = createDebug("plugins:auto-sort");
 installGlobalErrorLogger("proxy-viewer");
 
 interface RequestData {
@@ -388,24 +390,31 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
   });
 
   // 监听自动排序事件
-  forwardStatsManager.on("auto-sort-needed", async (instanceName: string) => {
-    log.info(`[AutoSort] Auto-sort triggered for instance: ${instanceName}`);
+  forwardStatsManager.on(
+    "auto-sort-needed",
+    async ({ instanceName, forwardName }: { instanceName: string; forwardName: string }) => {
+      log.info(`[AutoSort] Auto-sort triggered for ${instanceName}/${forwardName}`);
 
-    const instance = getInstanceByName(instanceName);
-    if (!instance) return;
+      const instance = getInstanceByName(instanceName);
+      if (!instance) {
+        log.warn(`[AutoSort] Instance not found: ${instanceName}`);
+        return;
+      }
 
-    // 按 forwardName 分组
-    const groups = new Map<string, number[]>();
-    instance.forwards.forEach((f, idx) => {
-      const list = groups.get(f.name) ?? [];
-      list.push(idx);
-      groups.set(f.name, list);
-    });
+      // 找出当前 forwardName 组的所有索引
+      const currentIndexes: number[] = [];
+      instance.forwards.forEach((f, idx) => {
+        if (f.name === forwardName) {
+          currentIndexes.push(idx);
+        }
+      });
 
-    let anyChanged = false;
-
-    for (const [forwardName, currentIndexes] of groups) {
-      if (currentIndexes.length < 2) continue;
+      if (currentIndexes.length < 2) {
+        log.info(
+          `[AutoSort] Only ${currentIndexes.length} endpoints for ${forwardName}, skipping`,
+        );
+        return;
+      }
 
       const newOrder = forwardStatsManager.computeOptimalOrder(
         instanceName,
@@ -413,36 +422,39 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         currentIndexes,
       );
 
-      if (newOrder) {
-        log.info(
-          `[AutoSort] Reordering ${instanceName}/${forwardName}: ${currentIndexes.join(",")} -> ${newOrder.join(",")}`,
-        );
-
-        // 重新计算完整的新顺序
-        const fullNewOrder = instance.forwards.map((_, idx) => {
-          const groupIdx = currentIndexes.indexOf(idx);
-          if (groupIdx >= 0) {
-            return newOrder[groupIdx]!;
-          }
-          return idx;
-        });
-
-        try {
-          reorderForwardsByIndexesDirect(instanceName, fullNewOrder as number[]);
-          refreshConfigCache();
-          anyChanged = true;
-        } catch (error) {
-          console.error(`[AutoSort] Failed to reorder: ${error}`);
-        }
+      if (!newOrder) {
+        log.info(`[AutoSort] No reordering needed for ${instanceName}/${forwardName}`);
+        return;
       }
-    }
 
-    if (anyChanged) {
+      log.info(
+        `[AutoSort] Reordering ${instanceName}/${forwardName}: [${currentIndexes.join(",")}] -> [${newOrder.join(",")}]`,
+      );
+
+      // 重新计算完整的新顺序
+      const fullNewOrder = instance.forwards.map((_, idx) => {
+        const groupIdx = currentIndexes.indexOf(idx);
+        if (groupIdx >= 0) {
+          return newOrder[groupIdx]!;
+        }
+        return idx;
+      });
+
+      try {
+        reorderForwardsByIndexesDirect(instanceName, fullNewOrder as number[]);
+        refreshConfigCache();
+      } catch (error) {
+        debugAutoSort("Failed to reorder: %s", error);
+        return;
+      }
+
       // 热更新到 worker
       try {
         await manager.reloadInstance(instanceName);
+        log.info(`[AutoSort] Instance ${instanceName} reloaded successfully`);
       } catch (error) {
-        console.error(`[AutoSort] Failed to reload instance: ${error}`);
+        debugAutoSort("Failed to reload instance: %s", error);
+        return;
       }
 
       // 通知前端配置已更新
@@ -454,8 +466,8 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           wsClients.delete(client);
         }
       }
-    }
-  });
+    },
+  );
 
   // 订阅 ProxyInstancesManager 的日志并广播给客户端
   manager.onLog((log: ProxyLogMessage) => {
@@ -1488,6 +1500,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
     // 监听 proxy_requests 表的 insert 事件
     dbListener.on("proxy_requests:insert", (notification) => {
+      debugAutoSort("dbListener event 'proxy_requests:insert' triggered, id: %d", notification.id);
       log.debug(`[DbListener] Received insert notification for request #${notification.id}`);
 
       // 查询新请求

@@ -58,6 +58,8 @@ export class ProxyManager {
     string,
     { resolve: (v: WorkerResponse) => void; reject: (e: Error) => void }
   >();
+  private healthCheckTimer: NodeJS.Timeout | null = null;
+  private lastPongTime: number = 0;
 
   constructor(
     instanceName: string,
@@ -96,8 +98,15 @@ export class ProxyManager {
     this.worker.on("message", (payload: unknown) => {
       const msg = payload as WorkerResponse;
 
+      // 处理 pong 响应，更新心跳时间
+      if (msg?.type === "pong") {
+        this.lastPongTime = Date.now();
+        // pong 响应同时通过 sendMessage 的 Promise 处理
+        return;
+      }
+
       // 处理配置相关响应
-      if (msg?.type === "reload-result" || msg?.type === "config" || msg?.type === "pong") {
+      if (msg?.type === "reload-result" || msg?.type === "config") {
         // 这些响应通过 sendMessage 的 Promise 处理
         return;
       }
@@ -128,24 +137,26 @@ export class ProxyManager {
 
       if (msg?.type === "server-error") {
         this.log.error(`[ProxyManager] Worker server error: ${msg.error} code=${msg.code ?? ""}`);
+        // 服务器错误也应该触发 Worker 清理
+        this.handleWorkerDeath();
       }
     });
 
     this.worker.on("error", (error) => {
       console.error(`[ProxyManager] Worker error (${this.instanceName}):`, error);
+      this.handleWorkerDeath();
     });
 
     this.worker.on("exit", (code) => {
       if (code !== 0) {
         this.log.warn(`[ProxyManager] Worker for ${this.instanceName} exited with code ${code}`);
       }
-      this.worker = null;
-      this.startTime = null;
+      this.handleWorkerDeath();
     });
 
     // 启动阶段快速捕获端口占用等致命错误
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 800);
+      const timer = setTimeout(resolve, 2500);
       const handler = (msg: WorkerResponse) => {
         if (msg?.type === "server-error") {
           clearTimeout(timer);
@@ -160,15 +171,20 @@ export class ProxyManager {
       this.worker?.on("message", handler);
     });
 
+    // 启动健康检查
+    this.startHealthCheck();
+
     console.log(`[ProxyManager] Started proxy instance ${this.instanceName} on port ${this.port}`);
   }
 
   async stop(): Promise<void> {
     if (!this.worker) throw new Error("Proxy is not running");
 
+    this.stopHealthCheck();
     await this.worker.terminate();
     this.worker = null;
     this.startTime = null;
+    this.lastPongTime = 0;
 
     const configPath = path.join(__dirname, `../.tmp/instance-${this.instanceName}-config.json`);
     try {
@@ -329,5 +345,61 @@ export class ProxyManager {
     );
     this.log.debug(`[ProxyManager] Config written to ${configPath}`);
     return configPath;
+  }
+
+  /** 启动健康检查定时器 */
+  private startHealthCheck(): void {
+    // 初始化 lastPongTime
+    this.lastPongTime = Date.now();
+
+    this.healthCheckTimer = setInterval(async () => {
+      if (!this.worker) {
+        this.stopHealthCheck();
+        return;
+      }
+
+      const now = Date.now();
+      // 检查上次 pong 是否超过 15 秒（允许一次失败）
+      if (this.lastPongTime > 0 && now - this.lastPongTime > 15000) {
+        this.log.warn(`Health check failed for ${this.instanceName}, no pong in 15s`);
+        this.handleWorkerDeath();
+        return;
+      }
+
+      try {
+        const message: WorkerMessage = { type: "ping" };
+        this.worker.postMessage(message);
+
+        // 等待 pong 响应（超时 5 秒）
+        await this.waitForResponse("pong", 5000);
+        // lastPongTime 已在 message handler 中更新
+      } catch (error) {
+        this.log.warn(`Ping failed for ${this.instanceName}: ${error}`);
+        // 不立即清理，等待下次检查（15秒无响应后才清理）
+      }
+    }, 10000); // 每 10 秒检查一次
+  }
+
+  /** 停止健康检查定时器 */
+  private stopHealthCheck(): void {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+  }
+
+  /** 处理 Worker 死亡（清理资源） */
+  private handleWorkerDeath(): void {
+    this.stopHealthCheck();
+    if (this.worker) {
+      try {
+        this.worker.terminate();
+      } catch (error) {
+        // ignore termination errors
+      }
+      this.worker = null;
+      this.startTime = null;
+      this.lastPongTime = 0;
+    }
   }
 }

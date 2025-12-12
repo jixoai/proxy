@@ -7,10 +7,13 @@
  */
 
 import { EventEmitter } from "node:events";
-import { BroadcastChannel } from "node:worker_threads";
+import { BroadcastChannel, threadId, isMainThread } from "node:worker_threads";
+import createDebug from "debug";
 import { createLogger } from "./logger";
 
+const debugNotifier = createDebug("plugins:db-notifier");
 const CHANNEL_NAME = "proxy-db-change";
+const THREAD_ID = isMainThread ? "main" : `worker-${threadId}`;
 
 // 通知消息类型
 export interface DbChangeNotification {
@@ -31,7 +34,7 @@ export class DbNotifier {
   private readonly log = createLogger("proxy:db:notifier");
 
   constructor(processId?: string) {
-    this.processId = processId || `process-${process.pid}`;
+    this.processId = processId || THREAD_ID;
   }
 
   /**
@@ -40,6 +43,7 @@ export class DbNotifier {
   init(): void {
     if (this.channel) return;
     try {
+      debugNotifier("DbNotifier.init() called, channel name: %s", CHANNEL_NAME);
       this.channel = new BroadcastChannel(CHANNEL_NAME);
       this.log.info("Using BroadcastChannel for notifications");
     } catch (error) {
@@ -56,15 +60,19 @@ export class DbNotifier {
       return;
     }
 
+    debugNotifier("notify() called: type=%s table=%s id=%d", type, table, id);
+    debugNotifier("channel exists: %s, posting message...", !!this.channel);
+
     const notification: DbChangeNotification = {
       type,
       table,
       id,
       timestamp: Date.now(),
-      sender: this.processId,
+      sender: THREAD_ID,
     };
 
     this.channel.postMessage(notification);
+    debugNotifier("message posted to BroadcastChannel");
     this.log.debug(`[DbNotifier] Sent: ${type} ${table}${id ? ` #${id}` : ""}`);
   }
 
@@ -91,7 +99,7 @@ export class DbListener extends EventEmitter {
 
   constructor(processId?: string) {
     super();
-    this.processId = processId || `process-${process.pid}`;
+    this.processId = processId || THREAD_ID;
   }
 
   /**
@@ -101,16 +109,34 @@ export class DbListener extends EventEmitter {
     if (this.channel) return;
 
     try {
+      debugNotifier("DbListener.start() called, processId: %s", this.processId);
       this.channel = new BroadcastChannel(CHANNEL_NAME);
+      debugNotifier("listening on channel: %s", CHANNEL_NAME);
+
       this.channel.onmessage = (event: any) => {
+        // 添加日志：确认 onmessage 被触发
+        debugNotifier("onmessage fired! event type: %s", typeof event);
+        debugNotifier("event.data: %o", event.data);
+        debugNotifier("event itself: %o", event);
+
         const notification = event.data as DbChangeNotification | undefined;
-        if (!notification) return;
+        if (!notification) {
+          this.log.warn("[DbListener] Received message but no data:", { event, eventData: event.data });
+          return;
+        }
+
+        debugNotifier("received message: %o", notification);
+        debugNotifier("my processId: %s, sender: %s, same: %s",
+          this.processId, notification.sender, notification.sender === this.processId);
+
         if (notification.sender === this.processId) return;
 
         this.emit("change", notification);
         this.emit(notification.type, notification);
         this.emit(`${notification.table}:${notification.type}`, notification);
       };
+
+      debugNotifier("onmessage handler attached: %s", typeof this.channel.onmessage);
       this.log.info("Using BroadcastChannel for notifications");
     } catch (error) {
       throw new Error(`[DbListener] Failed to init BroadcastChannel: ${String(error)}`);

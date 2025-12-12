@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { useSearch } from "@tanstack/react-router";
 import { InstanceTabs } from "@/components/InstanceTabs";
 import { HeaderBar } from "@/components/HeaderBar";
 import { RequestList } from "@/components/RequestList";
@@ -6,7 +8,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { useProxyViewer } from "@/components/ProxyViewerContext";
 
 export function RequestsPage() {
-  const { selectedId, selectRequest } = useProxyViewer();
+  const search = useSearch({ from: "/" });
+  const { selectedId, selectRequest, applySearchState } = useProxyViewer();
+
+  useEffect(() => {
+    applySearchState(search);
+  }, [applySearchState, search]);
 
   return (
     <div className="flex h-full flex-col">
