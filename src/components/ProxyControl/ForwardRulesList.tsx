@@ -28,7 +28,7 @@ export function ForwardRulesList({
   const [forwards, setForwards] = useState<ProxyForward[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingOrder, setSavingOrder] = useState(false);
-  const [autoSortEnabled, setAutoSortEnabled] = useState(true);
+  const [autoSortEnabled, setAutoSortEnabled] = useState(false);
   const [draggingGroupIndex, setDraggingGroupIndex] = useState<number | null>(null);
   const [draggingItemIndex, setDraggingItemIndex] = useState<{
     groupIndex: number;
@@ -40,16 +40,16 @@ export function ForwardRulesList({
 
   // 获取自动排序状态
   useEffect(() => {
-    fetch("/api/auto-sort/status")
+    fetch(`/api/instances/${instanceId}/auto-sort/status`)
       .then((res) => res.json())
-      .then((data) => setAutoSortEnabled(data.enabled))
+      .then((data) => setAutoSortEnabled(data.enabled ?? false))
       .catch(console.error);
-  }, []);
+  }, [instanceId]);
 
   const handleAutoSortToggle = async (enabled: boolean) => {
     setAutoSortEnabled(enabled);
     try {
-      await fetch("/api/auto-sort/toggle", {
+      await fetch(`/api/instances/${instanceId}/auto-sort/toggle`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),

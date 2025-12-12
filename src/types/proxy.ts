@@ -29,6 +29,12 @@ export interface ProxyForwardConfig {
   hooks?: HooksConfig | null;
 }
 
+/** 实例级别设置 */
+export interface ProxyInstanceSettings {
+  /** 是否启用智能排序（基于健康度自动调整规则顺序） */
+  autoSort?: boolean;
+}
+
 export interface ProxyInstanceConfig {
   name: string;
   port: number;
@@ -37,14 +43,14 @@ export interface ProxyInstanceConfig {
   headers: ProxyForwardHeaders | null;
   hooks?: HooksConfig | null;
   forwards: ProxyForwardConfig[];
+  /** 实例级别设置 */
+  settings?: ProxyInstanceSettings | null;
 }
 
 /** 全局设置 */
 export interface ProxyGlobalSettings {
   /** 是否自动监听配置文件变更 */
   autoWatchConfig: boolean;
-  /** 是否启用智能排序（基于健康度自动调整规则顺序） */
-  autoSort: boolean;
 }
 
 export interface ProxyConfigFile {

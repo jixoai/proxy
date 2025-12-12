@@ -25,6 +25,7 @@ import {
   reorderForwardsByIndexes,
   getConfigFilePath,
   loadConfig,
+  saveConfig,
 } from "./lib/config-store";
 import {
   getAllRequests as dbGetAllRequests,
@@ -559,6 +560,20 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     log.info("[Reload] Stopped watching config file");
   };
 
+  // 从配置文件恢复全局设置
+  const initialConfig = loadConfig();
+  if (initialConfig.settings) {
+    if (initialConfig.settings.autoWatchConfig) {
+      enableConfigWatch();
+    }
+  }
+  // 初始化各实例的 autoSort 状态
+  for (const instance of initialConfig.instances) {
+    if (instance.settings?.autoSort) {
+      forwardStatsManager.setAutoSortEnabled(instance.name, true);
+    }
+  }
+
   // 读取单个请求的详细信息（从数据库）
   function getRequestDetail(id: number): RequestData | null {
     const req = getProxyRequestById(id);
@@ -845,6 +860,14 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             } else {
               disableConfigWatch();
             }
+            // Persist the setting to config file
+            const config = loadConfig();
+            if (!config.settings) {
+              config.settings = { autoWatchConfig: enabled };
+            } else {
+              config.settings.autoWatchConfig = enabled;
+            }
+            saveConfig(config);
             return Response.json({ success: true, watching: watchEnabled });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });
@@ -867,15 +890,42 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       },
       "/api/auto-sort/status": {
         async GET() {
-          return Response.json({ enabled: forwardStatsManager.isAutoSortEnabled() });
+          // 返回所有实例的 autoSort 状态
+          const statuses: Record<string, boolean> = {};
+          for (const [id, name] of configCache.instanceIdToName.entries()) {
+            statuses[name] = forwardStatsManager.getInstanceAutoSortEnabled(name);
+          }
+          return Response.json({ statuses });
         },
       },
-      "/api/auto-sort/toggle": {
+      "/api/instances/:id/auto-sort/status": {
+        async GET(req) {
+          try {
+            const { name } = parseInstanceIdParam(req.params.id);
+            return Response.json({ enabled: forwardStatsManager.getInstanceAutoSortEnabled(name) });
+          } catch (error) {
+            return Response.json({ error: String(error) }, { status: 400 });
+          }
+        },
+      },
+      "/api/instances/:id/auto-sort/toggle": {
         async POST(req) {
           try {
+            const { name } = parseInstanceIdParam(req.params.id);
             const body = await req.json();
             const enabled = Boolean(body?.enabled);
-            forwardStatsManager.setAutoSortEnabled(enabled);
+            forwardStatsManager.setAutoSortEnabled(name, enabled);
+            // Persist the setting to config file
+            const config = loadConfig();
+            const instance = config.instances.find((i) => i.name === name);
+            if (instance) {
+              if (!instance.settings) {
+                instance.settings = { autoSort: enabled };
+              } else {
+                instance.settings.autoSort = enabled;
+              }
+              saveConfig(config);
+            }
             return Response.json({ success: true, enabled });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });

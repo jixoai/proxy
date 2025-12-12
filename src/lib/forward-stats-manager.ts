@@ -127,7 +127,8 @@ export class ForwardStatsManager extends EventEmitter {
   private statsMap = new Map<string, ForwardEndpointStats>();
   private channel: BroadcastChannel | null = null;
   private cleanupTimer: NodeJS.Timer | null = null;
-  private autoSortEnabled = true;
+  /** 按实例名称存储 autoSort 状态 */
+  private autoSortEnabledMap = new Map<string, boolean>();
   private autoSortTimer: NodeJS.Timer | null = null;
   private pendingAutoSortInstances = new Set<string>(); // instanceName/forwardName
 
@@ -171,18 +172,31 @@ export class ForwardStatsManager extends EventEmitter {
     }
   }
 
-  /** 设置自动排序开关 */
-  setAutoSortEnabled(enabled: boolean): void {
-    this.autoSortEnabled = enabled;
-    if (!enabled && this.autoSortTimer) {
-      clearTimeout(this.autoSortTimer);
-      this.autoSortTimer = null;
-      this.pendingAutoSortInstances.clear();
+  /** 设置某个实例的自动排序开关 */
+  setAutoSortEnabled(instanceName: string, enabled: boolean): void {
+    this.autoSortEnabledMap.set(instanceName, enabled);
+    if (!enabled) {
+      // 清理该实例的待排序项
+      for (const key of this.pendingAutoSortInstances) {
+        if (key.startsWith(`${instanceName}/`)) {
+          this.pendingAutoSortInstances.delete(key);
+        }
+      }
     }
   }
 
-  isAutoSortEnabled(): boolean {
-    return this.autoSortEnabled;
+  /** 检查某个实例是否启用自动排序 */
+  isAutoSortEnabled(instanceName?: string): boolean {
+    if (!instanceName) {
+      // 如果没有指定实例，返回是否有任何实例启用了 autoSort
+      return Array.from(this.autoSortEnabledMap.values()).some((v) => v);
+    }
+    return this.autoSortEnabledMap.get(instanceName) ?? false;
+  }
+
+  /** 获取某个实例的 autoSort 状态 */
+  getInstanceAutoSortEnabled(instanceName: string): boolean {
+    return this.autoSortEnabledMap.get(instanceName) ?? false;
   }
 
   /** 处理来自 BroadcastChannel 的消息 */
@@ -250,7 +264,7 @@ export class ForwardStatsManager extends EventEmitter {
     this.recomputeStats(stats, timestamp);
 
     // 触发自动排序 (防抖)
-    if (this.autoSortEnabled && !success) {
+    if (this.isAutoSortEnabled(instanceName) && !success) {
       this.scheduleAutoSort(instanceName, forwardName);
     }
 

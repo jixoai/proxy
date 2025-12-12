@@ -99,6 +99,12 @@ interface ProxyViewerContextValue {
   jumpToForwardRule: (instanceId: number, forwardId: number) => void;
   clearControlFocus: () => void;
 
+  /** 配置版本号，每次配置重载时递增，子组件可监听此值触发刷新 */
+  configVersion: number;
+  /** 是否启用自动监听配置文件 */
+  autoWatchConfig: boolean;
+  setAutoWatchConfig: (enabled: boolean) => void;
+
   selectedId: string | null;
   selectedDetail: RequestData | null;
   detailLoading: boolean;
@@ -165,6 +171,8 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const [activeRuleId, setActiveRuleIdState] = useState<string | null>(null);
   const [controlFocusInstanceId, setControlFocusInstanceId] = useState<number | null>(null);
   const [controlFocusForwardId, setControlFocusForwardId] = useState<number | null>(null);
+  const [configVersion, setConfigVersion] = useState(0);
+  const [autoWatchConfig, setAutoWatchConfigState] = useState(false);
 
   const [jsonDialogOpen, setJsonDialogOpenState] = useState(false);
   const [dialogJSONSnapshot, setDialogJSONSnapshot] = useState<string[]>([]);
@@ -308,7 +316,8 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     (value: SetStateAction<number>, options?: { replace?: boolean }) => {
       setCurrentPageState(value);
       const resolved = typeof value === "function" ? value(currentPageRef.current) : value;
-      if (!applyingSearchRef.current) {
+      // Only update URL when on the home page to avoid unexpected navigation from other routes
+      if (!applyingSearchRef.current && window.location.pathname === "/") {
         updateSearch(
           (prev) => ({
             ...prev,
@@ -424,11 +433,37 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     [selectRequest],
   );
 
+  // 加载 autoWatchConfig 状态
+  const loadWatchStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/reload/status");
+      const data = await response.json();
+      setAutoWatchConfigState(Boolean(data.watching));
+    } catch (error) {
+      console.error("Failed to load watch status:", error);
+    }
+  }, []);
+
+  const setAutoWatchConfig = useCallback(async (enabled: boolean) => {
+    try {
+      const response = await fetch("/api/reload/watch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await response.json();
+      setAutoWatchConfigState(Boolean(data.watching));
+    } catch (error) {
+      console.error("Failed to update watch state:", error);
+    }
+  }, []);
+
   useEffect(() => {
     loadRequests();
     loadRules();
     reloadInstances();
-  }, [loadRequests, loadRules, reloadInstances]);
+    loadWatchStatus();
+  }, [loadRequests, loadRules, reloadInstances, loadWatchStatus]);
 
   // WebSocket 连接
   useEffect(() => {
@@ -474,9 +509,10 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
           setSelectedDetail(null);
           setCurrentPage(1);
         } else if (message.type === "config-reloaded") {
-          // 配置文件更新，刷新实例列表
+          // 配置文件更新，刷新实例列表并递增版本号
           reloadInstances();
           loadRules();
+          setConfigVersion((v) => v + 1);
         }
       } catch (error) {
         console.error("Failed to parse WebSocket message:", error);
@@ -526,6 +562,9 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     controlFocusForwardId,
     jumpToForwardRule,
     clearControlFocus,
+    configVersion,
+    autoWatchConfig,
+    setAutoWatchConfig,
     selectedId,
     selectedDetail,
     detailLoading,

@@ -4,6 +4,7 @@ import type {
   ProxyForwardConfig,
   ProxyInstanceConfig,
   ProxyGlobalSettings,
+  ProxyInstanceSettings,
   HooksConfig,
 } from "../types/proxy";
 
@@ -76,6 +77,13 @@ export const proxyForwardSchema = z
       forward.methods && forward.methods.length > 0 ? Array.from(new Set(forward.methods)) : ["*"],
   }));
 
+export const proxyInstanceSettingsSchema = z
+  .object({
+    autoSort: z.boolean().default(false),
+  })
+  .optional()
+  .nullable();
+
 export const proxyInstanceSchema = z
   .object({
     name: z.string().min(1).trim(),
@@ -85,17 +93,27 @@ export const proxyInstanceSchema = z
     headers: headersSchema,
     hooks: hooksSchema,
     forwards: z.array(proxyForwardSchema).default([]),
+    settings: proxyInstanceSettingsSchema,
   })
   .transform<ProxyInstanceConfig>((instance) => ({
     ...instance,
     forwards: instance.forwards ?? [],
+    settings: instance.settings ?? null,
   }));
+
+export const proxyGlobalSettingsSchema = z
+  .object({
+    autoWatchConfig: z.boolean().default(false),
+  })
+  .optional();
 
 export const proxyConfigSchema = z
   .object({
+    settings: proxyGlobalSettingsSchema,
     instances: z.array(proxyInstanceSchema).default([]),
   })
   .transform<ProxyConfigFile>((config) => ({
+    settings: config.settings,
     instances: config.instances,
   }));
 

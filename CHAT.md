@@ -293,10 +293,7 @@ Request Headers卡片中，我看不到修改后的 headers 字段。
         autoDecompress: z.boolean().default(true),
       }),
       // Updating
-      async transform(
-        content: Content,
-        ctx: PluginContext,
-      ): Promise<Content | null> {
+      async transform(content: Content, ctx: PluginContext): Promise<Content | null> {
         // ...
       },
       onMount(ctx) {
@@ -412,11 +409,7 @@ useEffect(() => {
     bodyViewerContext.addAction({
       id: "text/copy",
       render: () => {
-        return (
-          <Button onClick={() => navigator.clipboard.writeText(content.text)}>
-            Copy
-          </Button>
-        );
+        return <Button onClick={() => navigator.clipboard.writeText(content.text)}>Copy</Button>;
       },
     });
   }
@@ -810,11 +803,13 @@ child_process在启动完成监听之后，需要将最终的可访问的url，�
 这样一来，我们可以完全放弃jsonrpc，完全改成使用请求转发即可。
 hooks的代码可以大大简化。但是要注意，我们仍然是区分request/response的hook
 也就是说request的hook是这样的：
+
 1. hook-req-requestBody（binary）会同时包含 `head-len + req-url-method-headers + req-body`，这个head-len是固定的是用来表示`req-url-method-headers`的长度，然后是流式的req-body内容。
 2. 处理完后，也是通过 hook-req-responseBody 来做响应：`head-len + req-url-method-headers + req-body`,也是流式返回完整内容
-2. 所以如果不做任何篡改，只需要原封不动地把所有requestBody内容转发会回去responseBody，虽然效率可能偏低，但是目前这个方案最保守，后续我们会提供一些其它的升级，比如通过 hook-req-responseCode 来代表不同的操作指令等等。如果你觉得第一版本有些指令可以内置，那你就直接做进去，不然当前实现这种最保守的方案就行。
+3. 所以如果不做任何篡改，只需要原封不动地把所有requestBody内容转发会回去responseBody，虽然效率可能偏低，但是目前这个方案最保守，后续我们会提供一些其它的升级，比如通过 hook-req-responseCode 来代表不同的操作指令等等。如果你觉得第一版本有些指令可以内置，那你就直接做进去，不然当前实现这种最保守的方案就行。
 
 反过来response的hook是这样的：
+
 1. hook-res-requestBody（bianry）包含`head-len + res-status-headers + res-body`，因此同理，返回的 hook-res-responseBody也是`head-len + res-status-headers + res-body`，代表重写后的内容
 
 ---
@@ -846,3 +841,32 @@ BUG: 现在页面会突然跳回，比如我在`/control`，忽然会跳回`/?pa
 
 BUG: `/control` 页面本质是用来读写 proxy-config.json 的地方。但是现在我在界面上做的编辑操作，并没有立刻更新到文件中。
 比如:“切换自动监听配置文件”、“拖动转发规则的顺序”
+
+BUG: “重载配置”的功能依然有问题，但是刷新页面却能获得完整正确的配置。
+解决方案：
+
+1. 我们后端没有内存数据，一切来源都是实时读写磁盘配置
+2. 前端的内存对象，基于autoWatchConfig来切换同步开关，如果autoWatchConfig==true,那么就启动effect来监听推送，收到推送就重新获取配置，更新内存对象
+3. 前端修改的时候，首先修改内存对象，然后发起PUT操作将内存对象序列化后推送到后端，让后端写入磁盘
+
+完成以上几点，问题基本就解决了
+
+---
+
+BUG: 自动推送 和 智能排序，应该属于 instances 下每个“转发实例（端口）”的settings
+
+---
+
+BUG: 现在重启内核，理论上应只是杀掉Worker然后重新绑定。注意是先绑定，如果绑定报错端口占用再去杀进程。否则可能发生进程自杀。
+
+---
+
+BUG：我发现终端一直在报告这个日志 `[droid-to-claude] Listening on http://127.0.0.1:xxxx/`。说明hooksPool到自动释放有问题：
+解决方案：
+
+1. hooksPool 使用引用计数（使用`Set<string/*reasonId*/>`）来实现 hookProcess 的管理
+2. 每一个 hookProcess 对应的是配置文件中的一个hook配置，基于hook配置计算出一个hash作为hookId，一个hookId只会有一个hookProcess
+3. 配置会对 hookProcess 做一次引用，所以如果配置变更了（来自线程通讯对配置做热更新），新配置会向hooksPool注册hookId，也就是引用+1，旧配置会被释放，也就是引用-1。
+4. 每一个请求转发的处理，用到相关的hookProcess，也会引用+1，请求处理完成后，则是引用-1
+5. 总结：基于以上的逻辑，如果旧配置被更新成新配置，然后所有的相关的请求也都处理完成了，hookProcess的引用计数=0了，才会释放hookProcess。
+6. 总结：基于以上的逻辑，如果配置没有更新，即便没有任何请求转发，那么hookProcess也不会释放，因为配置对它有引用+1
