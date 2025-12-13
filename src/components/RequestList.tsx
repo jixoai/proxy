@@ -103,8 +103,8 @@ export function RequestList() {
     filterUrl,
     selectedId,
     selectRequest,
-    activeInstanceId,
-    activeRuleId,
+    activeInstanceName,
+    activeRuleName,
     deleteRequest,
     jumpToForwardRule,
   } = useProxyViewer();
@@ -113,17 +113,17 @@ export function RequestList() {
   const filteredRequests = useMemo(() => {
     return requests.filter((req) => {
       // 按实例过滤
-      if (activeInstanceId !== null) {
-        const reqInstanceId = req.metadata.instanceId;
-        if (reqInstanceId !== activeInstanceId) {
+      if (activeInstanceName !== null) {
+        const reqInstanceName = req.metadata.instanceName || "unknown";
+        if (reqInstanceName !== activeInstanceName) {
           return false;
         }
       }
 
       // 按规则过滤
-      if (activeRuleId !== null) {
-        const ruleId = req.metadata.forwardRule?.id?.toString() || "unknown";
-        if (ruleId !== activeRuleId) {
+      if (activeRuleName !== null) {
+        const ruleName = req.metadata.forwardName || "unknown";
+        if (ruleName !== activeRuleName) {
           return false;
         }
       }
@@ -143,7 +143,7 @@ export function RequestList() {
       }
       return true;
     });
-  }, [requests, activeInstanceId, activeRuleId, filterMethod, filterStatus, filterUrl]);
+  }, [requests, activeInstanceName, activeRuleName, filterMethod, filterStatus, filterUrl]);
 
   // Pagination
   const totalPages = Math.ceil(filteredRequests.length / ITEMS_PER_PAGE);
@@ -276,11 +276,11 @@ export function RequestList() {
                       }
                     />
                     <ContextMenuItem
-                      disabled={!req.metadata.forwardRule?.id}
+                      disabled={!req.metadata.forwardName}
                       onClick={() => {
-                        const fr = req.metadata.forwardRule;
-                        if (fr?.id) {
-                          jumpToForwardRule(req.metadata.instanceId, fr.id);
+                        const forwardName = req.metadata.forwardName;
+                        if (forwardName) {
+                          jumpToForwardRule(req.metadata.instanceName || "", forwardName);
                         }
                       }}
                       className="flex items-center gap-2"

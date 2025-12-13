@@ -4,29 +4,29 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useProxyViewer, type RequestData } from "@/components/ProxyViewerContext";
 
 interface RuleTabsProps {
-  instanceId: number | null;
+  instanceName: string | null;
 }
 
-export function RuleTabs({ instanceId }: RuleTabsProps) {
-  const { requests, availableRules, activeRuleId, setActiveRuleId } = useProxyViewer();
+export function RuleTabs({ instanceName }: RuleTabsProps) {
+  const { requests, availableRules, activeRuleName, setActiveRuleName } = useProxyViewer();
 
   // 过滤当前实例的请求
   const instanceRequests = useMemo(() => {
-    if (instanceId === null) {
+    if (instanceName === null) {
       return requests;
     }
     return requests.filter((req) => {
-      return req.metadata.instanceId === instanceId;
+      return req.metadata.instanceName === instanceName;
     });
-  }, [requests, instanceId]);
+  }, [requests, instanceName]);
 
   // 按规则分组统计
   const ruleRequestCounts = useMemo(() => {
     const counts = new Map<string, number>();
 
     instanceRequests.forEach((req) => {
-      const ruleId = req.metadata.forwardRule?.id?.toString() || "unknown";
-      counts.set(ruleId, (counts.get(ruleId) || 0) + 1);
+      const ruleName = req.metadata.forwardName || "unknown";
+      counts.set(ruleName, (counts.get(ruleName) || 0) + 1);
     });
 
     return counts;
@@ -36,17 +36,17 @@ export function RuleTabs({ instanceId }: RuleTabsProps) {
 
   const handleTabChange = (value: string) => {
     if (value === "all") {
-      setActiveRuleId(null);
+      setActiveRuleName(null);
     } else {
-      setActiveRuleId(value);
+      setActiveRuleName(value);
     }
   };
 
-  const currentValue = activeRuleId === null ? "all" : activeRuleId;
+  const currentValue = activeRuleName === null ? "all" : activeRuleName;
 
   // 过滤出有请求的规则
   const rulesWithRequests = availableRules.filter((rule) => {
-    const count = ruleRequestCounts.get(rule.id.toString()) || 0;
+    const count = ruleRequestCounts.get(rule.name) || 0;
     return count > 0;
   });
 
@@ -64,11 +64,11 @@ export function RuleTabs({ instanceId }: RuleTabsProps) {
             </Badge>
           </TabsTrigger>
           {rulesWithRequests.map((rule) => {
-            const count = ruleRequestCounts.get(rule.id.toString()) || 0;
+            const count = ruleRequestCounts.get(rule.name) || 0;
             return (
               <TabsTrigger
-                key={rule.id}
-                value={rule.id.toString()}
+                key={`${rule.instanceName}-${rule.name}`}
+                value={rule.name}
                 className="data-[state=active]:border-primary rounded-none border-b-2 border-transparent data-[state=active]:bg-transparent"
               >
                 {rule.name}

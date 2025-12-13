@@ -14,14 +14,15 @@ import { Label } from "@/components/ui/label";
 import { Plus, Tag, ExternalLink as LinkIcon } from "lucide-react";
 import { CustomHeadersInput } from "./CustomHeadersInput";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import type { ProxyConfigFile } from "@/types/proxy";
 
 interface CreateForwardDialogProps {
-  instanceId: number;
+  instanceName: string;
   trigger?: React.ReactNode;
   onCreated: () => void;
 }
 
-export function CreateForwardDialog({ instanceId, trigger, onCreated }: CreateForwardDialogProps) {
+export function CreateForwardDialog({ instanceName, trigger, onCreated }: CreateForwardDialogProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -38,24 +39,47 @@ export function CreateForwardDialog({ instanceId, trigger, onCreated }: CreateFo
     setLoading(true);
 
     try {
-      const response = await fetch("/api/forwards", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          instance_id: instanceId,
-          name,
-          target_url: targetUrl,
-          enabled: true,
-          path: path || null,
-          description: description || null,
-          method: method.trim() || "*",
-          custom_headers: customHeaders || undefined,
-        }),
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const instance = config.instances.find((i) => i.name === instanceName);
+      
+      if (!instance) {
+        throw new Error("Instance not found");
+      }
+
+      // 解析 headers
+      let headers: Record<string, string> | null = null;
+      if (customHeaders.trim()) {
+        try {
+          headers = JSON.parse(customHeaders);
+        } catch {
+          throw new Error("Invalid headers JSON");
+        }
+      }
+
+      // 解析 methods
+      const methods = method.trim() === "*" || !method.trim() 
+        ? ["*"] 
+        : method.split(",").map(m => m.trim().toUpperCase()).filter(Boolean);
+
+      instance.forwards.push({
+        name,
+        enabled: true,
+        target: targetUrl,
+        description: description || null,
+        path: path || null,
+        methods,
+        headers,
       });
 
-      const data = await response.json();
+      const saveResponse = await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
 
-      if (!response.ok) {
+      if (!saveResponse.ok) {
+        const data = await saveResponse.json();
         throw new Error(data.error || "Failed to create forward");
       }
 

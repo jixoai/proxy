@@ -81,24 +81,21 @@ let hooksExecutor: HooksExecutor | null = null;
 if (args.values.config) {
   try {
     const content = fs.readFileSync(args.values.config, "utf-8");
-    const parsed = JSON.parse(content) as {
-      instances: Array<{
-        name: string;
-        enabled?: boolean;
-        headers?: Record<string, string> | null;
-        hooks?: HooksConfig | null;
-        forwards: ForwardRule[];
-      }>;
+    // 读取 InstanceRuntimeConfig 格式（单一数据源）
+    const instanceConfig = JSON.parse(content) as {
+      name: string;
+      headers?: Record<string, string> | null;
+      hooks?: HooksConfig | null;
+      forwards: ForwardRule[];
     };
 
-    const instance = parsed.instances.find((i) => i.name === INSTANCE_NAME);
-    if (!instance) {
-      console.error(`[Config] Instance "${INSTANCE_NAME}" not found`);
+    if (instanceConfig.name !== INSTANCE_NAME) {
+      console.error(`[Config] Config file instance name "${instanceConfig.name}" does not match "${INSTANCE_NAME}"`);
       process.exit(1);
     }
-    forwards = normalizeForwardGroups((instance.forwards ?? []).filter((f) => f && f.enabled));
-    instanceHeaders = instance.headers ?? null;
-    instanceHooks = instance.hooks ?? null;
+    forwards = normalizeForwardGroups((instanceConfig.forwards ?? []).filter((f) => f && f.enabled));
+    instanceHeaders = instanceConfig.headers ?? null;
+    instanceHooks = instanceConfig.hooks ?? null;
     log.info(`[Config] Loaded ${forwards.length} forward rules for "${INSTANCE_NAME}"`);
 
     // 初始化 hooks 执行器

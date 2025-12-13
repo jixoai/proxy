@@ -11,18 +11,10 @@ import { decompressData, type DecompressRequest, type DecompressResponse } from 
 import type { ProxyLogMessage } from "./lib/proxy-manager";
 import type { ProxyInstancesManager } from "./proxy-instances-manager";
 import { db } from "./lib/db";
-import type { ProxyForwardConfig, ProxyInstanceConfig } from "./types/proxy";
+import type { ProxyForwardConfig } from "./types/proxy";
 import {
   getAllInstances,
   getInstanceByName,
-  upsertInstance,
-  deleteInstance,
-  getForwardsByInstanceName,
-  upsertForward,
-  addForward,
-  deleteForwardByIndex,
-  updateForwardByIndex,
-  reorderForwardsByIndexes,
   getConfigFilePath,
   loadConfig,
   saveConfig,
@@ -40,7 +32,7 @@ import { dbListener } from "./lib/db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, isDataUrl } from "./lib/data-url";
 import { extractContentTypeFromHeaders, isTextLikeMime } from "./lib/http-utils";
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
-import { forwardStatsManager, type ForwardEndpointStats } from "./lib/forward-stats-manager";
+import { forwardStatsManager } from "./lib/forward-stats-manager";
 import { reorderForwardsByIndexes as reorderForwardsByIndexesDirect } from "./lib/config-store";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -74,223 +66,7 @@ function coerceBodyDataUrl(
   return bufferToDataUrl(buffer, mime);
 }
 
-interface ForwardKey {
-  instanceName: string;
-  forwardIndex: number;
-  forwardName: string;
-}
-
-interface ConfigCache {
-  instanceNameToId: Map<string, number>;
-  instanceIdToName: Map<number, string>;
-  forwardIdToKey: Map<number, ForwardKey>;
-  forwardIndexToId: Map<string, number>;
-  forwardIndexToConfig: Map<string, ProxyForwardConfig>;
-  forwardNameFirstId: Map<string, number>;
-}
-
-function buildConfigCache(): ConfigCache {
-  const instances = getAllInstances();
-  const instanceNameToId = new Map<string, number>();
-  const instanceIdToName = new Map<number, string>();
-  const forwardIdToKey = new Map<number, ForwardKey>();
-  const forwardIndexToId = new Map<string, number>();
-  const forwardIndexToConfig = new Map<string, ProxyForwardConfig>();
-  const forwardNameFirstId = new Map<string, number>();
-
-  let forwardCounter = 1;
-
-  instances.forEach((instance, index) => {
-    const instanceId = index + 1;
-    instanceNameToId.set(instance.name, instanceId);
-    instanceIdToName.set(instanceId, instance.name);
-
-    instance.forwards.forEach((forward, forwardIndex) => {
-      const forwardId = forwardCounter++;
-      const keyWithIndex = `${instance.name}:${forwardIndex}`;
-
-      forwardIdToKey.set(forwardId, {
-        instanceName: instance.name,
-        forwardIndex,
-        forwardName: forward.name,
-      });
-      forwardIndexToId.set(keyWithIndex, forwardId);
-      forwardIndexToConfig.set(keyWithIndex, forward);
-
-      const nameKey = `${instance.name}:${forward.name}`;
-      if (!forwardNameFirstId.has(nameKey)) {
-        forwardNameFirstId.set(nameKey, forwardId);
-      }
-    });
-  });
-
-  return {
-    instanceNameToId,
-    instanceIdToName,
-    forwardIdToKey,
-    forwardIndexToId,
-    forwardIndexToConfig,
-    forwardNameFirstId,
-  };
-}
-
-let configCache = buildConfigCache();
-
-function refreshConfigCache(): void {
-  configCache = buildConfigCache();
-}
-
-function getInstanceIdByName(name: string | null | undefined): number | null {
-  if (!name) return null;
-  return configCache.instanceNameToId.get(name) ?? null;
-}
-
-function getInstanceNameById(id: number): string | null {
-  return configCache.instanceIdToName.get(id) ?? null;
-}
-
-function getForwardIdByNames(
-  instanceName: string | null | undefined,
-  forwardName: string | null | undefined,
-): number | null {
-  if (!instanceName || !forwardName) return null;
-  const key = `${instanceName}:${forwardName}`;
-  return configCache.forwardNameFirstId.get(key) ?? null;
-}
-
-function getForwardKeyById(id: number): ForwardKey | null {
-  return configCache.forwardIdToKey.get(id) ?? null;
-}
-
-function getForwardIdByIndex(instanceName: string, forwardIndex: number): number | null {
-  return configCache.forwardIndexToId.get(`${instanceName}:${forwardIndex}`) ?? null;
-}
-
-function getForwardConfig(
-  instanceName: string | null | undefined,
-  forwardName: string | null | undefined,
-): ProxyForwardConfig | null {
-  if (!instanceName || !forwardName) return null;
-  const firstId = getForwardIdByNames(instanceName, forwardName);
-  if (!firstId) return null;
-  const key = getForwardKeyById(firstId);
-  if (!key) return null;
-  return configCache.forwardIndexToConfig.get(`${key.instanceName}:${key.forwardIndex}`) ?? null;
-}
-
-function parseHeadersValue(value: unknown): Record<string, string> | null {
-  if (value == null || value === "") return null;
-  try {
-    const parsed =
-      typeof value === "string" ? JSON.parse(value) : (value as Record<string, unknown>);
-    if (typeof parsed !== "object" || parsed === null) {
-      throw new Error("Invalid headers format");
-    }
-    const entries = Object.entries(parsed).filter(([, v]) => typeof v === "string") as Array<
-      [string, string]
-    >;
-    if (entries.length === 0) {
-      return null;
-    }
-    return Object.fromEntries(entries);
-  } catch (error) {
-    throw new Error("Invalid headers JSON");
-  }
-}
-
-function normalizeMethods(input: unknown): string[] {
-  if (typeof input !== "string") return ["*"];
-  const trimmed = input.trim();
-  if (!trimmed || trimmed === "*") return ["*"];
-  return trimmed
-    .split(",")
-    .map((token) => token.trim().toUpperCase())
-    .filter(Boolean);
-}
-
-function parseInstanceIdParam(param: string | undefined): {
-  id: number;
-  name: string;
-} {
-  if (!param) {
-    throw new Error("Instance id is required");
-  }
-  const id = Number(param);
-  if (!Number.isInteger(id) || id <= 0) {
-    throw new Error("Invalid instance id");
-  }
-  const name = getInstanceNameById(id);
-  if (!name) {
-    throw new Error("Instance not found");
-  }
-  return { id, name };
-}
-
-function parseForwardIdParam(param: string | undefined): {
-  id: number;
-  instanceName: string;
-  forwardName: string;
-  forwardIndex: number;
-} {
-  if (!param) {
-    throw new Error("Forward id is required");
-  }
-  const id = Number(param);
-  if (!Number.isInteger(id) || id <= 0) {
-    throw new Error("Invalid forward id");
-  }
-  const key = getForwardKeyById(id);
-  if (!key) {
-    throw new Error("Forward not found");
-  }
-  return {
-    id,
-    instanceName: key.instanceName,
-    forwardName: key.forwardName,
-    forwardIndex: key.forwardIndex,
-  };
-}
-
-function serializeInstance(instance: ProxyInstanceConfig, instanceId: number) {
-  return {
-    id: instanceId,
-    name: instance.name,
-    port: instance.port,
-    enabled: instance.enabled,
-    description: instance.description ?? null,
-    instance_headers: instance.headers ? JSON.stringify(instance.headers) : null,
-  };
-}
-
-function serializeForward(instanceId: number, forward: ProxyForwardConfig, forwardId: number) {
-  return {
-    id: forwardId,
-    instance_id: instanceId,
-    name: forward.name,
-    target_url: forward.target,
-    enabled: forward.enabled,
-    description: forward.description ?? null,
-    method: !forward.methods || forward.methods.length === 0 ? "*" : forward.methods.join(","),
-    path: forward.path ?? null,
-    custom_headers: forward.headers ? JSON.stringify(forward.headers) : null,
-  };
-}
-
-// 将 ProxyRequest 转换为 RequestData 格式
 function formatProxyRequest(req: LoggedRequest): RequestData {
-  const instanceId = getInstanceIdByName(req.instance_name) ?? -1;
-  const forwardId = getForwardIdByNames(req.instance_name, req.forward_name);
-  const forwardConfig = getForwardConfig(req.instance_name, req.forward_name);
-
-  const forwardRule =
-    forwardId && req.forward_name
-      ? {
-          id: forwardId,
-          name: req.forward_name,
-          target_url: forwardConfig?.target ?? "",
-        }
-      : undefined;
-
   const hasHookedRequest = !!req.hookedRequest;
 
   return {
@@ -299,8 +75,8 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
     metadata: {
       timestamp: req.timestamp,
       duration: req.response ? `${req.response.durationMs}ms` : "0ms",
-      instanceId,
-      forwardRule,
+      instanceName: req.instance_name,
+      forwardName: req.forward_name,
       status: req.status,
       isWebSocket: req.is_websocket,
       websocketDirection: req.websocket_direction,
@@ -335,15 +111,13 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
   };
 }
 
-// 读取所有请求（从数据库）
 function getAllRequests(): RequestData[] {
   const requests = dbGetAllRequests();
   return requests.map(formatProxyRequest);
 }
 
-// 读取所有请求（从数据库，支持过滤）
 function getAllRequestsFiltered(filters?: {
-  forward_id?: number | null;
+  forward_name?: string | null;
   method?: string;
   status_code?: number;
   url_pattern?: string;
@@ -359,7 +133,6 @@ function getAllRequestsFiltered(filters?: {
  * @returns Bun Server 实例
  */
 export function startViewerServer(manager: ProxyInstancesManager, port: number) {
-  // WebSocket 客户端管理
   const wsClients = new Set<ServerWebSocket<unknown>>();
   const logClients = new Set<ServerWebSocket<unknown>>();
   const statsClients = new Set<ServerWebSocket<unknown>>();
@@ -367,10 +140,8 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
   let watchDebounce: NodeJS.Timeout | null = null;
   let watchEnabled = false;
 
-  // 初始化统计管理器
   forwardStatsManager.init();
 
-  // 广播统计数据到所有订阅的客户端
   const broadcastStats = () => {
     if (statsClients.size === 0) return;
     const stats = forwardStatsManager.getAllStats();
@@ -385,12 +156,10 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     }
   };
 
-  // 监听统计更新事件
   forwardStatsManager.on("stats-updated", () => {
     broadcastStats();
   });
 
-  // 监听自动排序事件
   forwardStatsManager.on(
     "auto-sort-needed",
     async ({ instanceName, forwardName }: { instanceName: string; forwardName: string }) => {
@@ -402,7 +171,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         return;
       }
 
-      // 找出当前 forwardName 组的所有索引
       const currentIndexes: number[] = [];
       instance.forwards.forEach((f, idx) => {
         if (f.name === forwardName) {
@@ -411,9 +179,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       });
 
       if (currentIndexes.length < 2) {
-        log.info(
-          `[AutoSort] Only ${currentIndexes.length} endpoints for ${forwardName}, skipping`,
-        );
+        log.info(`[AutoSort] Only ${currentIndexes.length} endpoints for ${forwardName}, skipping`);
         return;
       }
 
@@ -432,7 +198,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         `[AutoSort] Reordering ${instanceName}/${forwardName}: [${currentIndexes.join(",")}] -> [${newOrder.join(",")}]`,
       );
 
-      // 重新计算完整的新顺序
       const fullNewOrder = instance.forwards.map((_, idx) => {
         const groupIdx = currentIndexes.indexOf(idx);
         if (groupIdx >= 0) {
@@ -443,13 +208,11 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
       try {
         reorderForwardsByIndexesDirect(instanceName, fullNewOrder as number[]);
-        refreshConfigCache();
       } catch (error) {
         debugAutoSort("Failed to reorder: %s", error);
         return;
       }
 
-      // 热更新到 worker
       try {
         await manager.reloadInstance(instanceName);
         log.info(`[AutoSort] Instance ${instanceName} reloaded successfully`);
@@ -458,7 +221,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         return;
       }
 
-      // 通知前端配置已更新
       const message = JSON.stringify({ type: "config-changed" });
       for (const client of wsClients) {
         try {
@@ -470,9 +232,8 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     },
   );
 
-  // 订阅 ProxyInstancesManager 的日志并广播给客户端
-  manager.onLog((log: ProxyLogMessage) => {
-    const message = JSON.stringify(log);
+  manager.onLog((logMsg: ProxyLogMessage) => {
+    const message = JSON.stringify(logMsg);
     for (const client of logClients) {
       try {
         client.send(message);
@@ -483,9 +244,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     }
   });
 
-  // Note: 文件系统监听已移除，现在使用数据库事件系统
-
-  // 清理旧的文件系统记录
   const OLD_PROXY_DIR = path.join(__dirname, ".tmp", "proxy");
   if (fs.existsSync(OLD_PROXY_DIR)) {
     try {
@@ -502,7 +260,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       failed: [] as Array<{ name: string; error: string }>,
     };
     loadConfig();
-    refreshConfigCache();
     const running = manager.getRunningInstanceNames();
     for (const name of running) {
       try {
@@ -513,7 +270,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       }
     }
 
-    // 通知前端配置已更新
     const message = JSON.stringify({ type: "config-changed" });
     for (const client of wsClients) {
       try {
@@ -560,21 +316,16 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     log.info("[Reload] Stopped watching config file");
   };
 
-  // 从配置文件恢复全局设置
   const initialConfig = loadConfig();
-  if (initialConfig.settings) {
-    if (initialConfig.settings.autoWatchConfig) {
-      enableConfigWatch();
-    }
+  if (initialConfig.settings?.autoWatchConfig) {
+    enableConfigWatch();
   }
-  // 初始化各实例的 autoSort 状态
   for (const instance of initialConfig.instances) {
-    if (instance.settings?.autoSort) {
-      forwardStatsManager.setAutoSortEnabled(instance.name, true);
+    if (instance.settings?.autoSortSameNameForwards) {
+      forwardStatsManager.setAutoSortSameNameForwardsEnabled(instance.name, true);
     }
   }
 
-  // 读取单个请求的详细信息（从数据库）
   function getRequestDetail(id: number): RequestData | null {
     const req = getProxyRequestById(id);
     if (!req) return null;
@@ -606,7 +357,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       formatted.requestBody = requestBodyDataUrl;
     }
 
-    // 如果有 hooked 请求，添加 hooked 数据
     if (req.hookedRequest) {
       const hookedHeaders = req.hookedRequest.headers ?? {};
       formatted.hookedRequestContent =
@@ -668,174 +418,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     port,
 
     routes: {
-      "/api/requests": {
-        async GET(req) {
-          const url = new URL(req.url);
-          const forwardNameParam = url.searchParams.get("forward_name");
-          const method = url.searchParams.get("method");
-          const statusCodeParam = url.searchParams.get("status_code");
-          const urlPattern = url.searchParams.get("url_pattern");
-
-          // 构建过滤器
-          const filters: {
-            forward_name?: string | null;
-            method?: string;
-            status_code?: number;
-            url_pattern?: string;
-          } = {};
-
-          if (forwardNameParam !== null) {
-            filters.forward_name = forwardNameParam === "null" ? null : forwardNameParam;
-          }
-
-          if (method) {
-            filters.method = method;
-          }
-
-          if (statusCodeParam) {
-            const statusCode = parseInt(statusCodeParam);
-            if (!isNaN(statusCode)) {
-              filters.status_code = statusCode;
-            }
-          }
-
-          if (urlPattern) {
-            filters.url_pattern = urlPattern;
-          }
-
-          const requests =
-            Object.keys(filters).length > 0 ? getAllRequestsFiltered(filters) : getAllRequests();
-          return Response.json(requests);
-        },
-      },
-      "/api/requests/:id": {
-        async GET(req) {
-          const id = parseInt(req.params.id);
-          if (isNaN(id)) {
-            return Response.json({ error: "Invalid request ID" }, { status: 400 });
-          }
-          const detail = getRequestDetail(id);
-          if (!detail) {
-            return Response.json({ error: "Request not found" }, { status: 404 });
-          }
-          return Response.json(detail);
-        },
-        async DELETE(req) {
-          try {
-            const url = new URL(req.url);
-            const id = parseInt(req.params.id);
-
-            if (isNaN(id)) {
-              return Response.json(
-                { success: false, error: "Invalid request ID" },
-                { status: 400 },
-              );
-            }
-
-            const success = dbDeleteProxyRequest(id);
-
-            if (success) {
-              return Response.json({
-                success: true,
-                message: "Request deleted",
-              });
-            } else {
-              return Response.json({ success: false, error: "Request not found" }, { status: 404 });
-            }
-          } catch (error) {
-            console.error("Failed to delete request:", error);
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      "/api/clear": {
-        async POST() {
-          try {
-            // 从数据库清除所有请求
-            dbClearAllRequests();
-            // Note: requestEvents.emit("clear-all") is called inside dbClearAllRequests()
-
-            return Response.json({
-              success: true,
-              message: "All requests cleared",
-            });
-          } catch (error) {
-            console.error("Failed to clear requests:", error);
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      "/api/forwards": {
-        async GET() {
-          try {
-            const instances = getAllInstances();
-            const list: Array<{
-              id: number;
-              name: string;
-              instance_id: number;
-            }> = [];
-
-            instances.forEach((instance, index) => {
-              const instanceId = index + 1;
-              instance.forwards.forEach((forward, forwardIndex) => {
-                const forwardId = getForwardIdByIndex(instance.name, forwardIndex);
-                if (forwardId && forward.enabled) {
-                  list.push({
-                    id: forwardId,
-                    name: `${instance.name}/${forward.name}`,
-                    instance_id: instanceId,
-                  });
-                }
-              });
-            });
-
-            return Response.json(list);
-          } catch (error) {
-            console.error("Failed to get forwards:", error);
-            return Response.json({ error: String(error) }, { status: 500 });
-          }
-        },
-        async POST(req) {
-          try {
-            const body = await req.json();
-            const instanceId = Number(body.instance_id);
-            if (!Number.isInteger(instanceId)) {
-              return Response.json(
-                { success: false, error: "Invalid instance id" },
-                { status: 400 },
-              );
-            }
-            const instanceName = getInstanceNameById(instanceId);
-            if (!instanceName) {
-              return Response.json(
-                { success: false, error: "Instance not found" },
-                { status: 404 },
-              );
-            }
-            const forward: ProxyForwardConfig = {
-              name: String(body.name),
-              enabled: body.enabled !== false,
-              target: String(body.target_url),
-              description: body.description ?? null,
-              path: body.path ?? null,
-              methods: normalizeMethods(body.method),
-              headers: parseHeadersValue(body.custom_headers),
-            };
-            addForward(instanceName, forward);
-            refreshConfigCache();
-            const instance = getInstanceByName(instanceName);
-            const forwardIndex =
-              instance && instance.forwards.length > 0 ? instance.forwards.length - 1 : null;
-            const createdId =
-              forwardIndex != null ? getForwardIdByIndex(instanceName, forwardIndex) : null;
-            return Response.json({ id: createdId, success: true });
-          } catch (error) {
-            console.error("Failed to create forward:", error);
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      // ========== 配置文件 API (单一数据源) ==========
+      // ========== 配置文件 API（单一数据源）==========
       "/api/config": {
         async GET() {
           try {
@@ -849,8 +432,16 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           try {
             const body = await req.json();
             saveConfig(body);
-            refreshConfigCache();
-            // 通知前端配置已更新
+            
+            // 同步 autoSortSameNameForwards 状态到 forwardStatsManager
+            const config = loadConfig();
+            for (const instance of config.instances) {
+              forwardStatsManager.setAutoSortSameNameForwardsEnabled(
+                instance.name,
+                instance.settings?.autoSortSameNameForwards ?? false,
+              );
+            }
+            
             const message = JSON.stringify({ type: "config-changed" });
             for (const client of wsClients) {
               try {
@@ -865,6 +456,8 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
+
+      // ========== 配置热更新 ==========
       "/api/reload": {
         async POST() {
           try {
@@ -890,7 +483,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             } else {
               disableConfigWatch();
             }
-            // Persist the setting to config file
             const config = loadConfig();
             if (!config.settings) {
               config.settings = { autoWatchConfig: enabled };
@@ -904,138 +496,50 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
-      // ========== 统计数据 API ==========
-      "/api/stats": {
-        async GET() {
-          const stats = forwardStatsManager.getAllStats();
-          return Response.json(stats);
-        },
-      },
-      "/api/stats/instance/:name": {
-        async GET(req) {
-          const instanceName = req.params.name;
-          const stats = forwardStatsManager.getInstanceStats(instanceName);
-          return Response.json(stats);
-        },
-      },
-      "/api/auto-sort/status": {
-        async GET() {
-          // 返回所有实例的 autoSort 状态
-          const statuses: Record<string, boolean> = {};
-          for (const [id, name] of configCache.instanceIdToName.entries()) {
-            statuses[name] = forwardStatsManager.getInstanceAutoSortEnabled(name);
-          }
-          return Response.json({ statuses });
-        },
-      },
-      "/api/instances/:id/auto-sort/status": {
-        async GET(req) {
-          try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            return Response.json({ enabled: forwardStatsManager.getInstanceAutoSortEnabled(name) });
-          } catch (error) {
-            return Response.json({ error: String(error) }, { status: 400 });
-          }
-        },
-      },
-      "/api/instances/:id/auto-sort/toggle": {
+
+      // ========== 实例运行控制（用 name 标识）==========
+      "/api/runtime/instances/:name/start": {
         async POST(req) {
           try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            const body = await req.json();
-            const enabled = Boolean(body?.enabled);
-            forwardStatsManager.setAutoSortEnabled(name, enabled);
-            // Persist the setting to config file
-            const config = loadConfig();
-            const instance = config.instances.find((i) => i.name === name);
-            if (instance) {
-              if (!instance.settings) {
-                instance.settings = { autoSort: enabled };
-              } else {
-                instance.settings.autoSort = enabled;
-              }
-              saveConfig(config);
-            }
-            return Response.json({ success: true, enabled });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      "/api/instances/:id/settings": {
-        async GET(req) {
-          try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            const instance = getInstanceByName(name);
-            if (!instance) {
-              return Response.json({ error: "Instance not found" }, { status: 404 });
-            }
+            const name = decodeURIComponent(req.params.name);
+            await manager.startInstance(name);
             return Response.json({
-              autoSort: instance.settings?.autoSort ?? false,
-              autoPushConfig: instance.settings?.autoPushConfig ?? true,
+              success: true,
+              status: manager.getInstanceStatus(name),
             });
           } catch (error) {
-            return Response.json({ error: String(error) }, { status: 400 });
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
-        async PUT(req) {
+      },
+      "/api/runtime/instances/:name/stop": {
+        async POST(req) {
           try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            const body = await req.json();
-            const config = loadConfig();
-            const instance = config.instances.find((i) => i.name === name);
-            if (!instance) {
-              return Response.json({ error: "Instance not found" }, { status: 404 });
-            }
-            if (!instance.settings) {
-              instance.settings = {};
-            }
-            if (body.autoSort !== undefined) {
-              instance.settings.autoSort = Boolean(body.autoSort);
-              forwardStatsManager.setAutoSortEnabled(name, instance.settings.autoSort);
-            }
-            if (body.autoPushConfig !== undefined) {
-              instance.settings.autoPushConfig = Boolean(body.autoPushConfig);
-            }
-            saveConfig(config);
-            return Response.json({ success: true, settings: instance.settings });
+            const name = decodeURIComponent(req.params.name);
+            await manager.stopInstance(name);
+            return Response.json({
+              success: true,
+              status: manager.getInstanceStatus(name),
+            });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },
       },
-      // 配置同步检查
-      "/api/instances/:id/config-sync": {
+      "/api/runtime/instances/:name/status": {
         async GET(req) {
           try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            const synced = await manager.checkInstanceConfigSync(name);
-            return Response.json({ synced });
+            const name = decodeURIComponent(req.params.name);
+            return Response.json(manager.getInstanceStatus(name));
           } catch (error) {
             return Response.json({ error: String(error) }, { status: 400 });
           }
         },
       },
-      // 获取实例的 worker 当前配置
-      "/api/instances/:id/worker-config": {
-        async GET(req) {
-          try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            const config = await manager.getInstanceWorkerConfig(name);
-            if (!config) {
-              return Response.json({ error: "Instance not running" }, { status: 404 });
-            }
-            return Response.json(config);
-          } catch (error) {
-            return Response.json({ error: String(error) }, { status: 400 });
-          }
-        },
-      },
-      // 推送配置到 worker（热更新）
-      "/api/instances/:id/push-config": {
+      "/api/runtime/instances/:name/push-config": {
         async POST(req) {
           try {
-            const { name } = parseInstanceIdParam(req.params.id);
+            const name = decodeURIComponent(req.params.name);
             const status = manager.getInstanceStatus(name);
             if (!status.running) {
               return Response.json(
@@ -1050,19 +554,126 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
-      // ========== WebWorker 通用构建接口 ==========
+      "/api/runtime/instances/:name/config-sync": {
+        async GET(req) {
+          try {
+            const name = decodeURIComponent(req.params.name);
+            const result = await manager.checkInstanceConfigSyncDetailed(name);
+            return Response.json(result);
+          } catch (error) {
+            return Response.json({ error: String(error) }, { status: 400 });
+          }
+        },
+      },
+      "/api/runtime/statuses": {
+        async GET() {
+          const instances = getAllInstances();
+          const result: Record<string, any> = {};
+          for (const instance of instances) {
+            result[instance.name] = manager.getInstanceStatus(instance.name);
+          }
+          return Response.json(result);
+        },
+      },
+
+      // ========== 统计数据 API ==========
+      "/api/stats": {
+        async GET() {
+          const stats = forwardStatsManager.getAllStats();
+          return Response.json(stats);
+        },
+      },
+
+      // ========== 请求日志 API ==========
+      "/api/requests": {
+        async GET(req) {
+          const url = new URL(req.url);
+          const forwardNameParam = url.searchParams.get("forward_name");
+          const method = url.searchParams.get("method");
+          const statusCodeParam = url.searchParams.get("status_code");
+          const urlPattern = url.searchParams.get("url_pattern");
+
+          const filters: {
+            forward_name?: string | null;
+            method?: string;
+            status_code?: number;
+            url_pattern?: string;
+          } = {};
+
+          if (forwardNameParam !== null) {
+            filters.forward_name = forwardNameParam === "null" ? null : forwardNameParam;
+          }
+          if (method) {
+            filters.method = method;
+          }
+          if (statusCodeParam) {
+            const statusCode = parseInt(statusCodeParam);
+            if (!isNaN(statusCode)) {
+              filters.status_code = statusCode;
+            }
+          }
+          if (urlPattern) {
+            filters.url_pattern = urlPattern;
+          }
+
+          const requests =
+            Object.keys(filters).length > 0 ? getAllRequestsFiltered(filters) : getAllRequests();
+          return Response.json(requests);
+        },
+      },
+      "/api/requests/:id": {
+        async GET(req) {
+          const id = parseInt(req.params.id);
+          if (isNaN(id)) {
+            return Response.json({ error: "Invalid request ID" }, { status: 400 });
+          }
+          const detail = getRequestDetail(id);
+          if (!detail) {
+            return Response.json({ error: "Request not found" }, { status: 404 });
+          }
+          return Response.json(detail);
+        },
+        async DELETE(req) {
+          try {
+            const id = parseInt(req.params.id);
+            if (isNaN(id)) {
+              return Response.json({ success: false, error: "Invalid request ID" }, { status: 400 });
+            }
+            const success = dbDeleteProxyRequest(id);
+            if (success) {
+              return Response.json({ success: true, message: "Request deleted" });
+            } else {
+              return Response.json({ success: false, error: "Request not found" }, { status: 404 });
+            }
+          } catch (error) {
+            console.error("Failed to delete request:", error);
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+      "/api/clear": {
+        async POST() {
+          try {
+            dbClearAllRequests();
+            return Response.json({ success: true, message: "All requests cleared" });
+          } catch (error) {
+            console.error("Failed to clear requests:", error);
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+
+      // ========== 工具接口 ==========
       "/standalone/:name": {
         async GET(req) {
           try {
             const workerName = req.params.name;
             const standaloneBaseDir = path.join(__dirname, "standalone");
             const workerPath = path.join(standaloneBaseDir, workerName);
-            // 路径安全检查
             if (!workerPath.startsWith(standaloneBaseDir)) {
               return Response.json({ error: `Invalid worker name:${workerName}` }, { status: 400 });
             }
 
-            // 检查文件是否存在
             const sourceFile = Bun.file(workerPath);
             if (!(await sourceFile.exists())) {
               return Response.json({ error: `Worker not found: ${workerName}` }, { status: 404 });
@@ -1071,7 +682,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             const outdir = path.join(__dirname, ".standalone");
             const outFileName = `${workerName}.js`;
 
-            // 构建 worker
             const res = await Bun.build({
               entrypoints: [workerPath],
               outdir,
@@ -1080,12 +690,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
               minify: process.env.NODE_ENV === "production",
             });
             if (!res.success) {
-              throw Response.json(
-                {
-                  logs: res.logs,
-                },
-                { status: 502 },
-              );
+              throw Response.json({ logs: res.logs }, { status: 502 });
             }
 
             const workerFile = Bun.file(path.join(outdir, outFileName));
@@ -1105,7 +710,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
-      // ========== 代码高亮接口（服务端备用方案）==========
       "/api/highlight": {
         async POST(req) {
           try {
@@ -1120,12 +724,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             }
 
             const html = await codeToHtml(code, { lang, theme });
-            const response: HighlightResponse = {
-              success: true,
-              requestId: 0,
-              html,
-            };
-
+            const response: HighlightResponse = { success: true, requestId: 0, html };
             return Response.json(response);
           } catch (error) {
             const response: HighlightResponse = {
@@ -1137,7 +736,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
-      // ========== 代码格式化接口（使用 Biome Native）==========
       "/api/format": {
         async POST(req) {
           try {
@@ -1162,7 +760,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
-      // ========== 响应体解压接口 ==========
       "/api/decompress": {
         async POST(req) {
           try {
@@ -1171,10 +768,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
             if (!data || !encoding) {
               return Response.json(
-                {
-                  success: false,
-                  error: "Missing required parameters: data, encoding",
-                },
+                { success: false, error: "Missing required parameters: data, encoding" },
                 { status: 400 },
               );
             }
@@ -1190,348 +784,41 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
-      // ========== 实例运行控制 API ==========
-      "/api/instances/:id/start": {
-        async POST(req) {
-          try {
-            const { id, name } = parseInstanceIdParam(req.params.id);
-            await manager.startInstance(name);
-            return Response.json({
-              success: true,
-              status: manager.getInstanceStatus(name),
-              instanceId: id,
-            });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      "/api/instances/:id/stop": {
-        async POST(req) {
-          try {
-            const { id, name } = parseInstanceIdParam(req.params.id);
-            await manager.stopInstance(name);
-            return Response.json({
-              success: true,
-              status: manager.getInstanceStatus(name),
-              instanceId: id,
-            });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      "/api/instances/:id/status": {
-        async GET(req) {
-          try {
-            const { id, name } = parseInstanceIdParam(req.params.id);
-            return Response.json({
-              instanceId: id,
-              ...manager.getInstanceStatus(name),
-            });
-          } catch (error) {
-            return Response.json({ error: String(error) }, { status: 400 });
-          }
-        },
-      },
-      "/api/instances/statuses": {
-        async GET() {
-          const result: Array<{
-            instanceId: number;
-            running: boolean;
-            pid?: number;
-            port: number;
-            listeningPort?: number;
-            uptime?: number;
-          }> = [];
 
-          for (const [id, name] of configCache.instanceIdToName.entries()) {
-            const status = manager.getInstanceStatus(name);
-            result.push({
-              instanceId: id,
-              running: status.running,
-              pid: status.pid,
-              port: status.port,
-              listeningPort: status.listeningPort,
-              uptime: status.uptime,
-            });
-          }
-
-          return Response.json(result);
-        },
-      },
-      // ========== 实例管理 API ==========
-      "/api/instances": {
-        async GET() {
-          const instances = getAllInstances();
-          return Response.json(
-            instances.map((instance, index) => serializeInstance(instance, index + 1)),
-          );
-        },
-        async POST(req) {
-          try {
-            const body = await req.json();
-            const headers = parseHeadersValue(body.instance_headers);
-            const instance: ProxyInstanceConfig = {
-              name: String(body.name),
-              port: Number(body.port),
-              enabled: body.enabled !== false,
-              description: body.description ?? null,
-              headers: headers ?? null,
-              forwards: [],
-            };
-
-            if (!instance.name || !Number.isInteger(instance.port)) {
-              return Response.json(
-                { success: false, error: "Invalid instance payload" },
-                { status: 400 },
-              );
-            }
-
-            const existing = getInstanceByName(instance.name);
-            if (existing) {
-              return Response.json(
-                { success: false, error: "Instance already exists" },
-                { status: 400 },
-              );
-            }
-
-            upsertInstance(instance);
-            refreshConfigCache();
-            const newId = getInstanceIdByName(instance.name);
-            return Response.json({ id: newId, success: true });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      "/api/instances/:id": {
-        async GET(req) {
-          try {
-            const { id, name } = parseInstanceIdParam(req.params.id);
-            const instance = getInstanceByName(name);
-            if (!instance) {
-              return Response.json({ error: "Instance not found" }, { status: 404 });
-            }
-            return Response.json(serializeInstance(instance, id));
-          } catch (error) {
-            return Response.json({ error: String(error) }, { status: 400 });
-          }
-        },
-        async PUT(req) {
-          try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            const body = await req.json();
-            const headers = parseHeadersValue(body.instance_headers);
-            const existing = getInstanceByName(name);
-            if (!existing) {
-              return Response.json({ error: "Instance not found" }, { status: 404 });
-            }
-
-            upsertInstance({
-              ...existing,
-              name,
-              port: body.port !== undefined ? Number(body.port) : existing.port,
-              enabled: body.enabled !== undefined ? Boolean(body.enabled) : existing.enabled,
-              description:
-                body.description !== undefined ? body.description : (existing.description ?? null),
-              headers: headers ?? existing.headers ?? null,
-            });
-
-            refreshConfigCache();
-            return Response.json({ success: true });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-        async DELETE(req) {
-          try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            const status = manager.getInstanceStatus(name);
-            if (status.running) {
-              await manager.stopInstance(name);
-            }
-            const success = deleteInstance(name);
-            if (!success) {
-              return Response.json({ error: "Instance not found" }, { status: 404 });
-            }
-            refreshConfigCache();
-            return Response.json({ success: true });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      // ========== 转发规则 API ==========
-      "/api/instances/:id/forwards": {
-        async GET(req) {
-          try {
-            const { id, name } = parseInstanceIdParam(req.params.id);
-            const instance = getInstanceByName(name);
-            if (!instance) {
-              return Response.json({ error: "Instance not found" }, { status: 404 });
-            }
-            const forwards = instance.forwards.map((forward) => {
-              const forwardIndex = instance.forwards.indexOf(forward);
-              const forwardId = getForwardIdByIndex(name, forwardIndex);
-              return serializeForward(id, forward, forwardId ?? 0);
-            });
-            return Response.json(forwards);
-          } catch (error) {
-            return Response.json({ error: String(error) }, { status: 400 });
-          }
-        },
-      },
-      "/api/instances/:id/forwards/reorder": {
-        async POST(req) {
-          try {
-            const { name } = parseInstanceIdParam(req.params.id);
-            const body = await req.json();
-            const orderedIds = Array.isArray(body.order) ? (body.order as number[]) : [];
-
-            if (orderedIds.length === 0) {
-              return Response.json({ error: "Order array is empty" }, { status: 400 });
-            }
-
-            const indexes: number[] = [];
-            const seen = new Set<number>();
-            for (const id of orderedIds) {
-              const key = getForwardKeyById(Number(id));
-              if (!key || key.instanceName !== name) {
-                return Response.json(
-                  { error: "Order contains invalid forward id" },
-                  { status: 400 },
-                );
-              }
-              if (seen.has(key.forwardIndex)) {
-                return Response.json(
-                  { error: "Order contains duplicate entries" },
-                  { status: 400 },
-                );
-              }
-              seen.add(key.forwardIndex);
-              indexes.push(key.forwardIndex);
-            }
-
-            const instance = getInstanceByName(name);
-            if (!instance || instance.forwards.length !== indexes.length) {
-              return Response.json(
-                { error: "Order must include all forwards of the instance" },
-                { status: 400 },
-              );
-            }
-
-            reorderForwardsByIndexes(name, indexes);
-            refreshConfigCache();
-            return Response.json({ success: true });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 400 });
-          }
-        },
-      },
-      "/api/forwards/:id": {
-        async PUT(req) {
-          try {
-            const { instanceName, forwardIndex } = parseForwardIdParam(req.params.id);
-            const body = await req.json();
-            const instance = getInstanceByName(instanceName);
-            const existingForward = instance && instance.forwards[forwardIndex];
-            if (!existingForward || !instance) {
-              return Response.json({ error: "Forward not found" }, { status: 404 });
-            }
-
-            updateForwardByIndex(instanceName, forwardIndex, {
-              ...existingForward,
-              name: existingForward.name,
-              target: body.target_url ?? existingForward.target,
-              enabled: body.enabled !== undefined ? Boolean(body.enabled) : existingForward.enabled,
-              description:
-                body.description !== undefined
-                  ? body.description
-                  : (existingForward.description ?? null),
-              path: body.path !== undefined ? body.path : (existingForward.path ?? null),
-              methods:
-                body.method !== undefined ? normalizeMethods(body.method) : existingForward.methods,
-              headers:
-                body.custom_headers !== undefined
-                  ? parseHeadersValue(body.custom_headers)
-                  : (existingForward.headers ?? null),
-            });
-
-            refreshConfigCache();
-            return Response.json({ success: true });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-        async DELETE(req) {
-          try {
-            const { instanceName, forwardIndex } = parseForwardIdParam(req.params.id);
-            const success = deleteForwardByIndex(instanceName, forwardIndex);
-            if (!success) {
-              return Response.json({ error: "Forward not found" }, { status: 404 });
-            }
-            refreshConfigCache();
-            return Response.json({ success: true });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
       "/*": viewerHtml,
     },
 
     async fetch(req, server) {
       const url = new URL(req.url);
 
-      // WebSocket 升级 - 处理请求更新
       if (url.pathname === "/ws") {
-        /**
-         * 注意：Bun 的类型定义不支持 data 参数，但运行时确实支持
-         * 这里使用类型断言绕过类型检查（先转为 unknown 再转为目标类型）
-         * 参考：https://bun.sh/docs/api/websockets
-         */
         const upgraded = (
           server.upgrade as unknown as (
             req: Request,
             options: { data: { type: string } },
           ) => boolean
-        )(req, {
-          data: { type: "requests" },
-        });
-        if (upgraded) {
-          return; // 升级成功
-        }
+        )(req, { data: { type: "requests" } });
+        if (upgraded) return;
       }
 
-      // WebSocket 升级 - 处理日志流
       if (url.pathname === "/logs") {
         const upgraded = (
           server.upgrade as unknown as (
             req: Request,
             options: { data: { type: string } },
           ) => boolean
-        )(req, {
-          data: { type: "logs" },
-        });
-        if (upgraded) {
-          return; // 升级成功
-        }
+        )(req, { data: { type: "logs" } });
+        if (upgraded) return;
       }
 
-      // WebSocket 升级 - 处理统计数据流
       if (url.pathname === "/stats") {
         const upgraded = (
           server.upgrade as unknown as (
             req: Request,
             options: { data: { type: string } },
           ) => boolean
-        )(req, {
-          data: { type: "stats" },
-        });
-        if (upgraded) {
-          return; // 升级成功
-        }
+        )(req, { data: { type: "stats" } });
+        if (upgraded) return;
       }
     },
 
@@ -1545,7 +832,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         } else if (type === "stats") {
           statsClients.add(ws);
           log.info(`Stats client connected (total: ${statsClients.size})`);
-          // 立即发送当前统计数据
           const stats = forwardStatsManager.getAllStats();
           ws.send(JSON.stringify({ type: "stats-update", stats }));
         } else {
@@ -1554,7 +840,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         }
       },
       message(ws, message) {
-        // Echo back for ping/pong
         if (message === "ping") {
           ws.send("pong");
         }
@@ -1576,23 +861,16 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     },
 
     development: process.env.NODE_ENV !== "production" && {
-      // Enable browser hot reloading in development
       hmr: true,
-
-      // Echo console logs from the browser to the server
       console: true,
     },
   });
 
-  // 绑定数据库事件到 WebSocket，实现实时更新
-  // 注意：由于 proxy-server 和 viewer-server 在不同进程，EventEmitter 不共享
-  // 因此这个事件监听器只能捕获 viewer-server 自己创建的请求（实际上不会有）
   requestEvents.on("created", (request: LoggedRequest) => {
     log.debug(`[Event] Received 'created' event for request: ${request.id}`);
     const formatted = formatProxyRequest(request);
     const message = JSON.stringify({
       type: "new-request",
-      instanceId: formatted.metadata.instanceId,
       data: formatted,
     });
 
@@ -1606,10 +884,8 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     }
   });
 
-  // 使用 BroadcastChannel 监听数据库变更（跨 worker 线程）
   let lastRequestId = 0;
 
-  // 初始化 lastRequestId
   const initListener = () => {
     const query = db.query("SELECT MAX(id) as maxId FROM proxy_requests");
     const result = query.get() as { maxId: number | null };
@@ -1617,15 +893,12 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
     log.info(`[DbListener] Initialized lastRequestId: ${lastRequestId}`);
 
-    // 启动 BroadcastChannel 监听器
     dbListener.start();
 
-    // 监听 proxy_requests 表的 insert 事件
     dbListener.on("proxy_requests:insert", (notification) => {
       debugAutoSort("dbListener event 'proxy_requests:insert' triggered, id: %d", notification.id);
       log.debug(`[DbListener] Received insert notification for request #${notification.id}`);
 
-      // 查询新请求
       const newRequests = getRequestsAfterId(lastRequestId);
 
       if (newRequests.length > 0) {
@@ -1634,11 +907,9 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       }
     });
 
-    // 监听 proxy_requests 表的 update 事件
     dbListener.on("proxy_requests:update", (notification) => {
       log.debug(`[DbListener] Received update notification for request #${notification.id}`);
 
-      // 查询更新后的请求
       const updatedRequest =
         typeof notification.id === "number" ? getProxyRequestById(notification.id) : null;
 
@@ -1651,13 +922,11 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     });
   };
 
-  // 广播新请求到所有 WebSocket 客户端
   const broadcastNewRequests = (newRequests: LoggedRequest[]) => {
     for (const request of newRequests) {
       const formatted = formatProxyRequest(request);
       const message = JSON.stringify({
         type: "new-request",
-        instanceId: formatted.metadata.instanceId,
         data: formatted,
       });
 
@@ -1674,12 +943,10 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     }
   };
 
-  // 广播更新的请求到所有 WebSocket 客户端
   const broadcastUpdatedRequest = (request: LoggedRequest) => {
     const formatted = formatProxyRequest(request);
     const message = JSON.stringify({
       type: "update-request",
-      instanceId: formatted.metadata.instanceId,
       id: request.id,
       data: formatted,
     });

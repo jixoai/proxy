@@ -3,6 +3,18 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Play,
   Square,
   Activity,
@@ -15,8 +27,9 @@ import {
   RotateCw,
   Trash2,
   RefreshCw,
+  Info,
 } from "lucide-react";
-import type { ProxyInstance } from "@/types/proxy";
+import type { ProxyInstanceConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditInstanceDialog } from "./EditInstanceDialog";
 import { ForwardRulesList } from "./ForwardRulesList";
 
@@ -29,59 +42,53 @@ interface ProxyStatus {
 }
 
 interface InstanceControlsProps {
-  instance: ProxyInstance;
+  instance: ProxyInstanceConfig;
   onUpdate: () => void;
-  focusedForwardId?: number | null;
+  focusedForwardName?: string | null;
 }
 
-const parseInstanceHeaders = (raw?: string | null) => {
-  if (!raw) return [];
-  try {
-    const obj = JSON.parse(raw) as Record<string, unknown>;
-    return Object.entries(obj).map(([key, value]) => [key, String(value)]);
-  } catch {
-    return [];
-  }
-};
+interface ConfigSyncInfo {
+  synced: boolean;
+  workerConfig: unknown;
+  fileConfig: unknown;
+}
 
-export function InstanceControls({ instance, onUpdate, focusedForwardId }: InstanceControlsProps) {
+export function InstanceControls({ instance, onUpdate, focusedForwardName }: InstanceControlsProps) {
   const [status, setStatus] = useState<ProxyStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [configSynced, setConfigSynced] = useState<boolean | null>(null);
+  const [configSyncInfo, setConfigSyncInfo] = useState<ConfigSyncInfo | null>(null);
+  const [configDialogOpen, setConfigDialogOpen] = useState(false);
   const [pushingConfig, setPushingConfig] = useState(false);
-  const [autoPushConfig, setAutoPushConfig] = useState(true);
+  const [autoPushConfig, setAutoPushConfig] = useState(instance.settings?.autoPushConfig ?? true);
   const [settingsLoading, setSettingsLoading] = useState(false);
-  const globalHeaderEntries = useMemo(
-    () => parseInstanceHeaders(instance.instance_headers),
-    [instance.instance_headers],
-  );
 
-  // 加载 instance settings
-  const loadSettings = useCallback(async () => {
-    if (!instance.id) return;
-    try {
-      const response = await fetch(`/api/instances/${instance.id}/settings`);
-      const data = await response.json();
-      setAutoPushConfig(data.autoPushConfig ?? true);
-    } catch (error) {
-      console.error("Failed to load instance settings:", error);
-    }
-  }, [instance.id]);
+  const globalHeaderEntries = useMemo(() => {
+    if (!instance.headers) return [];
+    return Object.entries(instance.headers);
+  }, [instance.headers]);
 
+  // 从配置更新 autoPushConfig
   useEffect(() => {
-    loadSettings();
-  }, [loadSettings]);
+    setAutoPushConfig(instance.settings?.autoPushConfig ?? true);
+  }, [instance.settings?.autoPushConfig]);
 
   const handleAutoPushToggle = async (enabled: boolean) => {
-    if (!instance.id) return;
     setSettingsLoading(true);
     setAutoPushConfig(enabled);
     try {
-      await fetch(`/api/instances/${instance.id}/settings`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autoPushConfig: enabled }),
-      });
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const idx = config.instances.findIndex((i) => i.name === instance.name);
+      if (idx >= 0) {
+        const inst = config.instances[idx]!;
+        inst.settings = { ...inst.settings, autoPushConfig: enabled };
+        await fetch("/api/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+      }
     } catch (error) {
       console.error("Failed to update autoPushConfig:", error);
       setAutoPushConfig(!enabled);
@@ -91,9 +98,8 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
   };
 
   const fetchStatus = async () => {
-    if (!instance.id) return;
     try {
-      const response = await fetch(`/api/instances/${instance.id}/status`);
+      const response = await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/status`);
       const data = await response.json();
       setStatus(data);
     } catch (error) {
@@ -102,25 +108,29 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
   };
 
   const checkConfigSync = useCallback(async () => {
-    if (!instance.id || !status?.running) {
+    if (!status?.running) {
       setConfigSynced(null);
+      setConfigSyncInfo(null);
       return;
     }
     try {
-      const response = await fetch(`/api/instances/${instance.id}/config-sync`);
-      const data = await response.json();
+      const response = await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/config-sync`);
+      const data: ConfigSyncInfo = await response.json();
       setConfigSynced(data.synced ?? null);
+      setConfigSyncInfo(data);
+      return data;
     } catch (error) {
       console.error("Failed to check config sync:", error);
       setConfigSynced(null);
+      setConfigSyncInfo(null);
+      return null;
     }
-  }, [instance.id, status?.running]);
+  }, [instance.name, status?.running]);
 
   const handlePushConfig = useCallback(async () => {
-    if (!instance.id) return;
     setPushingConfig(true);
     try {
-      const response = await fetch(`/api/instances/${instance.id}/push-config`, { method: "POST" });
+      const response = await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/push-config`, { method: "POST" });
       const data = await response.json();
       if (data.success) {
         await checkConfigSync();
@@ -133,19 +143,18 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
     } finally {
       setPushingConfig(false);
     }
-  }, [instance.id, checkConfigSync]);
+  }, [instance.name, checkConfigSync]);
 
   useEffect(() => {
     fetchStatus();
     const interval = setInterval(fetchStatus, 2000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instance.id]);
+  }, [instance.name]);
 
-  // 定期检查配置同步状态
   useEffect(() => {
     if (!status?.running) {
       setConfigSynced(null);
+      setConfigSyncInfo(null);
       return;
     }
     checkConfigSync();
@@ -153,18 +162,16 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
     return () => clearInterval(interval);
   }, [status?.running, checkConfigSync]);
 
-  // 自动推送配置
   useEffect(() => {
-    if (autoPushConfig && configSynced === false && status?.running) {
+    if (autoPushConfig && configSynced === false && status?.running && !pushingConfig) {
       handlePushConfig();
     }
-  }, [autoPushConfig, configSynced, status?.running, handlePushConfig]);
+  }, [autoPushConfig, configSynced, status?.running, pushingConfig, handlePushConfig]);
 
   const handleStart = async () => {
-    if (!instance.id) return;
     setLoading(true);
     try {
-      const response = await fetch(`/api/instances/${instance.id}/start`, {
+      const response = await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/start`, {
         method: "POST",
       });
       const data = await response.json();
@@ -183,10 +190,9 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
   };
 
   const handleStop = async () => {
-    if (!instance.id) return;
     setLoading(true);
     try {
-      const response = await fetch(`/api/instances/${instance.id}/stop`, {
+      const response = await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/stop`, {
         method: "POST",
       });
       const data = await response.json();
@@ -205,10 +211,9 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
   };
 
   const handleRestart = async () => {
-    if (!instance.id) return;
     setLoading(true);
     try {
-      const stopResponse = await fetch(`/api/instances/${instance.id}/stop`, {
+      const stopResponse = await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/stop`, {
         method: "POST",
       });
       const stopData = await stopResponse.json();
@@ -219,7 +224,7 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
 
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
-      const startResponse = await fetch(`/api/instances/${instance.id}/start`, {
+      const startResponse = await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/start`, {
         method: "POST",
       });
       const startData = await startResponse.json();
@@ -238,14 +243,19 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
   };
 
   const handleToggleAutoStart = async () => {
-    if (!instance.id) return;
     try {
-      await fetch(`/api/instances/${instance.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: !instance.enabled }),
-      });
-      onUpdate();
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const idx = config.instances.findIndex((i) => i.name === instance.name);
+      if (idx >= 0) {
+        config.instances[idx]!.enabled = !instance.enabled;
+        await fetch("/api/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+        onUpdate();
+      }
     } catch (error) {
       console.error("Failed to toggle auto-start:", error);
       alert("更新自动启动状态失败");
@@ -253,7 +263,6 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
   };
 
   const handleDelete = async () => {
-    if (!instance.id) return;
     const confirmed = window.confirm(
       `确定要删除实例 "${instance.name}" 吗？这将同时删除该实例下的所有转发规则。`,
     );
@@ -261,14 +270,19 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
 
     setLoading(true);
     try {
-      const response = await fetch(`/api/instances/${instance.id}`, {
-        method: "DELETE",
-      });
-      const data = await response.json();
-      if (!response.ok || data.error) {
-        alert(data.error || "删除实例失败");
-        return;
+      // 先停止实例
+      if (status?.running) {
+        await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/stop`, { method: "POST" });
       }
+      // 从配置中删除
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      config.instances = config.instances.filter((i) => i.name !== instance.name);
+      await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
       onUpdate();
     } catch (error) {
       console.error("Failed to delete instance:", error);
@@ -412,96 +426,167 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
         </div>
       )}
 
-      <div className="bg-background flex flex-col gap-3 rounded-xl border px-4 py-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <div className="text-sm leading-none font-medium">自动启动</div>
-          <p className="text-muted-foreground mt-1 text-xs">
-            Viewer 启动时自动拉起该内核。仅影响下次启动，不会中断当前实例。
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground text-xs">
-            {instance.enabled ? "已开启" : "已关闭"}
-          </span>
-          <Switch checked={instance.enabled} onCheckedChange={handleToggleAutoStart} />
-        </div>
-      </div>
+      {/* 内核控制卡片 */}
+      <div className="bg-background rounded-xl border p-4">
+        <div className="text-muted-foreground mb-3 text-sm font-medium">内核控制</div>
+        <div className="space-y-4">
+          {/* 自动启动 */}
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-medium">自动启动</div>
+              <p className="text-muted-foreground text-xs">
+                Viewer 启动时自动拉起该内核。仅影响下次启动，不会中断当前实例。
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground text-xs">
+                {instance.enabled ? "已开启" : "已关闭"}
+              </span>
+              <Switch checked={instance.enabled} onCheckedChange={handleToggleAutoStart} />
+            </div>
+          </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Button
-          variant="default"
-          size="sm"
-          onClick={handleStart}
-          disabled={loading || status?.running === true}
-        >
-          <Play className="mr-1 h-4 w-4" />
-          启动
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleRestart}
-          disabled={loading || status?.running === false}
-        >
-          <RotateCw className="mr-1 h-4 w-4" />
-          重启
-        </Button>
-        <Button
-          variant="destructive"
-          size="sm"
-          onClick={handleStop}
-          disabled={loading || status?.running === false}
-        >
-          <Square className="mr-1 h-4 w-4" />
-          停止
-        </Button>
-
-        {/* 配置同步按钮 */}
-        {status?.running && (
-          <div className="ml-2 flex items-center gap-3 border-l pl-2">
+          {/* 运行控制按钮 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleStart}
+              disabled={loading || status?.running === true}
+            >
+              <Play className="mr-1 h-4 w-4" />
+              启动
+            </Button>
             <Button
               variant="outline"
               size="sm"
-              onClick={handlePushConfig}
-              disabled={pushingConfig}
-              className="relative h-7 text-xs"
+              onClick={handleRestart}
+              disabled={loading || status?.running === false}
             >
-              {/* 状态指示点 */}
-              <span
-                className={`absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full ${
-                  configSynced === null
-                    ? "bg-gray-400"
-                    : configSynced
-                      ? "bg-green-500"
-                      : "bg-amber-500"
-                }`}
-              />
-              <RefreshCw className={`mr-1 h-3 w-3 ${pushingConfig ? "animate-spin" : ""}`} />
-              {pushingConfig ? "同步中..." : configSynced ? "已同步" : "同步配置"}
+              <RotateCw className="mr-1 h-4 w-4" />
+              重启
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleStop}
+              disabled={loading || status?.running === false}
+            >
+              <Square className="mr-1 h-4 w-4" />
+              停止
             </Button>
 
-            {/* 自动推送开关 */}
-            <div className="flex items-center gap-1.5">
-              <Switch
-                checked={autoPushConfig}
-                onCheckedChange={handleAutoPushToggle}
-                disabled={settingsLoading}
-                className="scale-75"
-              />
-              <span className="text-muted-foreground text-xs">自动</span>
+            {/* 配置热更新 */}
+            <div className="ml-auto flex items-center gap-2 border-l pl-3">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${
+                        !status?.running || configSynced === null
+                          ? "bg-gray-400"
+                          : configSynced
+                            ? "bg-green-500"
+                            : "bg-amber-500 animate-pulse"
+                      }`}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    {!status?.running
+                      ? "内核未运行"
+                      : configSynced
+                        ? "配置已同步"
+                        : "配置不同步，需要推送"}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePushConfig}
+                disabled={pushingConfig || !status?.running}
+                className="h-8"
+              >
+                <RefreshCw className={`mr-1 h-4 w-4 ${pushingConfig ? "animate-spin" : ""}`} />
+                {!status?.running
+                  ? "热更新"
+                  : pushingConfig
+                    ? "推送中..."
+                    : configSynced
+                      ? "已同步"
+                      : "推送配置"}
+              </Button>
+
+              {status?.running && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setConfigDialogOpen(true)}
+                  className="h-8 px-2"
+                >
+                  <Info className="h-4 w-4" />
+                </Button>
+              )}
+
+              <div className="flex items-center gap-1.5 border-l pl-2">
+                <Switch
+                  checked={autoPushConfig}
+                  onCheckedChange={handleAutoPushToggle}
+                  disabled={settingsLoading}
+                />
+                <span className="text-muted-foreground text-xs">自动</span>
+              </div>
             </div>
           </div>
-        )}
+        </div>
       </div>
 
-      {typeof instance.id === "number" && (
-        <ForwardRulesList
-          instanceId={instance.id}
-          instanceName={instance.name}
-          instanceHeaders={instance.instance_headers ?? null}
-          focusedForwardId={focusedForwardId ?? null}
-        />
-      )}
+      <ForwardRulesList
+        instanceName={instance.name}
+        focusedForwardName={focusedForwardName ?? null}
+      />
+
+      {/* 配置详情对话框 */}
+      <Dialog open={configDialogOpen} onOpenChange={setConfigDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Info className="h-5 w-5" />
+              配置同步详情 - {instance.name}
+              <Badge variant={configSynced ? "default" : "destructive"} className="ml-2">
+                {configSynced ? "已同步" : "不同步"}
+              </Badge>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-blue-500" />
+                  配置文件 (proxy-config.json)
+                </h4>
+                <pre className="text-xs bg-muted p-3 rounded-lg overflow-auto max-h-[50vh] whitespace-pre-wrap">
+                  {configSyncInfo?.fileConfig
+                    ? JSON.stringify(configSyncInfo.fileConfig, null, 2)
+                    : "无数据"}
+                </pre>
+              </div>
+              <div>
+                <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-green-500" />
+                  Worker 运行配置
+                </h4>
+                <pre className="text-xs bg-muted p-3 rounded-lg overflow-auto max-h-[50vh] whitespace-pre-wrap">
+                  {configSyncInfo?.workerConfig
+                    ? JSON.stringify(configSyncInfo.workerConfig, null, 2)
+                    : "无数据"}
+                </pre>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -13,28 +13,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tag, ExternalLink as LinkIcon } from "lucide-react";
 import { CustomHeadersInput } from "./CustomHeadersInput";
-import type { ProxyForward } from "@/types/proxy";
+import type { ProxyForwardConfig, ProxyConfigFile } from "@/types/proxy";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface EditForwardDialogProps {
-  forward: ProxyForward;
+  forward: ProxyForwardConfig;
+  forwardIndex: number;
+  instanceName: string;
   trigger?: React.ReactNode;
   onUpdated: () => void;
-  instanceHeaders?: string | null;
+  instanceHeaders?: Record<string, string> | null;
 }
-
-const parseHeadersPreview = (raw?: string | null) => {
-  if (!raw) return [];
-  try {
-    const obj = JSON.parse(raw) as Record<string, unknown>;
-    return Object.entries(obj).map(([key, value]) => [key, String(value)]);
-  } catch {
-    return [];
-  }
-};
 
 export function EditForwardDialog({
   forward,
+  forwardIndex,
+  instanceName,
   trigger,
   onUpdated,
   instanceHeaders,
@@ -53,10 +47,10 @@ export function EditForwardDialog({
     if (open) {
       setName(forward.name);
       setPath(forward.path || "");
-      setTargetUrl(forward.target_url || "");
-      setMethod(forward.method || "*");
+      setTargetUrl(forward.target || "");
+      setMethod(forward.methods?.join(",") || "*");
       setDescription(forward.description || "");
-      setCustomHeaders(forward.custom_headers || "");
+      setCustomHeaders(forward.headers ? JSON.stringify(forward.headers) : "");
       setError("");
     }
   }, [open, forward]);
@@ -67,22 +61,47 @@ export function EditForwardDialog({
     setLoading(true);
 
     try {
-      const response = await fetch(`/api/forwards/${forward.id}`, {
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const instance = config.instances.find((i) => i.name === instanceName);
+      
+      if (!instance || !instance.forwards[forwardIndex]) {
+        throw new Error("Forward not found");
+      }
+
+      // 解析 headers
+      let headers: Record<string, string> | null = null;
+      if (customHeaders.trim()) {
+        try {
+          headers = JSON.parse(customHeaders);
+        } catch {
+          throw new Error("Invalid headers JSON");
+        }
+      }
+
+      // 解析 methods
+      const methods = method.trim() === "*" || !method.trim() 
+        ? ["*"] 
+        : method.split(",").map(m => m.trim().toUpperCase()).filter(Boolean);
+
+      instance.forwards[forwardIndex] = {
+        ...instance.forwards[forwardIndex]!,
+        name,
+        target: targetUrl,
+        description: description || null,
+        path: path || null,
+        methods,
+        headers,
+      };
+
+      const saveResponse = await fetch("/api/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          target_url: targetUrl,
-          description: description || null,
-          method: method.trim() || "*",
-          path: path || null,
-          custom_headers: customHeaders || undefined,
-        }),
+        body: JSON.stringify(config),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
+      if (!saveResponse.ok) {
+        const data = await saveResponse.json();
         throw new Error(data.error || "Failed to update forward");
       }
 
@@ -95,7 +114,7 @@ export function EditForwardDialog({
     }
   };
 
-  const instanceHeaderEntries = parseHeadersPreview(instanceHeaders);
+  const instanceHeaderEntries = instanceHeaders ? Object.entries(instanceHeaders) : [];
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

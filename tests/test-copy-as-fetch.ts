@@ -12,7 +12,8 @@ const mockRequest: RequestData = {
   metadata: {
     timestamp: "2025-01-10T10:00:00Z",
     duration: "123ms",
-    instanceId: 1,
+    instanceName: "default",
+    forwardName: "api",
     status: "completed",
     isWebSocket: false,
     websocketDirection: null,

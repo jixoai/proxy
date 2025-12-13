@@ -9,6 +9,7 @@ import type {
   WorkerResponse,
   InstanceRuntimeConfig,
 } from "../types/worker-messages";
+import { getInstanceByName } from "./config-store";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -250,19 +251,56 @@ export class ProxyManager {
     return null;
   }
 
-  /** 检查配置是否同步 */
+  /** 从 proxy-config.json 构建该实例的运行时配置 */
+  private buildConfigFromProxyConfig(): InstanceRuntimeConfig | null {
+    const instance = getInstanceByName(this.instanceName);
+    if (!instance) return null;
+
+    return {
+      name: this.instanceName,
+      headers: instance.headers,
+      hooks: instance.hooks ?? null,
+      forwards: instance.forwards.map((f) => ({
+        name: f.name,
+        target: f.target,
+        enabled: f.enabled,
+        description: f.description,
+        path: f.path,
+        methods: f.methods,
+        headers: f.headers,
+        hooks: f.hooks,
+      })),
+    };
+  }
+
+  /** 检查配置是否同步（比较 instance 配置文件和 worker 内部配置） */
   async checkConfigSync(): Promise<boolean> {
     const workerConfig = await this.getWorkerConfig();
     if (!workerConfig) return false;
 
-    const localConfig: InstanceRuntimeConfig = {
-      name: this.instanceName,
-      headers: this.instanceHeaders,
-      hooks: this.instanceHooks,
-      forwards: this.currentForwards,
-    };
+    // 从 proxy-config.json 获取最新配置
+    const proxyFileConfig = this.buildConfigFromProxyConfig();
+    if (!proxyFileConfig) return false;
 
-    return JSON.stringify(workerConfig) === JSON.stringify(localConfig);
+    return JSON.stringify(workerConfig) === JSON.stringify(proxyFileConfig);
+  }
+
+  /** 检查配置是否同步（返回详细信息用于调试） */
+  async checkConfigSyncDetailed(): Promise<{
+    synced: boolean;
+    workerConfig: InstanceRuntimeConfig | null;
+    fileConfig: InstanceRuntimeConfig | null;
+  }> {
+    const workerConfig = await this.getWorkerConfig();
+    // 从 proxy-config.json 获取最新配置（这是唯一数据源）
+    const fileConfig = this.buildConfigFromProxyConfig();
+
+    const synced =
+      workerConfig && fileConfig
+        ? JSON.stringify(workerConfig) === JSON.stringify(fileConfig)
+        : false;
+
+    return { synced, workerConfig, fileConfig };
   }
 
   /** 等待特定类型的响应 */
@@ -321,30 +359,41 @@ export class ProxyManager {
     return () => this.logCallbacks.delete(callback);
   }
 
+  /** 写入 instance 配置文件（单一数据源） */
   private writeConfigFile(forwards: ForwardConfig[]): string {
     const configDir = path.join(__dirname, "../.tmp");
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = path.join(configDir, `instance-${this.instanceName}-config.json`);
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          instances: [
-            {
-              name: this.instanceName,
-              headers: this.instanceHeaders,
-              hooks: this.instanceHooks,
-              forwards,
-            },
-          ],
-        },
-        null,
-        2,
-      ),
-      "utf-8",
-    );
-    this.log.debug(`[ProxyManager] Config written to ${configPath}`);
+    
+    // 写入 InstanceRuntimeConfig 格式，不是 ProxyConfigFile 格式
+    const instanceConfig: InstanceRuntimeConfig = {
+      name: this.instanceName,
+      headers: this.instanceHeaders,
+      hooks: this.instanceHooks,
+      forwards,
+    };
+    
+    fs.writeFileSync(configPath, JSON.stringify(instanceConfig, null, 2), "utf-8");
+    this.log.debug(`[ProxyManager] Instance config written to ${configPath}`);
     return configPath;
+  }
+  
+  /** 获取 instance 配置文件路径 */
+  getInstanceConfigPath(): string {
+    return path.join(__dirname, "../.tmp", `instance-${this.instanceName}-config.json`);
+  }
+  
+  /** 从 instance 配置文件读取配置 */
+  readInstanceConfigFile(): InstanceRuntimeConfig | null {
+    const configPath = this.getInstanceConfigPath();
+    try {
+      if (!fs.existsSync(configPath)) return null;
+      const content = fs.readFileSync(configPath, "utf-8");
+      return JSON.parse(content) as InstanceRuntimeConfig;
+    } catch (error) {
+      this.log.error(`[ProxyManager] Failed to read instance config: ${error}`);
+      return null;
+    }
   }
 
   /** 启动健康检查定时器 */

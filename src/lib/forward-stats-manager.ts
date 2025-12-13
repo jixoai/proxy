@@ -127,10 +127,10 @@ export class ForwardStatsManager extends EventEmitter {
   private statsMap = new Map<string, ForwardEndpointStats>();
   private channel: BroadcastChannel | null = null;
   private cleanupTimer: NodeJS.Timer | null = null;
-  /** 按实例名称存储 autoSort 状态 */
-  private autoSortEnabledMap = new Map<string, boolean>();
-  private autoSortTimer: NodeJS.Timer | null = null;
-  private pendingAutoSortInstances = new Set<string>(); // instanceName/forwardName
+  /** 按实例名称存储 autoSortSameNameForwards 状态 */
+  private autoSortSameNameForwardsEnabledMap = new Map<string, boolean>();
+  private autoSortSameNameForwardsTimer: NodeJS.Timer | null = null;
+  private pendingAutoSortSameNameForwardsInstances = new Set<string>(); // instanceName/forwardName
 
   /** 生成唯一 key: instanceName/forwardName/endpointIndex */
   private makeKey(instanceName: string, forwardName: string, endpointIndex: number): string {
@@ -166,37 +166,37 @@ export class ForwardStatsManager extends EventEmitter {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
-    if (this.autoSortTimer) {
-      clearTimeout(this.autoSortTimer);
-      this.autoSortTimer = null;
+    if (this.autoSortSameNameForwardsTimer) {
+      clearTimeout(this.autoSortSameNameForwardsTimer);
+      this.autoSortSameNameForwardsTimer = null;
     }
   }
 
-  /** 设置某个实例的自动排序开关 */
-  setAutoSortEnabled(instanceName: string, enabled: boolean): void {
-    this.autoSortEnabledMap.set(instanceName, enabled);
+  /** 设置某个实例的同名转发规则自动排序开关 */
+  setAutoSortSameNameForwardsEnabled(instanceName: string, enabled: boolean): void {
+    this.autoSortSameNameForwardsEnabledMap.set(instanceName, enabled);
     if (!enabled) {
       // 清理该实例的待排序项
-      for (const key of this.pendingAutoSortInstances) {
+      for (const key of this.pendingAutoSortSameNameForwardsInstances) {
         if (key.startsWith(`${instanceName}/`)) {
-          this.pendingAutoSortInstances.delete(key);
+          this.pendingAutoSortSameNameForwardsInstances.delete(key);
         }
       }
     }
   }
 
-  /** 检查某个实例是否启用自动排序 */
-  isAutoSortEnabled(instanceName?: string): boolean {
+  /** 检查某个实例是否启用同名转发规则自动排序 */
+  isAutoSortSameNameForwardsEnabled(instanceName?: string): boolean {
     if (!instanceName) {
-      // 如果没有指定实例，返回是否有任何实例启用了 autoSort
-      return Array.from(this.autoSortEnabledMap.values()).some((v) => v);
+      // 如果没有指定实例，返回是否有任何实例启用了 autoSortSameNameForwards
+      return Array.from(this.autoSortSameNameForwardsEnabledMap.values()).some((v) => v);
     }
-    return this.autoSortEnabledMap.get(instanceName) ?? false;
+    return this.autoSortSameNameForwardsEnabledMap.get(instanceName) ?? false;
   }
 
-  /** 获取某个实例的 autoSort 状态 */
-  getInstanceAutoSortEnabled(instanceName: string): boolean {
-    return this.autoSortEnabledMap.get(instanceName) ?? false;
+  /** 获取某个实例的 autoSortSameNameForwards 状态 */
+  getInstanceAutoSortSameNameForwardsEnabled(instanceName: string): boolean {
+    return this.autoSortSameNameForwardsEnabledMap.get(instanceName) ?? false;
   }
 
   /** 处理来自 BroadcastChannel 的消息 */
@@ -264,8 +264,8 @@ export class ForwardStatsManager extends EventEmitter {
     this.recomputeStats(stats, timestamp);
 
     // 触发自动排序 (防抖)
-    if (this.isAutoSortEnabled(instanceName) && !success) {
-      this.scheduleAutoSort(instanceName, forwardName);
+    if (this.isAutoSortSameNameForwardsEnabled(instanceName) && !success) {
+      this.scheduleAutoSortSameNameForwards(instanceName, forwardName);
     }
 
     // 发送更新事件
@@ -332,17 +332,17 @@ export class ForwardStatsManager extends EventEmitter {
     this.emit("stats-updated", null); // 全局更新
   }
 
-  /** 调度自动排序 (防抖) */
-  private scheduleAutoSort(instanceName: string, forwardName: string): void {
+  /** 调度同名转发规则自动排序 (防抖) */
+  private scheduleAutoSortSameNameForwards(instanceName: string, forwardName: string): void {
     const key = `${instanceName}/${forwardName}`;
-    this.pendingAutoSortInstances.add(key);
+    this.pendingAutoSortSameNameForwardsInstances.add(key);
 
-    if (this.autoSortTimer) return;
+    if (this.autoSortSameNameForwardsTimer) return;
 
-    this.autoSortTimer = setTimeout(() => {
-      this.autoSortTimer = null;
-      const keys = [...this.pendingAutoSortInstances];
-      this.pendingAutoSortInstances.clear();
+    this.autoSortSameNameForwardsTimer = setTimeout(() => {
+      this.autoSortSameNameForwardsTimer = null;
+      const keys = [...this.pendingAutoSortSameNameForwardsInstances];
+      this.pendingAutoSortSameNameForwardsInstances.clear();
 
       for (const key of keys) {
         const [instanceName, forwardName] = key.split("/", 2);

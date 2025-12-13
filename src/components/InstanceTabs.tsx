@@ -4,15 +4,15 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
 
 export function InstanceTabs() {
-  const { requests, instances, activeInstanceId, setActiveInstanceId } = useProxyViewer();
+  const { requests, instances, activeInstanceName, setActiveInstanceName } = useProxyViewer();
 
   // 统计每个实例的请求数
   const instanceRequestCounts = useMemo(() => {
-    const counts = new Map<number, number>();
+    const counts = new Map<string, number>();
 
     requests.forEach((req) => {
-      const instanceId = req.metadata.instanceId;
-      counts.set(instanceId, (counts.get(instanceId) || 0) + 1);
+      const instanceName = req.metadata.instanceName || "unknown";
+      counts.set(instanceName, (counts.get(instanceName) || 0) + 1);
     });
 
     return counts;
@@ -22,13 +22,13 @@ export function InstanceTabs() {
 
   const handleTabChange = (value: string) => {
     if (value === "all") {
-      setActiveInstanceId(null);
+      setActiveInstanceName(null);
     } else {
-      setActiveInstanceId(Number(value));
+      setActiveInstanceName(value);
     }
   };
 
-  const currentValue = activeInstanceId === null ? "all" : String(activeInstanceId);
+  const currentValue = activeInstanceName === null ? "all" : activeInstanceName;
 
   return (
     <Tabs value={currentValue} onValueChange={handleTabChange}>
@@ -40,10 +40,9 @@ export function InstanceTabs() {
           </Badge>
         </TabsTrigger>
         {instances.map((instance) => {
-          if (typeof instance.id !== "number") return null;
-          const count = instanceRequestCounts.get(instance.id) || 0;
+          const count = instanceRequestCounts.get(instance.name) || 0;
           return (
-            <TabsTrigger className="shrink-0 grow-0" key={instance.id} value={String(instance.id)}>
+            <TabsTrigger className="shrink-0 grow-0" key={instance.name} value={instance.name}>
               {instance.name}
               <Badge variant="secondary" className="ml-2">
                 {count}

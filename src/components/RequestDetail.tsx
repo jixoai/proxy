@@ -153,11 +153,11 @@ export function RequestDetail() {
               variant="ghost"
               size="sm"
               className="flex items-center gap-1"
-              disabled={!selectedDetail.metadata.forwardRule?.id}
+              disabled={!selectedDetail.metadata.forwardName}
               onClick={() => {
-                const fr = selectedDetail.metadata.forwardRule;
-                if (fr?.id) {
-                  jumpToForwardRule(selectedDetail.metadata.instanceId, fr.id);
+                const forwardName = selectedDetail.metadata.forwardName;
+                if (forwardName) {
+                  jumpToForwardRule(selectedDetail.metadata.instanceName || "", forwardName);
                 }
               }}
             >

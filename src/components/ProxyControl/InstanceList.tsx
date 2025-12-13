@@ -8,14 +8,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Server } from "lucide-react";
 import { InstanceControls } from "./InstanceControls";
-import type { ProxyInstance } from "@/types/proxy";
+import type { ProxyInstanceConfig } from "@/types/proxy";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
 
 interface InstanceListProps {
-  instances: ProxyInstance[];
+  instances: ProxyInstanceConfig[];
   onUpdate: () => void;
-  focusedInstanceId?: number | null;
-  focusedForwardId?: number | null;
+  focusedInstanceName?: string | null;
+  focusedForwardName?: string | null;
 }
 
 interface InstanceStatus {
@@ -29,32 +29,20 @@ interface InstanceStatus {
 export function InstanceList({
   instances,
   onUpdate,
-  focusedInstanceId,
-  focusedForwardId,
+  focusedInstanceName,
+  focusedForwardName,
 }: InstanceListProps) {
-  const [statuses, setStatuses] = useState<Record<number, InstanceStatus>>({});
+  const [statuses, setStatuses] = useState<Record<string, InstanceStatus>>({});
   const [openItems, setOpenItems] = useState<string[]>([]);
   const hasInitialized = useRef(false);
-  const itemRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const { clearControlFocus } = useProxyViewer();
 
   const loadStatuses = async () => {
     try {
-      const response = await fetch("/api/instances/statuses");
-      const data: Array<{ instanceId: number } & InstanceStatus> = await response.json();
-
-      const next: Record<number, InstanceStatus> = {};
-      for (const item of data) {
-        next[item.instanceId] = {
-          running: item.running,
-          pid: item.pid,
-          port: item.port,
-          listeningPort: item.listeningPort,
-          uptime: item.uptime,
-        };
-      }
-
-      setStatuses(next);
+      const response = await fetch("/api/runtime/statuses");
+      const data: Record<string, InstanceStatus> = await response.json();
+      setStatuses(data);
     } catch (error) {
       console.error("Failed to load instance statuses:", error);
     }
@@ -71,29 +59,29 @@ export function InstanceList({
     if (hasInitialized.current) return;
     if (instances.length > 0) {
       const first = instances[0];
-      if (first && first.id != null) {
-        setOpenItems([`instance-${first.id}`]);
+      if (first) {
+        setOpenItems([`instance-${first.name}`]);
         hasInitialized.current = true;
       }
     }
   }, [instances]);
 
   useEffect(() => {
-    if (!focusedInstanceId) return;
-    const key = `instance-${focusedInstanceId}`;
+    if (!focusedInstanceName) return;
+    const key = `instance-${focusedInstanceName}`;
     setOpenItems((prev) => (prev.includes(key) ? prev : [...prev, key]));
-    const target = itemRefs.current.get(focusedInstanceId);
+    const target = itemRefs.current.get(focusedInstanceName);
     if (target) {
       target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [focusedInstanceId]);
+  }, [focusedInstanceName]);
 
   // 在需要跳轉到特定實例時，自動展開對應面板
   useEffect(() => {
-    if (!focusedInstanceId) return;
-    const key = `instance-${focusedInstanceId}`;
+    if (!focusedInstanceName) return;
+    const key = `instance-${focusedInstanceName}`;
     setOpenItems((prev) => (prev.includes(key) ? prev : [...prev, key]));
-  }, [focusedInstanceId]);
+  }, [focusedInstanceName]);
 
   return (
     <Accordion
@@ -103,18 +91,18 @@ export function InstanceList({
       onValueChange={(values) => setOpenItems(Array.isArray(values) ? values : [])}
     >
       {instances.map((instance) => {
-        const status = instance.id !== undefined ? statuses[instance.id] : undefined;
+        const status = statuses[instance.name];
 
         return (
           <div
-            key={instance.id}
+            key={instance.name}
             ref={(el) => {
-              if (instance.id !== undefined && el) {
-                itemRefs.current.set(instance.id, el);
+              if (el) {
+                itemRefs.current.set(instance.name, el);
               }
             }}
           >
-            <AccordionItem value={`instance-${instance.id}`} className="rounded-lg border">
+            <AccordionItem value={`instance-${instance.name}`} className="rounded-lg border">
               <div className="flex items-center gap-3 px-4">
                 <AccordionTrigger className="flex-1 py-4 hover:no-underline">
                   <div className="flex flex-1 items-center gap-3">
@@ -144,7 +132,9 @@ export function InstanceList({
                 <InstanceControls
                   instance={instance}
                   onUpdate={onUpdate}
-                  focusedForwardId={focusedForwardId}
+                  focusedForwardName={
+                    focusedInstanceName === instance.name ? focusedForwardName : null
+                  }
                 />
               </AccordionContent>
             </AccordionItem>

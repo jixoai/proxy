@@ -19,8 +19,8 @@ export function ProxyControl() {
     instances,
     instancesLoading,
     reloadInstances,
-    controlFocusInstanceId,
-    controlFocusForwardId,
+    controlFocusInstanceName,
+    controlFocusForwardName,
     autoWatchConfig,
     setAutoWatchConfig,
   } = useProxyViewer();
@@ -112,8 +112,8 @@ export function ProxyControl() {
         <InstanceList
           instances={instances}
           onUpdate={reloadInstances}
-          focusedInstanceId={controlFocusInstanceId}
-          focusedForwardId={controlFocusForwardId}
+          focusedInstanceName={controlFocusInstanceName}
+          focusedForwardName={controlFocusForwardName}
         />
       )}
     </div>

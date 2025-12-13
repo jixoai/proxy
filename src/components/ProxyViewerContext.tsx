@@ -9,7 +9,7 @@ import {
   type SetStateAction,
 } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import type { ProxyInstance } from "@/types/proxy";
+import type { ProxyInstanceConfig, ProxyConfigFile } from "@/types/proxy";
 
 export type RequestStatus = "pending" | "streaming" | "completed" | "error";
 export type WebSocketDirection = "send" | "receive" | null;
@@ -34,12 +34,8 @@ export interface RequestData {
   metadata: {
     timestamp: string;
     duration: string;
-    instanceId: number;
-    forwardRule?: {
-      id: number;
-      name: string;
-      target_url: string;
-    };
+    instanceName?: string;
+    forwardName?: string;
     status: RequestStatus;
     isWebSocket: boolean;
     websocketDirection: WebSocketDirection;
@@ -85,18 +81,18 @@ interface ProxyViewerContextValue {
   filterRule: string;
   setFilterRule: (rule: string) => void;
 
-  availableRules: Array<{ id: number; name: string }>;
+  availableRules: Array<{ name: string; instanceName: string }>;
 
-  instances: ProxyInstance[];
+  instances: ProxyInstanceConfig[];
   instancesLoading: boolean;
   reloadInstances: () => Promise<void>;
-  activeInstanceId: number | null;
-  setActiveInstanceId: (id: number | null) => void;
-  activeRuleId: string | null;
-  setActiveRuleId: (id: string | null) => void;
-  controlFocusInstanceId: number | null;
-  controlFocusForwardId: number | null;
-  jumpToForwardRule: (instanceId: number, forwardId: number) => void;
+  activeInstanceName: string | null;
+  setActiveInstanceName: (name: string | null) => void;
+  activeRuleName: string | null;
+  setActiveRuleName: (name: string | null) => void;
+  controlFocusInstanceName: string | null;
+  controlFocusForwardName: string | null;
+  jumpToForwardRule: (instanceName: string, forwardName: string) => void;
   clearControlFocus: () => void;
 
   /** 配置版本号，每次配置重载时递增，子组件可监听此值触发刷新 */
@@ -163,14 +159,14 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const [filterUrl, setFilterUrlState] = useState<string>("");
   const [filterRule, setFilterRuleState] = useState<string>("");
 
-  const [availableRules, setAvailableRules] = useState<Array<{ id: number; name: string }>>([]);
+  const [availableRules, setAvailableRules] = useState<Array<{ name: string; instanceName: string }>>([]);
 
-  const [instances, setInstances] = useState<ProxyInstance[]>([]);
+  const [instances, setInstances] = useState<ProxyInstanceConfig[]>([]);
   const [instancesLoading, setInstancesLoading] = useState(true);
-  const [activeInstanceId, setActiveInstanceId] = useState<number | null>(null);
-  const [activeRuleId, setActiveRuleIdState] = useState<string | null>(null);
-  const [controlFocusInstanceId, setControlFocusInstanceId] = useState<number | null>(null);
-  const [controlFocusForwardId, setControlFocusForwardId] = useState<number | null>(null);
+  const [activeInstanceName, setActiveInstanceName] = useState<string | null>(null);
+  const [activeRuleName, setActiveRuleNameState] = useState<string | null>(null);
+  const [controlFocusInstanceName, setControlFocusInstanceName] = useState<string | null>(null);
+  const [controlFocusForwardName, setControlFocusForwardName] = useState<string | null>(null);
   const [configVersion, setConfigVersion] = useState(0);
   const [autoWatchConfig, setAutoWatchConfigState] = useState(false);
 
@@ -277,9 +273,17 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
 
   const loadRules = useCallback(async () => {
     try {
-      const response = await fetch("/api/forwards");
-      const data = await response.json();
-      setAvailableRules(data);
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const rules: Array<{ name: string; instanceName: string }> = [];
+      for (const instance of config.instances) {
+        for (const forward of instance.forwards) {
+          if (forward.enabled) {
+            rules.push({ name: forward.name, instanceName: instance.name });
+          }
+        }
+      }
+      setAvailableRules(rules);
     } catch (error) {
       console.error("Failed to load rules:", error);
     }
@@ -288,9 +292,9 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const reloadInstances = useCallback(async () => {
     setInstancesLoading(true);
     try {
-      const response = await fetch("/api/instances");
-      const data = await response.json();
-      setInstances(data);
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      setInstances(config.instances);
     } catch (error) {
       console.error("Failed to load instances:", error);
     } finally {
@@ -299,17 +303,17 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const jumpToForwardRule = useCallback(
-    (instanceId: number, forwardId: number) => {
-      setControlFocusInstanceId(instanceId);
-      setControlFocusForwardId(forwardId);
+    (instanceName: string, forwardName: string) => {
+      setControlFocusInstanceName(instanceName);
+      setControlFocusForwardName(forwardName);
       navigate({ to: "/control" });
     },
     [navigate],
   );
 
   const clearControlFocus = useCallback(() => {
-    setControlFocusInstanceId(null);
-    setControlFocusForwardId(null);
+    setControlFocusInstanceName(null);
+    setControlFocusForwardName(null);
   }, []);
 
   const setCurrentPage = useCallback(
@@ -400,10 +404,10 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     [updateSearch],
   );
 
-  const setActiveRuleId = useCallback(
-    (id: string | null) => {
-      setActiveRuleIdState(id);
-      setFilterRule(id ?? "");
+  const setActiveRuleName = useCallback(
+    (name: string | null) => {
+      setActiveRuleNameState(name);
+      setFilterRule(name ?? "");
     },
     [setFilterRule],
   );
@@ -417,7 +421,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
       setFilterStatusState(search.filterStatus ?? "");
       setFilterUrlState(search.filterUrl ?? "");
       setFilterRuleState(search.filterRule ?? "");
-      setActiveRuleIdState(search.filterRule ?? null);
+      setActiveRuleNameState(search.filterRule ?? null);
       setJsonDialogOpenState(search.dialog === "json");
 
       if (search.requestId) {
@@ -554,12 +558,12 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     instances,
     instancesLoading,
     reloadInstances,
-    activeInstanceId,
-    setActiveInstanceId,
-    activeRuleId,
-    setActiveRuleId,
-    controlFocusInstanceId,
-    controlFocusForwardId,
+    activeInstanceName,
+    setActiveInstanceName,
+    activeRuleName,
+    setActiveRuleName,
+    controlFocusInstanceName,
+    controlFocusForwardName,
     jumpToForwardRule,
     clearControlFocus,
     configVersion,

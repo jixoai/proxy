@@ -13,11 +13,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tag, Network, Edit } from "lucide-react";
-import type { ProxyInstance } from "@/types/proxy";
+import type { ProxyInstanceConfig, ProxyConfigFile } from "@/types/proxy";
 import { CustomHeadersInput } from "./CustomHeadersInput";
 
 interface EditInstanceDialogProps {
-  instance: ProxyInstance;
+  instance: ProxyInstanceConfig;
   trigger?: React.ReactNode;
   onUpdated: () => void;
 }
@@ -27,17 +27,18 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
   const [name, setName] = useState(instance.name);
   const [port, setPort] = useState(instance.port.toString());
   const [description, setDescription] = useState(instance.description || "");
-  const [instanceHeaders, setInstanceHeaders] = useState(instance.instance_headers || "");
+  const [instanceHeaders, setInstanceHeaders] = useState(
+    instance.headers ? JSON.stringify(instance.headers) : ""
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // 当对话框打开时，重置表单
   useEffect(() => {
     if (open) {
       setName(instance.name);
       setPort(instance.port.toString());
       setDescription(instance.description || "");
-      setInstanceHeaders(instance.instance_headers || "");
+      setInstanceHeaders(instance.headers ? JSON.stringify(instance.headers) : "");
       setError("");
     }
   }, [open, instance]);
@@ -48,20 +49,40 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
     setLoading(true);
 
     try {
-      const response = await fetch(`/api/instances/${instance.id}`, {
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const idx = config.instances.findIndex((i) => i.name === instance.name);
+      
+      if (idx < 0) {
+        throw new Error("Instance not found");
+      }
+
+      // 解析 headers
+      let headers: Record<string, string> | null = null;
+      if (instanceHeaders.trim()) {
+        try {
+          headers = JSON.parse(instanceHeaders);
+        } catch {
+          throw new Error("Invalid headers JSON");
+        }
+      }
+
+      config.instances[idx] = {
+        ...config.instances[idx]!,
+        name,
+        port: parseInt(port),
+        description: description || null,
+        headers,
+      };
+
+      const saveResponse = await fetch("/api/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          port: parseInt(port),
-          description: description || null,
-          instance_headers: instanceHeaders || undefined,
-        }),
+        body: JSON.stringify(config),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
+      if (!saveResponse.ok) {
+        const data = await saveResponse.json();
         throw new Error(data.error || "Failed to update instance");
       }
 

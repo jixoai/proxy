@@ -37,9 +37,9 @@ export function HeaderBar() {
     loadRequests,
     handleClearAll,
     availableRules,
-    activeRuleId,
-    setActiveRuleId,
-    activeInstanceId,
+    activeRuleName,
+    setActiveRuleName,
+    activeInstanceName,
   } = useProxyViewer();
 
   // 计算过滤后的请求数
@@ -152,9 +152,9 @@ export function HeaderBar() {
         </Select>
 
         <Select
-          value={activeRuleId || "all"}
+          value={activeRuleName || "all"}
           onValueChange={(value) => {
-            setActiveRuleId(value === "all" ? null : value);
+            setActiveRuleName(value === "all" ? null : value);
             setCurrentPage(1);
           }}
         >
@@ -164,7 +164,7 @@ export function HeaderBar() {
           <SelectContent>
             <SelectItem value="all">全部规则</SelectItem>
             {availableRules.map((rule) => (
-              <SelectItem key={rule.id} value={rule.id.toString()}>
+              <SelectItem key={`${rule.instanceName}-${rule.name}`} value={`${rule.instanceName}/${rule.name}`}>
                 {rule.name}
               </SelectItem>
             ))}
@@ -182,7 +182,7 @@ export function HeaderBar() {
           }}
         />
 
-        {(filterMethod || filterStatus || filterUrl || activeRuleId) && (
+        {(filterMethod || filterStatus || filterUrl || activeRuleName) && (
           <Button
             variant="ghost"
             size="sm"
@@ -190,7 +190,7 @@ export function HeaderBar() {
               setFilterMethod("");
               setFilterStatus("");
               setFilterUrl("");
-              setActiveRuleId(null);
+              setActiveRuleName(null);
               setCurrentPage(1);
             }}
           >

@@ -31,8 +31,8 @@ export interface ProxyForwardConfig {
 
 /** 实例级别设置 */
 export interface ProxyInstanceSettings {
-  /** 是否启用智能排序（基于健康度自动调整规则顺序） */
-  autoSort?: boolean;
+  /** 是否启用同名转发规则的智能排序（基于健康度自动调整同名规则顺序） */
+  autoSortSameNameForwards?: boolean;
   /** 是否自动推送配置到 worker */
   autoPushConfig?: boolean;
 }
@@ -61,23 +61,4 @@ export interface ProxyConfigFile {
   instances: ProxyInstanceConfig[];
 }
 
-export interface ProxyForward {
-  id?: number;
-  instance_id?: number;
-  name: string;
-  enabled: boolean;
-  target_url: string;
-  description: string | null;
-  path: string | null;
-  method: string;
-  custom_headers: string | null;
-}
 
-export interface ProxyInstance {
-  id?: number;
-  name: string;
-  port: number;
-  enabled: boolean;
-  description: string | null;
-  instance_headers: string | null;
-}

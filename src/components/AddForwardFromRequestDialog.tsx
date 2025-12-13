@@ -81,25 +81,42 @@ export function AddForwardFromRequestDialog({
     setLoading(true);
 
     try {
-      const response = await fetch("/api/forwards", {
-        method: "POST",
+      const response = await fetch("/api/config", {
+        method: "GET",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          instance_id: request.metadata.instanceId,
-          name,
-          target_url: targetUrl,
-          enabled: true,
-          path: path || null,
-          description: description || null,
-          method: method.trim() || "*",
-          custom_headers: customHeaders || undefined,
-        }),
+      });
+      const config = await response.json();
+
+      // 找到对应实例，添加新转发规则
+      const instanceName = request.metadata.instanceName;
+      const instance = config.instances?.find((i: { name: string }) => i.name === instanceName);
+      if (!instance) {
+        throw new Error(`Instance ${instanceName} not found`);
+      }
+
+      // 添加新规则
+      const newForward = {
+        name,
+        target: targetUrl,
+        enabled: true,
+        path: path || undefined,
+        description: description || undefined,
+        methods: method.trim() ? method.trim().split(",").map((m) => m.trim().toUpperCase()) : ["*"],
+        headers: customHeaders ? JSON.parse(customHeaders) : undefined,
+      };
+      instance.forwards = instance.forwards || [];
+      instance.forwards.push(newForward);
+
+      // 保存配置
+      const saveResponse = await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to create forward");
+      if (!saveResponse.ok) {
+        const data = await saveResponse.json();
+        throw new Error(data.error || "Failed to save config");
       }
 
       setOpen(false);

@@ -112,6 +112,19 @@ export class ProxyInstancesManager {
     return manager.checkConfigSync();
   }
 
+  /** 检查实例配置是否同步（返回详细信息） */
+  async checkInstanceConfigSyncDetailed(instanceName: string): Promise<{
+    synced: boolean;
+    workerConfig: unknown;
+    fileConfig: unknown;
+  }> {
+    const manager = this.managers.get(instanceName);
+    if (!manager) {
+      return { synced: true, workerConfig: null, fileConfig: null };
+    }
+    return manager.checkConfigSyncDetailed();
+  }
+
   /** 获取实例期望的配置 */
   getInstanceExpectedConfig(instanceName: string): InstanceRuntimeConfig | null {
     const manager = this.managers.get(instanceName);

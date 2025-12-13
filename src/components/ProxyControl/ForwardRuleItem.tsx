@@ -2,16 +2,18 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Trash2, ExternalLink, Edit, GripVertical } from "lucide-react";
-import type { ProxyForward } from "@/types/proxy";
+import type { ProxyForwardConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditForwardDialog } from "./EditForwardDialog";
 import { EndpointStatusIndicator } from "@/components/EndpointStatusIndicator";
 import type { ForwardEndpointStats } from "@/hooks/useForwardStats";
 
 interface ForwardRuleItemProps {
-  forward: ProxyForward;
+  forward: ProxyForwardConfig;
+  forwardIndex: number;
+  instanceName: string;
   onUpdate: () => void;
   highlighted?: boolean;
-  instanceHeaders?: string | null;
+  instanceHeaders?: Record<string, string> | null;
   unreachable?: boolean;
   showName?: boolean;
   showDragHandle?: boolean;
@@ -21,6 +23,8 @@ interface ForwardRuleItemProps {
 
 export function ForwardRuleItem({
   forward,
+  forwardIndex,
+  instanceName,
   onUpdate,
   highlighted,
   instanceHeaders,
@@ -39,8 +43,18 @@ export function ForwardRuleItem({
 
     setDeleting(true);
     try {
-      await fetch(`/api/forwards/${forward.id}`, { method: "DELETE" });
-      onUpdate();
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const instance = config.instances.find((i) => i.name === instanceName);
+      if (instance) {
+        instance.forwards.splice(forwardIndex, 1);
+        await fetch("/api/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+        onUpdate();
+      }
     } catch (error) {
       console.error("Failed to delete forward:", error);
     } finally {
@@ -50,25 +64,29 @@ export function ForwardRuleItem({
 
   const handleToggle = async () => {
     try {
-      await fetch(`/api/forwards/${forward.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: !forward.enabled }),
-      });
-      onUpdate();
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const instance = config.instances.find((i) => i.name === instanceName);
+      if (instance && instance.forwards[forwardIndex]) {
+        instance.forwards[forwardIndex]!.enabled = !forward.enabled;
+        await fetch("/api/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+        onUpdate();
+      }
     } catch (error) {
       console.error("Failed to toggle forward:", error);
     }
   };
 
-  const customHeadersCount = forward.custom_headers
-    ? Object.keys(JSON.parse(forward.custom_headers)).length
-    : 0;
+  const customHeadersCount = forward.headers ? Object.keys(forward.headers).length : 0;
 
   const methodLabel =
-    !forward.method || forward.method.trim() === "" || forward.method === "*"
+    !forward.methods || forward.methods.length === 0 || forward.methods.includes("*")
       ? "*"
-      : forward.method;
+      : forward.methods.join(",");
 
   const routeLabel =
     forward.path && forward.path.length > 0 ? forward.path : "默认（匹配所有路径）";
@@ -120,12 +138,12 @@ export function ForwardRuleItem({
               <span className="bg-muted rounded px-1 py-0.5 font-mono">{routeLabel}</span>
             </div>
             <a
-              href={forward.target_url}
+              href={forward.target}
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary flex items-center gap-1 hover:underline"
             >
-              {forward.target_url}
+              {forward.target}
               <ExternalLink className="h-3 w-3 flex-shrink-0" />
             </a>
             {unreachable && (
@@ -143,6 +161,8 @@ export function ForwardRuleItem({
         </Button>
         <EditForwardDialog
           forward={forward}
+          forwardIndex={forwardIndex}
+          instanceName={instanceName}
           instanceHeaders={instanceHeaders}
           onUpdated={onUpdate}
           trigger={
