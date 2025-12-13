@@ -459,7 +459,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       }
 
       // 通知前端配置已更新
-      const message = JSON.stringify({ type: "config-reloaded" });
+      const message = JSON.stringify({ type: "config-changed" });
       for (const client of wsClients) {
         try {
           client.send(message);
@@ -514,12 +514,12 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     }
 
     // 通知前端配置已更新
-    const message = JSON.stringify({ type: "config-reloaded" });
+    const message = JSON.stringify({ type: "config-changed" });
     for (const client of wsClients) {
       try {
         client.send(message);
       } catch (error) {
-        console.error("Failed to send config-reloaded to client:", error);
+        console.error("Failed to send config-changed to client:", error);
         wsClients.delete(client);
       }
     }
@@ -835,6 +835,36 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
+      // ========== 配置文件 API (单一数据源) ==========
+      "/api/config": {
+        async GET() {
+          try {
+            const config = loadConfig();
+            return Response.json(config);
+          } catch (error) {
+            return Response.json({ error: String(error) }, { status: 500 });
+          }
+        },
+        async PUT(req) {
+          try {
+            const body = await req.json();
+            saveConfig(body);
+            refreshConfigCache();
+            // 通知前端配置已更新
+            const message = JSON.stringify({ type: "config-changed" });
+            for (const client of wsClients) {
+              try {
+                client.send(message);
+              } catch (error) {
+                wsClients.delete(client);
+              }
+            }
+            return Response.json({ success: true });
+          } catch (error) {
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
       "/api/reload": {
         async POST() {
           try {
@@ -927,6 +957,48 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
               saveConfig(config);
             }
             return Response.json({ success: true, enabled });
+          } catch (error) {
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+      "/api/instances/:id/settings": {
+        async GET(req) {
+          try {
+            const { name } = parseInstanceIdParam(req.params.id);
+            const instance = getInstanceByName(name);
+            if (!instance) {
+              return Response.json({ error: "Instance not found" }, { status: 404 });
+            }
+            return Response.json({
+              autoSort: instance.settings?.autoSort ?? false,
+              autoPushConfig: instance.settings?.autoPushConfig ?? true,
+            });
+          } catch (error) {
+            return Response.json({ error: String(error) }, { status: 400 });
+          }
+        },
+        async PUT(req) {
+          try {
+            const { name } = parseInstanceIdParam(req.params.id);
+            const body = await req.json();
+            const config = loadConfig();
+            const instance = config.instances.find((i) => i.name === name);
+            if (!instance) {
+              return Response.json({ error: "Instance not found" }, { status: 404 });
+            }
+            if (!instance.settings) {
+              instance.settings = {};
+            }
+            if (body.autoSort !== undefined) {
+              instance.settings.autoSort = Boolean(body.autoSort);
+              forwardStatsManager.setAutoSortEnabled(name, instance.settings.autoSort);
+            }
+            if (body.autoPushConfig !== undefined) {
+              instance.settings.autoPushConfig = Boolean(body.autoPushConfig);
+            }
+            saveConfig(config);
+            return Response.json({ success: true, settings: instance.settings });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });
           }

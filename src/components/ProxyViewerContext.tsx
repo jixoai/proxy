@@ -508,7 +508,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
           setSelectedId(null);
           setSelectedDetail(null);
           setCurrentPage(1);
-        } else if (message.type === "config-reloaded") {
+        } else if (message.type === "config-changed") {
           // 配置文件更新，刷新实例列表并递增版本号
           reloadInstances();
           loadRules();

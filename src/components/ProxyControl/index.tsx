@@ -21,25 +21,13 @@ export function ProxyControl() {
     reloadInstances,
     controlFocusInstanceId,
     controlFocusForwardId,
+    autoWatchConfig,
+    setAutoWatchConfig,
   } = useProxyViewer();
 
   const [reloadLoading, setReloadLoading] = useState(false);
-  const [watching, setWatching] = useState(true); // 默认开启
   const [watchLoading, setWatchLoading] = useState(false);
   const [lastReloadMessage, setLastReloadMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const response = await fetch("/api/reload/status");
-        const data = await response.json();
-        setWatching(Boolean(data.watching));
-      } catch (error) {
-        console.error("Failed to load reload status:", error);
-      }
-    };
-    fetchStatus();
-  }, []);
 
   const handleReload = async () => {
     setReloadLoading(true);
@@ -70,15 +58,7 @@ export function ProxyControl() {
   const handleWatchToggle = async (next: boolean) => {
     setWatchLoading(true);
     try {
-      const response = await fetch("/api/reload/watch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
-      });
-      const data = await response.json();
-      setWatching(Boolean(data.watching));
-    } catch (error) {
-      console.error("Failed to update watch state:", error);
+      await setAutoWatchConfig(next);
     } finally {
       setWatchLoading(false);
     }
@@ -102,7 +82,7 @@ export function ProxyControl() {
           </Button>
           <div className="text-muted-foreground flex items-center gap-2 text-sm">
             <Switch
-              checked={watching}
+              checked={autoWatchConfig}
               disabled={watchLoading}
               onCheckedChange={handleWatchToggle}
             />

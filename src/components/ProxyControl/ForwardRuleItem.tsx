@@ -15,6 +15,7 @@ interface ForwardRuleItemProps {
   unreachable?: boolean;
   showName?: boolean;
   showDragHandle?: boolean;
+  dragHandleProps?: Record<string, unknown>;
   stats?: ForwardEndpointStats | null;
 }
 
@@ -26,6 +27,7 @@ export function ForwardRuleItem({
   unreachable = false,
   showName = true,
   showDragHandle = false,
+  dragHandleProps,
   stats = null,
 }: ForwardRuleItemProps) {
   const [deleting, setDeleting] = useState(false);
@@ -78,9 +80,14 @@ export function ForwardRuleItem({
       } ${unreachable ? "opacity-60 grayscale" : ""}`}
     >
       <div className="flex min-w-0 flex-1 items-start gap-3">
-        <div className="text-muted-foreground flex cursor-grab items-center pt-1">
-          <GripVertical className="h-4 w-4" />
-        </div>
+        {showDragHandle && (
+          <div
+            className="text-muted-foreground flex cursor-grab items-center pt-1"
+            {...dragHandleProps}
+          >
+            <GripVertical className="h-4 w-4" />
+          </div>
+        )}
         <EndpointStatusIndicator stats={stats} size="md" />
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-sm">

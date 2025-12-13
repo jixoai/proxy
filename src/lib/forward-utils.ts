@@ -27,10 +27,12 @@ function sortGroupBySpecificity<T extends ForwardLike>(group: T[]): T[] {
 }
 
 /**
- * 将同名的转发规则强制聚合在一起，并在组内按路由前缀长度排序（长路径优先，其次无路径兜底）。
- * 组的顺序保持首次出现的顺序不变。
+ * 将同名的转发规则强制聚合在一起。
+ * 组的顺序保持首次出现的顺序不变，组内顺序保持原始顺序不变。
+ * 
+ * @param sortWithinGroup 是否在组内按路径长度排序（长路径优先）。默认 false，保持原始顺序。
  */
-export function normalizeForwardGroups<T extends ForwardLike>(forwards: T[]): T[] {
+export function normalizeForwardGroups<T extends ForwardLike>(forwards: T[], sortWithinGroup = false): T[] {
   const groups = new Map<string, { items: T[]; firstIndex: number }>();
   const order: string[] = [];
 
@@ -46,7 +48,8 @@ export function normalizeForwardGroups<T extends ForwardLike>(forwards: T[]): T[
 
   const grouped = order.flatMap((name) => {
     const entry = groups.get(name);
-    return entry ? sortGroupBySpecificity(entry.items) : [];
+    if (!entry) return [];
+    return sortWithinGroup ? sortGroupBySpecificity(entry.items) : entry.items;
   });
 
   return grouped;

@@ -33,6 +33,8 @@ export interface ProxyForwardConfig {
 export interface ProxyInstanceSettings {
   /** 是否启用智能排序（基于健康度自动调整规则顺序） */
   autoSort?: boolean;
+  /** 是否自动推送配置到 worker */
+  autoPushConfig?: boolean;
 }
 
 export interface ProxyInstanceConfig {

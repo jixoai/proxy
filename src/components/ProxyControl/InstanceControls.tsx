@@ -9,15 +9,12 @@ import {
   Hash,
   Server as ServerIcon,
   Clock,
-  Edit,
   ExternalLink,
   Copy,
   AlertTriangle,
   RotateCw,
   Trash2,
   RefreshCw,
-  CheckCircle,
-  AlertCircle,
 } from "lucide-react";
 import type { ProxyInstance } from "@/types/proxy";
 import { EditInstanceDialog } from "./EditInstanceDialog";
@@ -52,11 +49,46 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
   const [loading, setLoading] = useState(false);
   const [configSynced, setConfigSynced] = useState<boolean | null>(null);
   const [pushingConfig, setPushingConfig] = useState(false);
-  const [autoPushConfig, setAutoPushConfig] = useState(true); // 默认开启
+  const [autoPushConfig, setAutoPushConfig] = useState(true);
+  const [settingsLoading, setSettingsLoading] = useState(false);
   const globalHeaderEntries = useMemo(
     () => parseInstanceHeaders(instance.instance_headers),
     [instance.instance_headers],
   );
+
+  // 加载 instance settings
+  const loadSettings = useCallback(async () => {
+    if (!instance.id) return;
+    try {
+      const response = await fetch(`/api/instances/${instance.id}/settings`);
+      const data = await response.json();
+      setAutoPushConfig(data.autoPushConfig ?? true);
+    } catch (error) {
+      console.error("Failed to load instance settings:", error);
+    }
+  }, [instance.id]);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
+
+  const handleAutoPushToggle = async (enabled: boolean) => {
+    if (!instance.id) return;
+    setSettingsLoading(true);
+    setAutoPushConfig(enabled);
+    try {
+      await fetch(`/api/instances/${instance.id}/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoPushConfig: enabled }),
+      });
+    } catch (error) {
+      console.error("Failed to update autoPushConfig:", error);
+      setAutoPushConfig(!enabled);
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
 
   const fetchStatus = async () => {
     if (!instance.id) return;
@@ -424,47 +456,39 @@ export function InstanceControls({ instance, onUpdate, focusedForwardId }: Insta
           停止
         </Button>
 
-        {/* 配置同步状态和推送按钮 */}
+        {/* 配置同步按钮 */}
         {status?.running && (
           <div className="ml-2 flex items-center gap-3 border-l pl-2">
-            {configSynced === true && (
-              <span className="flex items-center gap-1 text-xs text-green-600">
-                <CheckCircle className="h-3.5 w-3.5" />
-                配置已同步
-              </span>
-            )}
-            {configSynced === false && (
-              <>
-                <span className="flex items-center gap-1 text-xs text-amber-600">
-                  <AlertCircle className="h-3.5 w-3.5" />
-                  配置待同步
-                </span>
-                {!autoPushConfig && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handlePushConfig}
-                    disabled={pushingConfig}
-                    className="h-7 text-xs"
-                  >
-                    <RefreshCw className={`mr-1 h-3 w-3 ${pushingConfig ? "animate-spin" : ""}`} />
-                    {pushingConfig ? "推送中..." : "推送配置"}
-                  </Button>
-                )}
-              </>
-            )}
-            {configSynced === null && (
-              <span className="text-muted-foreground text-xs">检查中...</span>
-            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePushConfig}
+              disabled={pushingConfig}
+              className="relative h-7 text-xs"
+            >
+              {/* 状态指示点 */}
+              <span
+                className={`absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full ${
+                  configSynced === null
+                    ? "bg-gray-400"
+                    : configSynced
+                      ? "bg-green-500"
+                      : "bg-amber-500"
+                }`}
+              />
+              <RefreshCw className={`mr-1 h-3 w-3 ${pushingConfig ? "animate-spin" : ""}`} />
+              {pushingConfig ? "同步中..." : configSynced ? "已同步" : "同步配置"}
+            </Button>
 
             {/* 自动推送开关 */}
-            <div className="ml-2 flex items-center gap-1.5 border-l pl-2">
+            <div className="flex items-center gap-1.5">
               <Switch
                 checked={autoPushConfig}
-                onCheckedChange={setAutoPushConfig}
+                onCheckedChange={handleAutoPushToggle}
+                disabled={settingsLoading}
                 className="scale-75"
               />
-              <span className="text-muted-foreground text-xs">自动推送</span>
+              <span className="text-muted-foreground text-xs">自动</span>
             </div>
           </div>
         )}

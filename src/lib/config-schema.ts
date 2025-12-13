@@ -80,6 +80,7 @@ export const proxyForwardSchema = z
 export const proxyInstanceSettingsSchema = z
   .object({
     autoSort: z.boolean().default(false),
+    autoPushConfig: z.boolean().default(true),
   })
   .optional()
   .nullable();

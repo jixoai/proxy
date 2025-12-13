@@ -842,6 +842,8 @@ BUG: 现在页面会突然跳回，比如我在`/control`，忽然会跳回`/?pa
 BUG: `/control` 页面本质是用来读写 proxy-config.json 的地方。但是现在我在界面上做的编辑操作，并没有立刻更新到文件中。
 比如:“切换自动监听配置文件”、“拖动转发规则的顺序”
 
+---
+
 BUG: “重载配置”的功能依然有问题，但是刷新页面却能获得完整正确的配置。
 解决方案：
 
@@ -853,7 +855,47 @@ BUG: “重载配置”的功能依然有问题，但是刷新页面却能获得
 
 ---
 
+BUG: 拖动排序还是不能同步到文件，这不应该啊，监听dragend事件就应该立刻发送修改到磁盘，很简单的逻辑为什么还会有bug？说明这里面可能有一些奇怪的代码导致违反单一数据源原则
+BUG: “自动推送”的开关 应属于 instance-setting，“配置已同步”应该是一个按钮，右上角有一个 绿点，代表“配置已同步”，如果和 worker的内核不一致，应该显示“黄点”
+
+---
+
 BUG: 自动推送 和 智能排序，应该属于 instances 下每个“转发实例（端口）”的settings
+
+---
+
+继续 dnd-kit 的修复工作：id不稳定导致交换存在一些bug
+
+---
+
+no yet ,the bug still exists:
+
+you can read the proxy-config.json file.
+when i drag A(group=deepseek),i clould't insert between B and C, but cloud be after C.
+when i drag B, cloud be before A, but cloud be after C.
+
+may be the size of the element case the bug?
+
+---
+
+no, use pointerWithin is an bad idea.
+the size of element is different. if A and B swap, may be case swap again and again.
+
+my suggion is: do not move the group, you can show an line in gap: it means the dragItem will be insert here.
+
+you can use this style for in-group items
+
+---
+
+我们需要美化一下样式：
+
+1. 如果同name只有一个元素，那么理论上不用显示双层，只需要显示内层，此时拖动的效果等于 group 级别的拖动
+2. 如果同name有两个以上的元素，那么内层理论上不用显示 name，重点突出 description 信息
+3. “已启用、已禁用”这个状态和“禁用、启用”这个按钮可以合并成一个toggle
+
+---
+
+你对“延迟”的存在问题：延迟不是 response-end的时间，而是response-start的时间。因为我们大部分请求都是event-stream，极端情况下甚至返回需要两分钟，所以更加不可以用response-end来作为延迟的统计。
 
 ---
 
