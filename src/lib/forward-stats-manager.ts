@@ -3,7 +3,7 @@
  *
  * 统计每个转发规则端点的:
  * - 失败率 (5分钟滑动窗口)
- * - 平均延迟
+ * - 平均 TTFB（延迟）- 使用 Time To First Byte 而非总耗时，避免 SSE/event-stream 响应造成延迟统计偏高
  * - 最后调用时间
  *
  * 支持:
@@ -24,6 +24,7 @@ const debugAutoSort = createDebug("plugins:auto-sort");
 
 export interface RequestSample {
   timestamp: number;
+  /** TTFB（Time To First Byte）- 收到响应头的时间，单位毫秒 */
   durationMs: number;
   success: boolean;
 }
@@ -45,7 +46,7 @@ export interface ForwardEndpointStats {
   computed: {
     /** 失败率 0-1 */
     failureRate: number;
-    /** 平均延迟 ms */
+    /** 平均 TTFB（延迟）ms */
     avgLatency: number;
     /** 总请求数 */
     totalRequests: number;
@@ -221,7 +222,7 @@ export class ForwardStatsManager extends EventEmitter {
    * @param forwardName 转发规则名称
    * @param endpointIndex 端点索引 (同名规则中的第几个)
    * @param targetUrl 目标 URL
-   * @param durationMs 请求耗时 ms
+   * @param durationMs TTFB（Time To First Byte）ms
    * @param success 是否成功
    * @param timestamp 时间戳 (默认 now)
    */

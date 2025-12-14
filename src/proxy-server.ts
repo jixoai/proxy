@@ -752,11 +752,9 @@ const server = http.createServer(async (req, res) => {
       throw err;
     });
 
-    const durationMs = Date.now() - attemptStart;
-
     const wasAborted = attemptResult.abortReason !== undefined;
 
-    // 上报统计数据
+    // 上报统计数据（使用 TTFB 作为延迟指标，因为 SSE/event-stream 响应的 bodyMs 可能很长）
     const isFailureStatus = attemptResult.statusCode >= 400 && attemptResult.statusCode <= 599;
     const success = !attemptResult.errorMessage && !isFailureStatus;
 
@@ -768,7 +766,7 @@ const server = http.createServer(async (req, res) => {
         forwardRule.name,
         endpointIndex,
         hookedTargetUrl.href,
-        durationMs,
+        attemptResult.ttfbMs, // 使用 TTFB 而非总耗时，避免流式响应造成延迟统计偏高
         success,
       );
     }
