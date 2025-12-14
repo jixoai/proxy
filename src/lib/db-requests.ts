@@ -4,7 +4,8 @@ import { db } from "./db";
 import { dbNotifier } from "./db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, ensureDataUrl, isDataUrl } from "./data-url";
 
-export type RequestStatus = "pending" | "streaming" | "completed" | "error";
+export type AbortReason = "client_disconnect" | "user_abort";
+export type RequestStatus = "pending" | "streaming" | "completed" | "error" | "aborted";
 export type WebSocketDirection = "send" | "receive" | null;
 
 export interface RequestData {
@@ -37,6 +38,7 @@ export interface LoggedRequest {
   forward_name: string | null;
   group_name: string | null;
   status: RequestStatus;
+  abort_reason: AbortReason | null;
   is_websocket: boolean;
   websocket_direction: WebSocketDirection;
   error_message: string | null;
@@ -69,6 +71,7 @@ function serializeRequest(req: LoggedRequest): string {
 function deserializeRequest(row: { id: number; data: string }): LoggedRequest {
   const parsed = JSON.parse(row.data) as LoggedRequest;
   parsed.id = row.id;
+  parsed.abort_reason ??= null;
   return parsed;
 }
 
@@ -305,6 +308,7 @@ export function createWebSocketMessage(params: {
     forward_name: params.forward_name,
     group_name: coerceGroupName(params.instance_name, params.forward_name),
     status: "completed",
+    abort_reason: null,
     is_websocket: true,
     websocket_direction: params.direction,
     error_message: null,

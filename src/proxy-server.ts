@@ -7,7 +7,12 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { parentPort } from "node:worker_threads";
 import createDebug from "debug";
-import { createProxyRequest, updateProxyRequest, updateStreamingProgress } from "./lib/db-requests";
+import {
+  createProxyRequest,
+  updateProxyRequest,
+  updateStreamingProgress,
+  type AbortReason,
+} from "./lib/db-requests";
 import { dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
@@ -42,6 +47,27 @@ const PROXY_PORT = args.values.port;
 const INSTANCE_NAME = args.values.instance ?? "default";
 const log = createLogger(`proxy:server:${INSTANCE_NAME}`);
 installGlobalErrorLogger(`proxy-server:${INSTANCE_NAME}`);
+
+const CLIENT_DISCONNECT: AbortReason = "client_disconnect";
+const USER_ABORT: AbortReason = "user_abort";
+
+function isAbortReason(value: unknown): value is AbortReason {
+  return value === CLIENT_DISCONNECT || value === USER_ABORT;
+}
+
+function getAbortReasonFromSignal(signal: AbortSignal): AbortReason {
+  return isAbortReason(signal.reason) ? signal.reason : CLIENT_DISCONNECT;
+}
+
+class ProxyRequestAbortedError extends Error {
+  readonly abortReason: AbortReason;
+
+  constructor(abortReason: AbortReason) {
+    super("Request aborted");
+    this.name = "ProxyRequestAbortedError";
+    this.abortReason = abortReason;
+  }
+}
 
 // 在 worker 模式下，将日志透传给父线程以便 UI 实时展示
 if (parentPort) {
@@ -183,14 +209,56 @@ if (parentPort) {
           parentPort?.postMessage(response);
           break;
         }
+        case "abort-request": {
+          const controller = activeRequests.get(message.dbRecordId);
+          const success = !!controller;
+          if (controller) {
+            controller.abort(USER_ABORT);
+            log.info(`[Abort] Request #${message.dbRecordId} aborted by user`);
+          }
+          const response: WorkerResponse = {
+            type: "abort-result",
+            success,
+            dbRecordId: message.dbRecordId,
+          };
+          parentPort?.postMessage(response);
+          break;
+        }
       }
     } catch (error) {
-      const response: WorkerResponse = {
-        type: "reload-result",
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-      parentPort?.postMessage(response);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+
+      switch (message.type) {
+        case "reload": {
+          const response: WorkerResponse = {
+            type: "reload-result",
+            success: false,
+            error: errorMessage,
+          };
+          parentPort?.postMessage(response);
+          break;
+        }
+        case "abort-request": {
+          const response: WorkerResponse = {
+            type: "abort-result",
+            success: false,
+            dbRecordId: message.dbRecordId,
+          };
+          parentPort?.postMessage(response);
+          break;
+        }
+        default: {
+          const response: WorkerResponse = {
+            type: "server-error",
+            error: errorMessage,
+            stack,
+            port: Number(PROXY_PORT),
+          };
+          parentPort?.postMessage(response);
+          break;
+        }
+      }
     }
   });
 }
@@ -283,10 +351,29 @@ function applyCustomHeaders(
 
 let requestCounter = 0;
 
+// 存储活跃请求的 AbortController，用于支持请求中断
+const activeRequests = new Map<number, AbortController>();
+
 const server = http.createServer(async (req, res) => {
   const startTime = Date.now();
   const requestId = `${++requestCounter}`;
   const timestamp = new Date().toISOString();
+
+  // 创建 AbortController 用于级联取消整个请求链路
+  const abortController = new AbortController();
+  const { signal: abortSignal } = abortController;
+  let isClientDisconnected = false;
+
+  // 监听上游客户端断开连接
+  const handleClientClose = () => {
+    if (!res.writableEnded && !isClientDisconnected) {
+      isClientDisconnected = true;
+      abortController.abort(CLIENT_DISCONNECT);
+      log.info(`[Abort] Client disconnected for request #${requestId}`);
+    }
+  };
+  req.on("aborted", handleClientClose);
+  res.on("close", handleClientClose);
 
   const protocol = req.headers["x-forwarded-proto"] || "http";
   const requestUrl = new URL(
@@ -363,6 +450,7 @@ const server = http.createServer(async (req, res) => {
     ttfbMs: number;
     bodyMs: number;
     errorMessage?: string;
+    abortReason?: AbortReason;
     forwardRule: ForwardRule;
   } | null = null;
 
@@ -397,6 +485,7 @@ const server = http.createServer(async (req, res) => {
           url: targetUrl.href,
           headers: hookedForwardHeaders as Record<string, string | string[]>,
           body: hookedRequestBody,
+          signal: abortSignal,
         });
 
         if (hookResult.method && hookResult.method !== hookedMethod) {
@@ -444,6 +533,7 @@ const server = http.createServer(async (req, res) => {
         forward_name: forwardRule.name,
         group_name: `${INSTANCE_NAME}/${forwardRule.name}`,
         status: "pending",
+        abort_reason: null,
         is_websocket: false,
         websocket_direction: null,
         error_message: null,
@@ -466,6 +556,8 @@ const server = http.createServer(async (req, res) => {
           : undefined,
         response: undefined,
       });
+      // 注册到活跃请求 Map，支持外部中断
+      activeRequests.set(dbRecordId, abortController);
       debugNotifier("about to notify insert, dbRecordId: %d", dbRecordId);
       dbNotifier.notify("insert", "proxy_requests", dbRecordId);
       debugNotifier("notify insert completed");
@@ -483,9 +575,17 @@ const server = http.createServer(async (req, res) => {
       bodyBuffer: Buffer;
       contentType: string | null;
       errorMessage?: string;
+      abortReason?: AbortReason;
       ttfbMs: number;
       bodyMs: number;
-    }>((resolve) => {
+    }>((resolve, reject) => {
+      // 检查是否已经被中断
+      if (abortSignal.aborted) {
+        reject(new ProxyRequestAbortedError(getAbortReasonFromSignal(abortSignal)));
+        return;
+      }
+
+      let proxyResRef: http.IncomingMessage | null = null;
       const proxyReq = requestModule.request(
         {
           hostname: hookedTargetUrl.hostname,
@@ -495,6 +595,7 @@ const server = http.createServer(async (req, res) => {
           headers: hookedForwardHeaders,
         },
         async (proxyRes) => {
+          proxyResRef = proxyRes;
           // TTFB: 收到响应头的时间
           const responseStartTime = Date.now();
           const ttfbMs = responseStartTime - attemptStart;
@@ -543,6 +644,7 @@ const server = http.createServer(async (req, res) => {
                   statusMessage,
                   headers: responseHeaders as Record<string, string | string[]>,
                   body: bodyBuffer,
+                  signal: abortSignal,
                 });
                 if (hookResult.statusCode !== undefined) statusCode = hookResult.statusCode;
                 if (hookResult.statusMessage !== undefined)
@@ -571,7 +673,12 @@ const server = http.createServer(async (req, res) => {
         },
       );
 
+      const cleanup = () => {
+        abortSignal.removeEventListener("abort", handleAbort);
+      };
+
       proxyReq.on("error", (error) => {
+        cleanup();
         const errorTtfb = Date.now() - attemptStart;
         const errorBody = Buffer.from(
           JSON.stringify({
@@ -594,11 +701,49 @@ const server = http.createServer(async (req, res) => {
         });
       });
 
+      // 监听 abort 信号，中断代理请求
+      const handleAbort = () => {
+        const abortReason = getAbortReasonFromSignal(abortSignal);
+        proxyReq.destroy();
+        proxyResRef?.destroy();
+        cleanup();
+        reject(new ProxyRequestAbortedError(abortReason));
+      };
+      abortSignal.addEventListener("abort", handleAbort);
+
+      // 如果在绑定 listener 之前就已触发 abort，确保立刻中断
+      if (abortSignal.aborted) {
+        handleAbort();
+        return;
+      }
+
       if (hookedRequestBody.length > 0) proxyReq.write(hookedRequestBody);
       proxyReq.end();
+    }).catch((err) => {
+      // 处理中断异常
+      if (err instanceof ProxyRequestAbortedError) {
+        const statusMessage =
+          err.abortReason === USER_ABORT ? "User Aborted Request" : "Client Closed Request";
+        const errorMessage =
+          err.abortReason === USER_ABORT ? "Request aborted by user" : "Client disconnected";
+        return {
+          statusCode: 499,
+          statusMessage,
+          headers: {} as http.OutgoingHttpHeaders,
+          bodyBuffer: Buffer.alloc(0),
+          contentType: null,
+          errorMessage,
+          abortReason: err.abortReason,
+          ttfbMs: Date.now() - attemptStart,
+          bodyMs: 0,
+        };
+      }
+      throw err;
     });
 
     const durationMs = Date.now() - attemptStart;
+
+    const wasAborted = attemptResult.abortReason !== undefined;
 
     // 上报统计数据
     const isFailureStatus = attemptResult.statusCode >= 400 && attemptResult.statusCode <= 599;
@@ -606,19 +751,25 @@ const server = http.createServer(async (req, res) => {
 
     // 计算 endpointIndex: 在同名规则组中的位置
     const endpointIndex = candidateIndexes.indexOf(ruleIndex as number);
-    forwardStatsManager.sendReport(
-      INSTANCE_NAME,
-      forwardRule.name,
-      endpointIndex,
-      hookedTargetUrl.href,
-      durationMs,
-      success,
-    );
+    if (!wasAborted) {
+      forwardStatsManager.sendReport(
+        INSTANCE_NAME,
+        forwardRule.name,
+        endpointIndex,
+        hookedTargetUrl.href,
+        durationMs,
+        success,
+      );
+    }
 
     finalResult = {
       ...attemptResult,
       forwardRule,
     };
+
+    if (wasAborted) {
+      break;
+    }
 
     if (!isFailureStatus) {
       break;
@@ -639,8 +790,10 @@ const server = http.createServer(async (req, res) => {
       ? bufferToDataUrl(finalResult.bodyBuffer, finalResult.contentType ?? undefined)
       : null;
 
+  const isRequestAborted = finalResult.abortReason !== undefined;
   updateProxyRequest(dbRecordId, {
-    status: finalResult.errorMessage ? "error" : "completed",
+    status: isRequestAborted ? "aborted" : finalResult.errorMessage ? "error" : "completed",
+    abort_reason: isRequestAborted ? finalResult.abortReason! : null,
     error_message: finalResult.errorMessage ?? null,
     forward_name: finalResult.forwardRule.name,
     response: {
@@ -655,6 +808,14 @@ const server = http.createServer(async (req, res) => {
     },
   });
   dbNotifier.notify("update", "proxy_requests", dbRecordId);
+
+  // 清理活跃请求 Map
+  activeRequests.delete(dbRecordId);
+
+  // 如果已经被中断，不再发送响应
+  if (isClientDisconnected) {
+    return;
+  }
 
   res.writeHead(finalResult.statusCode, finalResult.statusMessage, finalResult.headers);
   res.end(finalResult.bodyBuffer);

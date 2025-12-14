@@ -98,6 +98,13 @@ export class ProxyInstancesManager {
     await manager.reload(validForwards, instance.headers ?? null, instance.hooks ?? null);
   }
 
+  /** 中断指定实例中的请求 */
+  async abortRequest(instanceName: string, dbRecordId: number): Promise<boolean> {
+    const manager = this.managers.get(instanceName);
+    if (!manager) return false;
+    return manager.abortRequest(dbRecordId);
+  }
+
   /** 获取实例当前配置（从 worker 获取） */
   async getInstanceWorkerConfig(instanceName: string): Promise<InstanceRuntimeConfig | null> {
     const manager = this.managers.get(instanceName);

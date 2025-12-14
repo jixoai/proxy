@@ -9,6 +9,7 @@ export interface RequestHookParams {
   url: string;
   headers: Record<string, string | string[]>;
   body: Buffer;
+  signal?: AbortSignal;
 }
 
 export interface RequestHookResult {
@@ -23,6 +24,7 @@ export interface ResponseHookParams {
   statusMessage: string;
   headers: Record<string, string | string[]>;
   body: Buffer;
+  signal?: AbortSignal;
 }
 
 export interface ResponseHookResult {
@@ -221,6 +223,7 @@ class HookProcess {
     endpoint: string,
     meta: unknown,
     body: Uint8Array,
+    signal?: AbortSignal,
   ): Promise<{ meta: unknown; body: Buffer }> {
     await this.ensureReady();
     if (!this.listenUrl) {
@@ -234,6 +237,7 @@ class HookProcess {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
       body: new Blob([payloadView]),
+      signal,
     });
 
     if (!resp.ok) {
@@ -254,6 +258,7 @@ class HookProcess {
         bodyLength: params.body.length,
       },
       params.body,
+      params.signal,
     );
 
     const metaObj = meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
@@ -276,6 +281,7 @@ class HookProcess {
         bodyLength: params.body.length,
       },
       params.body,
+      params.signal,
     );
 
     const metaObj = meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
@@ -363,6 +369,7 @@ export class HooksExecutor {
     patch: RequestHookResult,
   ): RequestHookParams {
     return {
+      ...current,
       method: patch.method ?? current.method,
       url: patch.url ?? current.url,
       headers: patch.headers ?? current.headers,
@@ -375,6 +382,7 @@ export class HooksExecutor {
     patch: ResponseHookResult,
   ): ResponseHookParams {
     return {
+      ...current,
       statusCode: patch.statusCode ?? current.statusCode,
       statusMessage: patch.statusMessage ?? current.statusMessage,
       headers: patch.headers ?? current.headers,

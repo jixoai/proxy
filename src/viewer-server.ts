@@ -25,10 +25,11 @@ import {
   getRequestsAfterId,
   clearAllRequests as dbClearAllRequests,
   deleteProxyRequest as dbDeleteProxyRequest,
+  updateProxyRequest,
   requestEvents,
   type LoggedRequest,
 } from "./lib/db-requests";
-import { dbListener } from "./lib/db-notifier";
+import { dbListener, dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, isDataUrl } from "./lib/data-url";
 import { extractContentTypeFromHeaders, isTextLikeMime } from "./lib/http-utils";
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
@@ -79,6 +80,7 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
       instanceName: req.instance_name,
       forwardName: req.forward_name,
       status: req.status,
+      abortReason: req.abort_reason,
       isWebSocket: req.is_websocket,
       websocketDirection: req.websocket_direction,
       errorMessage: req.error_message,
@@ -651,6 +653,60 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             }
           } catch (error) {
             console.error("Failed to delete request:", error);
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+      "/api/requests/:id/abort": {
+        async POST(req) {
+          try {
+            const id = parseInt(req.params.id);
+            if (isNaN(id)) {
+              return Response.json({ success: false, error: "Invalid request ID" }, { status: 400 });
+            }
+
+            // 获取请求信息以确定所属实例
+            const request = getProxyRequestById(id);
+            if (!request) {
+              return Response.json({ success: false, error: "Request not found" }, { status: 404 });
+            }
+
+            // 检查请求是否可以中断（只有 pending 和 streaming 状态可以中断）
+            if (request.status !== "pending" && request.status !== "streaming") {
+              return Response.json(
+                { success: false, error: "Request cannot be aborted (already completed or errored)" },
+                { status: 400 },
+              );
+            }
+
+            const instanceName = request.instance_name;
+            if (!instanceName) {
+              return Response.json(
+                { success: false, error: "Request has no associated instance" },
+                { status: 400 },
+              );
+            }
+
+            // 调用 manager 中断请求
+            const success = await manager.abortRequest(instanceName, id);
+
+            if (success) {
+              // 更新数据库状态
+              updateProxyRequest(id, {
+                status: "aborted",
+                abort_reason: "user_abort",
+                error_message: "Request aborted by user",
+              });
+              dbNotifier.notify("update", "proxy_requests", id);
+              return Response.json({ success: true, message: "Request aborted" });
+            } else {
+              return Response.json(
+                { success: false, error: "Failed to abort request (may have already completed)" },
+                { status: 400 },
+              );
+            }
+          } catch (error) {
+            console.error("Failed to abort request:", error);
             return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
         },

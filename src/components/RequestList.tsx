@@ -5,6 +5,7 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
+  Ban,
   Radio,
   Cable,
   Trash2,
@@ -78,6 +79,12 @@ function StatusBadge({ status }: { status: RequestStatus }) {
       className: "bg-red-500/10 text-red-700 border-red-500/20",
       icon: XCircle,
       label: "error",
+    },
+    aborted: {
+      variant: "secondary" as const,
+      className: "bg-orange-500/10 text-orange-700 border-orange-500/20",
+      icon: Ban,
+      label: "aborted",
     },
   };
 
@@ -170,6 +177,7 @@ export function RequestList() {
     activeInstanceName,
     activeRuleName,
     deleteRequest,
+    abortRequest,
     jumpToForwardRule,
   } = useProxyViewer();
 
@@ -249,7 +257,8 @@ export function RequestList() {
                 <TableHead className="w-25">类型</TableHead>
                 <TableHead className="w-30">状态</TableHead>
                 <TableHead className="w-20">响应码</TableHead>
-                <TableHead className="min-w-75">路径</TableHead>
+                <TableHead className="min-w-60">路径</TableHead>
+                <TableHead className="min-w-50">目标</TableHead>
                 <TableHead className="w-25">请求体</TableHead>
                 <TableHead className="w-25">响应体</TableHead>
                 <TableHead className="w-20">耗时</TableHead>
@@ -304,13 +313,25 @@ export function RequestList() {
                           <span className="text-muted-foreground text-xs">-</span>
                         )}
                       </TableCell>
-                      <TableCell className="max-w-[300px] truncate font-mono text-xs">
+                      <TableCell className="max-w-[250px] truncate font-mono text-xs">
                         <Tooltip>
                           <TooltipTrigger>
                             {new URL(req.metadata.request.url).pathname}
                           </TooltipTrigger>
                           <TooltipContent>{req.metadata.request.url}</TooltipContent>
                         </Tooltip>
+                      </TableCell>
+                      <TableCell className="max-w-[200px] truncate font-mono text-xs text-muted-foreground">
+                        {req.metadata.targetUrl ? (
+                          <Tooltip>
+                            <TooltipTrigger>
+                              {new URL(req.metadata.targetUrl).host}
+                            </TooltipTrigger>
+                            <TooltipContent>{req.metadata.targetUrl}</TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          "-"
+                        )}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-xs">
                         {formatBytes(req.metadata.request.bodySize)}
@@ -357,6 +378,15 @@ export function RequestList() {
                       <ArrowRightCircle className="h-4 w-4" />
                       <span>跳转到转发规则</span>
                     </ContextMenuItem>
+                    {(req.metadata.status === "pending" || req.metadata.status === "streaming") && (
+                      <ContextMenuItem
+                        className="flex items-center gap-2 text-orange-600"
+                        onClick={() => abortRequest(req.id)}
+                      >
+                        <XCircle className="h-4 w-4" />
+                        <span>中断请求</span>
+                      </ContextMenuItem>
+                    )}
                     <ContextMenuItem
                       className="text-destructive mt-1 flex items-center gap-2 border-t pt-1"
                       onClick={() => deleteRequest(req.id)}

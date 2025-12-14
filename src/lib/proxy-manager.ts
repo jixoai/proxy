@@ -251,6 +251,21 @@ export class ProxyManager {
     return null;
   }
 
+  /** 中断指定请求 */
+  async abortRequest(dbRecordId: number): Promise<boolean> {
+    if (!this.worker) return false;
+
+    const message: WorkerMessage = { type: "abort-request", dbRecordId };
+    this.worker.postMessage(message);
+
+    try {
+      const response = await this.waitForAbortResult(dbRecordId, 5000);
+      return response.success;
+    } catch {
+      return false;
+    }
+  }
+
   /** 从 proxy-config.json 构建该实例的运行时配置 */
   private buildConfigFromProxyConfig(): InstanceRuntimeConfig | null {
     const instance = getInstanceByName(this.instanceName);
@@ -313,6 +328,28 @@ export class ProxyManager {
 
       const handler = (msg: WorkerResponse) => {
         if (msg?.type === expectedType) {
+          clearTimeout(timeout);
+          this.worker?.removeListener("message", handler);
+          resolve(msg);
+        }
+      };
+
+      this.worker?.on("message", handler);
+    });
+  }
+
+  private waitForAbortResult(
+    dbRecordId: number,
+    timeoutMs: number,
+  ): Promise<Extract<WorkerResponse, { type: "abort-result" }>> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.worker?.removeListener("message", handler);
+        reject(new Error(`Timeout waiting for abort-result for ${dbRecordId}`));
+      }, timeoutMs);
+
+      const handler = (msg: WorkerResponse) => {
+        if (msg?.type === "abort-result" && msg.dbRecordId === dbRecordId) {
           clearTimeout(timeout);
           this.worker?.removeListener("message", handler);
           resolve(msg);

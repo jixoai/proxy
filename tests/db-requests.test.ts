@@ -23,6 +23,7 @@ describe("db-requests logging pipeline", () => {
       forward_name: "test-forward",
       group_name: "test-instance/test-forward",
       status: "pending",
+      abort_reason: null,
       is_websocket: false,
       websocket_direction: null,
       error_message: null,

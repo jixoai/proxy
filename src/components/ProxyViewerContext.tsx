@@ -11,7 +11,8 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import type { ProxyInstanceConfig, ProxyConfigFile } from "@/types/proxy";
 
-export type RequestStatus = "pending" | "streaming" | "completed" | "error";
+export type RequestStatus = "pending" | "streaming" | "completed" | "error" | "aborted";
+export type AbortReason = "client_disconnect" | "user_abort";
 export type WebSocketDirection = "send" | "receive" | null;
 
 export interface RequestMetadata {
@@ -40,6 +41,7 @@ export interface RequestData {
     instanceName?: string;
     forwardName?: string;
     status: RequestStatus;
+    abortReason?: AbortReason | null;
     isWebSocket: boolean;
     websocketDirection: WebSocketDirection;
     errorMessage: string | null;
@@ -119,6 +121,7 @@ interface ProxyViewerContextValue {
   loadRequests: () => Promise<void>;
   handleClearAll: () => Promise<void>;
   deleteRequest: (id: string) => Promise<void>;
+  abortRequest: (id: string) => Promise<boolean>;
 }
 
 const ProxyViewerContext = createContext<ProxyViewerContextValue | null>(null);
@@ -243,6 +246,19 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     },
     [selectedId],
   );
+
+  const abortRequest = useCallback(async (id: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/requests/${id}/abort`, {
+        method: "POST",
+      });
+      const result = await response.json();
+      return result.success === true;
+    } catch (error) {
+      console.error("Failed to abort request:", error);
+      return false;
+    }
+  }, []);
 
   const selectRequest = useCallback(
     async (id: string | null, options?: { skipUrlSync?: boolean }) => {
@@ -584,6 +600,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     loadRequests,
     handleClearAll,
     deleteRequest,
+    abortRequest,
   };
 
   return <ProxyViewerContext.Provider value={value}>{children}</ProxyViewerContext.Provider>;

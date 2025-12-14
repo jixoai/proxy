@@ -24,13 +24,15 @@ export interface InstanceRuntimeConfig {
 export type WorkerMessage =
   | { type: "reload"; config: InstanceRuntimeConfig }
   | { type: "get-config" }
-  | { type: "ping" };
+  | { type: "ping" }
+  | { type: "abort-request"; dbRecordId: number };
 
 /** Worker 响应类型 */
 export type WorkerResponse =
   | { type: "reload-result"; success: boolean; error?: string }
   | { type: "config"; config: InstanceRuntimeConfig }
   | { type: "pong" }
+  | { type: "abort-result"; success: boolean; dbRecordId: number }
   | {
       type: "server-error";
       error: string;
