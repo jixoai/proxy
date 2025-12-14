@@ -22,7 +22,10 @@ export interface ResponseData {
   headers: Record<string, string | string[]>;
   bodyDataUrl: string | null;
   bodySize: number;
-  durationMs: number;
+  /** 从请求发出到收到响应头的时间 (TTFB, ms) */
+  ttfbMs?: number;
+  /** 从收到响应头到响应体接收完成的时间 (ms)，streaming 时为 undefined */
+  bodyMs?: number;
   contentType?: string | null;
 }
 
@@ -230,7 +233,6 @@ export function appendResponseBody(
     headers: {},
     bodyDataUrl: null,
     bodySize: 0,
-    durationMs: 0,
   };
 
   return updateProxyRequest(id, {
@@ -239,6 +241,42 @@ export function appendResponseBody(
       bodyDataUrl: nextDataUrl,
       bodySize: nextBuffer.length,
       contentType: contentType ?? response.contentType ?? null,
+    },
+  });
+}
+
+/**
+ * 轻量更新：只更新响应的 bodySize 和 status（用于流式进度显示）
+ * 不存储实际 body 内容，避免频繁写入大量数据
+ */
+export function updateStreamingProgress(
+  id: number,
+  bodySize: number,
+  ttfbMs: number,
+  statusCode?: number,
+  statusMessage?: string,
+  headers?: Record<string, string | string[]>,
+): boolean {
+  const existing = getProxyRequestById(id);
+  if (!existing) return false;
+
+  const response = existing.response ?? {
+    statusCode: null,
+    statusMessage: null,
+    headers: {},
+    bodyDataUrl: null,
+    bodySize: 0,
+  };
+
+  return updateProxyRequest(id, {
+    status: "streaming",
+    response: {
+      ...response,
+      statusCode: statusCode ?? response.statusCode,
+      statusMessage: statusMessage ?? response.statusMessage,
+      headers: headers ?? response.headers,
+      bodySize,
+      ttfbMs: response.ttfbMs ?? ttfbMs,
     },
   });
 }
@@ -285,7 +323,6 @@ export function createWebSocketMessage(params: {
             headers: {},
             bodyDataUrl: messageDataUrl,
             bodySize: messageBuffer.length,
-            durationMs: 0,
           }
         : undefined,
   });

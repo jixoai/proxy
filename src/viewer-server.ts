@@ -74,7 +74,8 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
     folderName: `${req.request_id}_${new Date(req.timestamp).toISOString().replace(/[:.]/g, "-")}`,
     metadata: {
       timestamp: req.timestamp,
-      duration: req.response ? `${req.response.durationMs}ms` : "0ms",
+      ttfbMs: req.response?.ttfbMs,
+      bodyMs: req.response?.bodyMs,
       instanceName: req.instance_name,
       forwardName: req.forward_name,
       status: req.status,
@@ -385,10 +386,13 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
     if (req.response) {
       const responseHeaders = req.response.headers ?? {};
+      const ttfbMs = req.response.ttfbMs ?? 0;
+      const bodyMs = req.response.bodyMs;
+      const durationStr = bodyMs !== undefined ? `${ttfbMs}ms + ${bodyMs}ms` : `${ttfbMs}ms + ?`;
       formatted.responseContent =
         `# 响应信息\n\n` +
         `- **状态码**: ${req.response.statusCode ?? ""} ${req.response.statusMessage || ""}\n` +
-        `- **耗时**: ${req.response.durationMs}ms\n\n` +
+        `- **耗时**: ${durationStr}\n\n` +
         `## 响应头\n\n\`\`\`\n${Object.entries(responseHeaders)
           .map(([k, v]) => `${k}: ${v}`)
           .join("\n")}\n\`\`\`\n\n`;

@@ -2,6 +2,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatBytes, getStatusClass } from "@/components/utils";
 import type { RequestData } from "@/components/ProxyViewerContext";
 
+function formatDuration(ttfbMs?: number, bodyMs?: number): string {
+  if (ttfbMs === undefined) return "N/A";
+  if (bodyMs === undefined) return `${ttfbMs}ms + ?`;
+  return `${ttfbMs}ms + ${bodyMs}ms`;
+}
+
 export function ResponseInfoCard({ metadata }: { metadata: RequestData["metadata"] }) {
   return (
     <Card>
@@ -26,7 +32,7 @@ export function ResponseInfoCard({ metadata }: { metadata: RequestData["metadata
           </div>
 
           <div className="text-muted-foreground text-sm font-medium">Duration</div>
-          <div className="text-sm">{metadata?.duration || "N/A"}</div>
+          <div className="text-sm">{formatDuration(metadata?.ttfbMs, metadata?.bodyMs)}</div>
 
           <div className="text-muted-foreground text-sm font-medium">Size</div>
           <div className="text-sm">{formatBytes(metadata?.response?.bodySize || 0)}</div>

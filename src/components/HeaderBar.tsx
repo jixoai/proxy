@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Radio, RefreshCw, Trash2, X } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
 
 export function HeaderBar() {
@@ -69,13 +70,10 @@ export function HeaderBar() {
               Live
             </span>
           )}
-          <Button
-            variant={livePush ? "default" : "outline"}
-            size="sm"
-            onClick={() => setLivePush(!livePush)}
-          >
-            {livePush ? "Push ON" : "Push OFF"}
-          </Button>
+          <div className="flex items-center gap-1">
+            <Switch checked={livePush} onCheckedChange={setLivePush} />
+            <span className="text-xs text-muted-foreground">Push</span>
+          </div>
           <Button variant="outline" size="sm" onClick={() => loadRequests()}>
             <RefreshCw className="mr-1 h-4 w-4" />
             Refresh

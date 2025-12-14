@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Inbox,
@@ -10,6 +10,8 @@ import {
   Trash2,
   PlusCircle,
   ArrowRightCircle,
+  Clock,
+  Download,
 } from "lucide-react";
 import {
   useProxyViewer,
@@ -91,6 +93,68 @@ function StatusBadge({ status }: { status: RequestStatus }) {
       <span>{config.label}</span>
     </Badge>
   );
+}
+
+// 耗时显示组件
+function DurationDisplay({
+  status,
+  timestamp,
+  ttfbMs,
+  bodyMs,
+}: {
+  status: RequestStatus;
+  timestamp: string;
+  ttfbMs?: number;
+  bodyMs?: number;
+}) {
+  const [now, setNow] = useState(Date.now());
+
+  // streaming/pending 状态下每秒更新
+  useEffect(() => {
+    if (status !== "streaming" && status !== "pending") return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [status]);
+
+  const startTime = new Date(timestamp).getTime();
+
+  // pending: 等待响应头
+  if (status === "pending") {
+    const elapsed = now - startTime;
+    return (
+      <span className="flex items-center gap-1 text-yellow-600">
+        <Clock className="h-3 w-3 animate-pulse" />
+        <span>{elapsed}ms</span>
+      </span>
+    );
+  }
+
+  // streaming: 收到响应头，等待 body 完成
+  if (status === "streaming") {
+    const bodyElapsed = ttfbMs !== undefined ? now - startTime - ttfbMs : 0;
+    return (
+      <span className="flex items-center gap-1 text-blue-600">
+        <span>{ttfbMs ?? 0}ms</span>
+        <span>+</span>
+        <Download className="h-3 w-3 animate-pulse" />
+        <span>{bodyElapsed}ms</span>
+      </span>
+    );
+  }
+
+  // completed/error: 显示最终时间
+  if (ttfbMs !== undefined && bodyMs !== undefined) {
+    return (
+      <span className="flex items-center gap-1">
+        <span>{ttfbMs}ms</span>
+        <span className="text-muted-foreground">+</span>
+        <span>{bodyMs}ms</span>
+      </span>
+    );
+  }
+
+  // fallback
+  return <span>-</span>;
 }
 
 export function RequestList() {
@@ -261,7 +325,12 @@ export function RequestList() {
                         )}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-xs">
-                        {req.metadata.duration}
+                        <DurationDisplay
+                          status={req.metadata.status}
+                          timestamp={req.metadata.timestamp}
+                          ttfbMs={req.metadata.ttfbMs}
+                          bodyMs={req.metadata.bodyMs}
+                        />
                       </TableCell>
                     </TableRow>
                   </ContextMenuTrigger>

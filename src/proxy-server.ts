@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { parentPort } from "node:worker_threads";
 import createDebug from "debug";
-import { createProxyRequest, updateProxyRequest } from "./lib/db-requests";
+import { createProxyRequest, updateProxyRequest, updateStreamingProgress } from "./lib/db-requests";
 import { dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
@@ -360,7 +360,8 @@ const server = http.createServer(async (req, res) => {
     headers: http.OutgoingHttpHeaders;
     bodyBuffer: Buffer;
     contentType: string | null;
-    durationMs: number;
+    ttfbMs: number;
+    bodyMs: number;
     errorMessage?: string;
     forwardRule: ForwardRule;
   } | null = null;
@@ -483,6 +484,7 @@ const server = http.createServer(async (req, res) => {
       contentType: string | null;
       errorMessage?: string;
       ttfbMs: number;
+      bodyMs: number;
     }>((resolve) => {
       const proxyReq = requestModule.request(
         {
@@ -494,18 +496,43 @@ const server = http.createServer(async (req, res) => {
         },
         async (proxyRes) => {
           // TTFB: 收到响应头的时间
-          const ttfbMs = Date.now() - attemptStart;
+          const responseStartTime = Date.now();
+          const ttfbMs = responseStartTime - attemptStart;
           const responseChunks: Buffer[] = [];
 
           let responseHeaders = { ...proxyRes.headers };
           let statusCode = proxyRes.statusCode || 502;
           let statusMessage = proxyRes.statusMessage || "";
 
+          // 流式进度更新 - throttle 1秒
+          let totalReceivedBytes = 0;
+          let lastProgressUpdate = 0;
+          const THROTTLE_MS = 1000;
+          let progressUpdated = false;
+
           proxyRes.on("data", (chunk: Buffer) => {
             responseChunks.push(Buffer.from(chunk));
+            totalReceivedBytes += chunk.length;
+
+            // throttle: 每秒最多更新一次
+            const now = Date.now();
+            if (dbRecordId !== null && now - lastProgressUpdate >= THROTTLE_MS) {
+              lastProgressUpdate = now;
+              progressUpdated = true;
+              updateStreamingProgress(
+                dbRecordId,
+                totalReceivedBytes,
+                ttfbMs,
+                statusCode,
+                statusMessage,
+                responseHeaders as Record<string, string | string[]>,
+              );
+              dbNotifier.notify("update", "proxy_requests", dbRecordId);
+            }
           });
 
           proxyRes.on("end", async () => {
+            const bodyMs = Date.now() - responseStartTime;
             let bodyBuffer = Buffer.concat(responseChunks);
             let contentType = (responseHeaders["content-type"] as string) ?? null;
 
@@ -538,6 +565,7 @@ const server = http.createServer(async (req, res) => {
               bodyBuffer,
               contentType,
               ttfbMs,
+              bodyMs,
             });
           });
         },
@@ -562,6 +590,7 @@ const server = http.createServer(async (req, res) => {
           contentType: "application/json",
           errorMessage: error.message,
           ttfbMs: errorTtfb,
+          bodyMs: 0,
         });
       });
 
@@ -588,7 +617,6 @@ const server = http.createServer(async (req, res) => {
 
     finalResult = {
       ...attemptResult,
-      durationMs,
       forwardRule,
     };
 
@@ -606,7 +634,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const totalDuration = Date.now() - startTime;
   const responseBodyDataUrl =
     finalResult.bodyBuffer.length > 0
       ? bufferToDataUrl(finalResult.bodyBuffer, finalResult.contentType ?? undefined)
@@ -622,7 +649,8 @@ const server = http.createServer(async (req, res) => {
       headers: finalResult.headers as Record<string, string | string[]>,
       bodyDataUrl: responseBodyDataUrl,
       bodySize: finalResult.bodyBuffer.length,
-      durationMs: totalDuration,
+      ttfbMs: finalResult.ttfbMs,
+      bodyMs: finalResult.bodyMs,
       contentType: finalResult.contentType ?? null,
     },
   });

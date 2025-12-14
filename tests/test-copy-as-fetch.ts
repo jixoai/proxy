@@ -11,7 +11,8 @@ const mockRequest: RequestData = {
   folderName: "test",
   metadata: {
     timestamp: "2025-01-10T10:00:00Z",
-    duration: "123ms",
+    ttfbMs: 100,
+    bodyMs: 23,
     instanceName: "default",
     forwardName: "api",
     status: "completed",

@@ -933,6 +933,16 @@ BUG：我发现终端一直在报告这个日志 `[droid-to-claude] Listening on
 
 需求评审：“请求列表页面，新增一个按钮：中断。” 要实现这个功能，你打算怎么做？请深入了解代码后做出决策
 
+引入对request abort的全链路支持：如果上游取消了http请求，我们要去执行我们的abort，层层关联，确保整个请求链路的中断。比如我们的hooks，比如我们的targetRequest
+
+---
+
+这个时间优化成这样的内容:`got-response-time+finished-response-time`,比如
+`icon+500ms+?ms`意味着还在等待响应,`720ms+icon+500ms`意意味着收到status了,还在等待response-end。
+优先信任后端数据,前端负责配合优化。比如说,我们对于时间,应该存储成 `{startTime}| {startTime,endTime,durationMs}`,
+如果是前者,说明endTime没定,那么前端就自己优化显示示,定时更新,如果是后者,那么直接显示durationMs
+不用考虑数据库兼容，直接破坏性更新。
+
 ---
 
 我要你审查：我们的每一个配置字段所带来的能力（包括前端副作用），是否存在交叉。是否违反原则

@@ -33,7 +33,10 @@ export interface RequestData {
   folderName: string;
   metadata: {
     timestamp: string;
-    duration: string;
+    /** TTFB: 从请求发出到收到响应头的时间 (ms) */
+    ttfbMs?: number;
+    /** 从收到响应头到响应体接收完成的时间 (ms)，streaming 时为 undefined */
+    bodyMs?: number;
     instanceName?: string;
     forwardName?: string;
     status: RequestStatus;
