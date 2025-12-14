@@ -25,7 +25,8 @@ export type WorkerMessage =
   | { type: "reload"; config: InstanceRuntimeConfig }
   | { type: "get-config" }
   | { type: "ping" }
-  | { type: "abort-request"; dbRecordId: number };
+  | { type: "abort-request"; dbRecordId: number }
+  | { type: "shutdown" };
 
 /** Worker 响应类型 */
 export type WorkerResponse =

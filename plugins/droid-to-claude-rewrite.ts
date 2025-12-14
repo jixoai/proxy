@@ -10,6 +10,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createLogger } from "../src/lib/logger";
+const console = createLogger("proxy:plugin:droid-to-claude-rewrite");
 
 type CacheControl = { type: "ephemeral" };
 
@@ -78,7 +80,7 @@ function logToFile(prefix: string, data: unknown) {
   const filename = `${timestamp}_${requestCounter}_${prefix}.json`;
   const filepath = path.join(LOG_DIR, filename);
   fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
-  console.error(`[droid-to-claude] Logged to: ${filename}`);
+  console.debug(`Logged to: ${filename}`);
 }
 
 function encodeEnvelope(meta: unknown, body: Uint8Array): Buffer {
@@ -107,9 +109,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function normalizeHeaders(
-  headers: unknown,
-): Record<string, string> | undefined {
+function normalizeHeaders(headers: unknown): Record<string, string> | undefined {
   if (!isRecord(headers)) return undefined;
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
@@ -152,10 +152,7 @@ function normalizeContentArray(message: Message | undefined) {
   message.content = [];
 }
 
-function replaceSystemReminderSection(
-  originalText: string,
-  newReminderText: string,
-) {
+function replaceSystemReminderSection(originalText: string, newReminderText: string) {
   const startTag = "<system-reminder>";
   const endTag = "</system-reminder>";
   const start = originalText.indexOf(startTag);
@@ -182,12 +179,8 @@ function mergeDuplicateSystemReminders(messages: Message[] | undefined) {
     normalizeContentArray(first);
     normalizeContentArray(second);
 
-    const firstContent = Array.isArray(first.content)
-      ? first.content
-      : undefined;
-    const secondContent = Array.isArray(second.content)
-      ? second.content
-      : undefined;
+    const firstContent = Array.isArray(first.content) ? first.content : undefined;
+    const secondContent = Array.isArray(second.content) ? second.content : undefined;
     if (!firstContent || !secondContent) {
       i += 1;
       continue;
@@ -195,27 +188,20 @@ function mergeDuplicateSystemReminders(messages: Message[] | undefined) {
 
     const firstSysIndex = firstContent.findIndex(
       (c) =>
-        c?.type === "text" &&
-        typeof c.text === "string" &&
-        c.text.includes("<system-reminder>"),
+        c?.type === "text" && typeof c.text === "string" && c.text.includes("<system-reminder>"),
     );
 
     const secondSysTexts = secondContent
       .filter(
         (c) =>
-          c?.type === "text" &&
-          typeof c.text === "string" &&
-          c.text.includes("<system-reminder>"),
+          c?.type === "text" && typeof c.text === "string" && c.text.includes("<system-reminder>"),
       )
       .map((c) => c.text);
 
     if (firstSysIndex !== -1 && secondSysTexts.length > 0) {
       const target = firstContent[firstSysIndex];
       if (target?.text) {
-        const replacement = replaceSystemReminderSection(
-          target.text,
-          secondSysTexts.join("\n\n"),
-        );
+        const replacement = replaceSystemReminderSection(target.text, secondSysTexts.join("\n\n"));
         if (replacement) {
           target.text = replacement;
           messages.splice(i + 1, 1);
@@ -261,9 +247,7 @@ function rewriteRequest(params: RewriteParams) {
     logToFile("3-parsed-body-structure", {
       model: requestBody.model,
       hasSystem: !!requestBody.system,
-      systemType: Array.isArray(requestBody.system)
-        ? "array"
-        : typeof requestBody.system,
+      systemType: Array.isArray(requestBody.system) ? "array" : typeof requestBody.system,
       systemPreview: Array.isArray(requestBody.system)
         ? requestBody.system.map((s) => s.text?.substring(0, 80) ?? "")
         : String(requestBody.system).substring(0, 200),
@@ -280,7 +264,7 @@ function rewriteRequest(params: RewriteParams) {
       return {} as const;
     }
 
-    console.error("[droid-to-claude] Detected droid request, rewriting...");
+    console.debug("Detected droid request, rewriting...");
 
     const droidSystemText = extractSystemText(requestBody.system);
     logToFile("5-droid-system", {
@@ -303,9 +287,7 @@ function rewriteRequest(params: RewriteParams) {
     };
     requestBody.system.push(droidSystemContent);
 
-    const mergedSystemReminder = mergeDuplicateSystemReminders(
-      requestBody.messages,
-    );
+    const mergedSystemReminder = mergeDuplicateSystemReminders(requestBody.messages);
     if (mergedSystemReminder) {
       logToFile("5b-system-reminder-merged", {
         messageCount: requestBody.messages?.length,
@@ -317,9 +299,7 @@ function rewriteRequest(params: RewriteParams) {
         toolNames: requestBody.tools.map((t) => t.name),
         toolsCount: requestBody.tools.length,
       });
-      console.error(
-        `[droid-to-claude] Keeping original droid tools (${requestBody.tools.length} tools)`,
-      );
+      console.debug(`Keeping original droid tools (${requestBody.tools.length} tools)`);
     }
 
     if (!requestBody.metadata) {
@@ -333,8 +313,7 @@ function rewriteRequest(params: RewriteParams) {
     const newBody = JSON.stringify(requestBody);
 
     const newHeaders: Record<string, string> = { ...headers };
-    newHeaders["anthropic-beta"] =
-      "claude-code-20250219,interleaved-thinking-2025-05-14";
+    newHeaders["anthropic-beta"] = "claude-code-20250219,interleaved-thinking-2025-05-14";
     if (newHeaders["x-api-key"] && !newHeaders["authorization"]) {
       newHeaders["authorization"] = `Bearer ${newHeaders["x-api-key"]}`;
       delete newHeaders["x-api-key"];
@@ -364,12 +343,12 @@ function rewriteRequest(params: RewriteParams) {
 
     logToFile("8-modified-body-full", safeParseJSON(newBody));
 
-    console.error("[droid-to-claude] Request rewritten successfully");
+    console.debug("Request rewritten successfully");
     return { headers: newHeaders, body: newBody } as const;
   } catch (e) {
     const error = e instanceof Error ? e : new Error("Unknown parse error");
     logToFile("error", { message: error.message, stack: error.stack });
-    console.error("[droid-to-claude] Parse error:", error.message);
+    console.error("Parse error:", error.message);
     return {} as const;
   }
 }
@@ -380,8 +359,7 @@ function buildRequestResponse(
   rewritten: ReturnType<typeof rewriteRequest>,
 ) {
   const nextHeaders = rewritten.headers ?? meta.headers ?? {};
-  const nextBody =
-    rewritten.body !== undefined ? Buffer.from(rewritten.body, "utf-8") : body;
+  const nextBody = rewritten.body !== undefined ? Buffer.from(rewritten.body, "utf-8") : body;
   const nextMeta = {
     method: meta.method,
     url: meta.url,
@@ -404,7 +382,7 @@ function buildResponseEcho(meta: ResponseMeta, body: Buffer) {
 async function start() {
   const callbackUrl = process.env.__CALLBACK_URL__;
   if (!callbackUrl) {
-    console.error("[droid-to-claude] Missing __CALLBACK_URL__ env");
+    console.error("Missing __CALLBACK_URL__ env");
     process.exit(1);
   }
 
@@ -430,11 +408,7 @@ async function start() {
             headers,
             body: body.toString("utf-8"),
           });
-          const payload = buildRequestResponse(
-            { ...normalizedMeta, headers },
-            body,
-            rewritten,
-          );
+          const payload = buildRequestResponse({ ...normalizedMeta, headers }, body, rewritten);
           const bodyInit = new Uint8Array(payload);
           return new Response(bodyInit, {
             status: 200,
@@ -454,7 +428,7 @@ async function start() {
 
         return new Response("Not Found", { status: 404 });
       } catch (err) {
-        console.error("[droid-to-claude] Handler error", err);
+        console.error("Handler error", err);
         return new Response("Internal Error", { status: 500 });
       }
     },
@@ -462,7 +436,7 @@ async function start() {
 
   const listenUrl = `http://127.0.0.1:${server.port}/`;
   await fetch(callbackUrl, { method: "POST", body: listenUrl });
-  console.error(`[droid-to-claude] Listening on ${listenUrl}`);
+  console.info(`Listening on ${listenUrl}`);
 
   const stop = () => {
     server.stop();
@@ -473,6 +447,6 @@ async function start() {
 }
 
 start().catch((err) => {
-  console.error("[droid-to-claude] Fatal error:", err);
+  console.error("Fatal error:", err);
   process.exit(1);
 });

@@ -14,25 +14,46 @@ import { getInstanceByName } from "./config-store";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/** Worker 停止超时时间（毫秒） */
+const WORKER_STOP_TIMEOUT_MS = 3000;
+/** 健康检查间隔（毫秒） */
+const HEALTH_CHECK_INTERVAL_MS = 10000;
+/** 健康检查失败阈值（毫秒） */
+const HEALTH_CHECK_FAILURE_THRESHOLD_MS = 15000;
+/** 等待响应超时（毫秒） */
+const RESPONSE_TIMEOUT_MS = 5000;
+
+/** 代理实例状态 */
 export interface ProxyStatus {
+  /** 是否正在运行 */
   running: boolean;
+  /** Worker 线程 ID */
   pid?: number;
+  /** 配置端口 */
   port: number;
+  /** 实际监听端口 */
   listeningPort?: number;
+  /** 运行时间（毫秒） */
   uptime?: number;
   /** 配置是否同步 */
   configSynced?: boolean;
 }
 
+/** 代理日志消息 */
 export interface ProxyLogMessage {
+  /** 实例名称 */
   instanceName: string;
+  /** 日志类型 */
   type: "stdout" | "stderr";
+  /** 日志内容 */
   message: string;
+  /** 时间戳 */
   timestamp: number;
 }
 
 type LogCallback = (log: ProxyLogMessage) => void;
 
+/** 转发规则配置 */
 export interface ForwardConfig {
   name: string;
   enabled: boolean;
@@ -44,6 +65,10 @@ export interface ForwardConfig {
   hooks?: HooksConfig | null;
 }
 
+/**
+ * 代理实例管理器
+ * 负责管理单个代理实例的生命周期，包括启动、停止、热更新配置等
+ */
 export class ProxyManager {
   private worker: Worker | null = null;
   private readonly instanceName: string;
@@ -55,10 +80,6 @@ export class ProxyManager {
   private configPath: string | undefined;
   private readonly log: Logger;
   private currentForwards: ForwardConfig[] = [];
-  private pendingResponses = new Map<
-    string,
-    { resolve: (v: WorkerResponse) => void; reject: (e: Error) => void }
-  >();
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private lastPongTime: number = 0;
 
@@ -178,28 +199,78 @@ export class ProxyManager {
     console.log(`[ProxyManager] Started proxy instance ${this.instanceName} on port ${this.port}`);
   }
 
+  /**
+   * 停止代理实例
+   * 发送 shutdown 消息让 Worker 优雅关闭，超时后强制终止
+   */
   async stop(): Promise<void> {
     if (!this.worker) throw new Error("Proxy is not running");
 
     this.stopHealthCheck();
-    await this.worker.terminate();
+    
+    const workerRef = this.worker;
+    
+    // 先清理状态，避免 handleWorkerDeath 的竞态条件
     this.worker = null;
     this.startTime = null;
     this.lastPongTime = 0;
 
-    const configPath = path.join(__dirname, `../.tmp/instance-${this.instanceName}-config.json`);
-    try {
-      fs.unlinkSync(configPath);
-      this.log.info(`[ProxyManager] Config file removed: ${configPath}`);
-    } catch {
-      // ignore missing
-    }
-    this.configPath = undefined;
+    // 等待 Worker 退出，超时后强制终止
+    await this.waitForWorkerExit(workerRef);
+
+    // 清理临时配置文件
+    this.cleanupConfigFile();
+
+    // 短暂等待确保端口释放
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     console.log(`[ProxyManager] Proxy instance ${this.instanceName} stopped`);
   }
 
-  /** 热更新配置（不重启 worker） */
+  /**
+   * 等待 Worker 退出
+   * 先发送 shutdown 消息让 Worker 优雅关闭，超时后强制终止
+   */
+  private waitForWorkerExit(workerRef: Worker): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timeoutId = setTimeout(() => {
+        this.log.warn(`[ProxyManager] Worker exit timeout after ${WORKER_STOP_TIMEOUT_MS}ms, force terminating...`);
+        workerRef.terminate().catch(() => {});
+        resolve();
+      }, WORKER_STOP_TIMEOUT_MS);
+
+      workerRef.once("exit", () => {
+        clearTimeout(timeoutId);
+        resolve();
+      });
+
+      // 发送关闭消息让 Worker 优雅关闭 server
+      try {
+        workerRef.postMessage({ type: "shutdown" } satisfies WorkerMessage);
+      } catch {
+        // Worker 可能已经退出，忽略错误
+      }
+    });
+  }
+
+  /** 清理临时配置文件 */
+  private cleanupConfigFile(): void {
+    const configFilePath = path.join(__dirname, `../.tmp/instance-${this.instanceName}-config.json`);
+    try {
+      fs.unlinkSync(configFilePath);
+      this.log.debug(`[ProxyManager] Config file removed: ${configFilePath}`);
+    } catch {
+      // 文件不存在时忽略
+    }
+    this.configPath = undefined;
+  }
+
+  /**
+   * 热更新配置（不重启 worker）
+   * @param forwards 新的转发规则列表
+   * @param headers 新的实例级别请求头
+   * @param hooks 新的钩子配置
+   */
   async reload(
     forwards?: ForwardConfig[],
     headers?: Record<string, string> | null,
@@ -221,8 +292,7 @@ export class ProxyManager {
     const message: WorkerMessage = { type: "reload", config };
     this.worker.postMessage(message);
 
-    // 等待响应
-    const response = await this.waitForResponse("reload-result", 5000);
+    const response = await this.waitForResponse("reload-result", RESPONSE_TIMEOUT_MS);
     if (response.type === "reload-result" && !response.success) {
       throw new Error(response.error || "Reload failed");
     }
@@ -237,21 +307,25 @@ export class ProxyManager {
     );
   }
 
-  /** 获取 worker 当前配置 */
+  /** 获取 Worker 当前运行时配置 */
   async getWorkerConfig(): Promise<InstanceRuntimeConfig | null> {
     if (!this.worker) return null;
 
     const message: WorkerMessage = { type: "get-config" };
     this.worker.postMessage(message);
 
-    const response = await this.waitForResponse("config", 5000);
+    const response = await this.waitForResponse("config", RESPONSE_TIMEOUT_MS);
     if (response.type === "config") {
       return response.config;
     }
     return null;
   }
 
-  /** 中断指定请求 */
+  /**
+   * 中断指定请求
+   * @param dbRecordId 数据库记录 ID
+   * @returns 是否成功中断
+   */
   async abortRequest(dbRecordId: number): Promise<boolean> {
     if (!this.worker) return false;
 
@@ -259,7 +333,7 @@ export class ProxyManager {
     this.worker.postMessage(message);
 
     try {
-      const response = await this.waitForAbortResult(dbRecordId, 5000);
+      const response = await this.waitForAbortResult(dbRecordId, RESPONSE_TIMEOUT_MS);
       return response.success;
     } catch {
       return false;
@@ -435,7 +509,6 @@ export class ProxyManager {
 
   /** 启动健康检查定时器 */
   private startHealthCheck(): void {
-    // 初始化 lastPongTime
     this.lastPongTime = Date.now();
 
     this.healthCheckTimer = setInterval(async () => {
@@ -445,9 +518,9 @@ export class ProxyManager {
       }
 
       const now = Date.now();
-      // 检查上次 pong 是否超过 15 秒（允许一次失败）
-      if (this.lastPongTime > 0 && now - this.lastPongTime > 15000) {
-        this.log.warn(`Health check failed for ${this.instanceName}, no pong in 15s`);
+      // 检查上次 pong 是否超过阈值（允许一次失败）
+      if (this.lastPongTime > 0 && now - this.lastPongTime > HEALTH_CHECK_FAILURE_THRESHOLD_MS) {
+        this.log.warn(`Health check failed for ${this.instanceName}, no pong in ${HEALTH_CHECK_FAILURE_THRESHOLD_MS}ms`);
         this.handleWorkerDeath();
         return;
       }
@@ -455,15 +528,13 @@ export class ProxyManager {
       try {
         const message: WorkerMessage = { type: "ping" };
         this.worker.postMessage(message);
-
-        // 等待 pong 响应（超时 5 秒）
-        await this.waitForResponse("pong", 5000);
+        await this.waitForResponse("pong", RESPONSE_TIMEOUT_MS);
         // lastPongTime 已在 message handler 中更新
       } catch (error) {
         this.log.warn(`Ping failed for ${this.instanceName}: ${error}`);
-        // 不立即清理，等待下次检查（15秒无响应后才清理）
+        // 不立即清理，等待下次检查
       }
-    }, 10000); // 每 10 秒检查一次
+    }, HEALTH_CHECK_INTERVAL_MS);
   }
 
   /** 停止健康检查定时器 */
@@ -474,14 +545,14 @@ export class ProxyManager {
     }
   }
 
-  /** 处理 Worker 死亡（清理资源） */
+  /** 处理 Worker 异常退出（清理资源） */
   private handleWorkerDeath(): void {
     this.stopHealthCheck();
     if (this.worker) {
       try {
         this.worker.terminate();
-      } catch (error) {
-        // ignore termination errors
+      } catch {
+        // 忽略终止错误
       }
       this.worker = null;
       this.startTime = null;

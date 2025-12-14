@@ -4,44 +4,76 @@ import {
   type ProxyLogMessage,
   type ForwardConfig,
 } from "./lib/proxy-manager";
-import { getAllInstances, getNormalizedForwards, getInstanceByName } from "./lib/config-store";
+import { getAllInstances, getNormalizedForwards } from "./lib/config-store";
 import { killPort } from "./lib/kill-port";
 import { createLogger, type Logger } from "./lib/logger";
 import type { InstanceRuntimeConfig } from "./types/worker-messages";
 
+/** 端口清理后等待时间（毫秒） */
+const PORT_CLEANUP_DELAY_MS = 500;
+
+/** 端口占用错误的关键词列表 */
+const PORT_IN_USE_KEYWORDS = [
+  "EADDRINUSE",
+  "address already in use",
+  "Is port",
+  "port in use",
+  "Failed to start server",
+];
+
 type LogCallback = (log: ProxyLogMessage) => void;
 
+/**
+ * 检查错误是否为端口占用错误
+ */
+function isPortInUseError(error: unknown): boolean {
+  const errorMsg = error instanceof Error ? error.message : String(error);
+  return PORT_IN_USE_KEYWORDS.some((keyword) => errorMsg.includes(keyword));
+}
+
+/**
+ * 将配置中的转发规则转换为 ForwardConfig 格式
+ */
+function toForwardConfigs(instanceName: string): ForwardConfig[] {
+  return getNormalizedForwards(instanceName).map((f) => ({
+    name: f.name,
+    target: f.target,
+    enabled: f.enabled,
+    description: f.description ?? null,
+    path: f.path ?? null,
+    methods: f.methods && f.methods.length ? f.methods : ["*"],
+    headers: f.headers ?? null,
+    hooks: f.hooks ?? null,
+  }));
+}
+
+/**
+ * 代理实例管理器
+ * 管理所有代理实例的生命周期，包括启动、停止、重载等操作
+ */
 export class ProxyInstancesManager {
   private managers = new Map<string, ProxyManager>();
   private logCallbacks = new Set<LogCallback>();
   private readonly log: Logger = createLogger("proxy:instances");
 
+  /**
+   * 启动指定实例
+   * 如果端口被占用，会尝试清理后重试
+   */
   async startInstance(instanceName: string): Promise<void> {
     const instance = getAllInstances().find((i) => i.name === instanceName);
     if (!instance) throw new Error("Instance not found");
     if (this.managers.has(instanceName)) throw new Error("Instance already running");
 
-    this.log.debug(`[ProxyInstancesManager] Cleaning port ${instance.port} before starting...`);
-    await killPort(instance.port);
-
-    const forwards = getNormalizedForwards(instanceName);
-    const validForwards: ForwardConfig[] = forwards.map((f) => ({
-      name: f.name,
-      target: f.target,
-      enabled: f.enabled,
-      description: f.description ?? null,
-      path: f.path ?? null,
-      methods: f.methods && f.methods.length ? f.methods : ["*"],
-      headers: f.headers ?? null,
-      hooks: f.hooks ?? null,
-    }));
-
+    const forwards = toForwardConfigs(instanceName);
     const manager = new ProxyManager(
       instanceName,
       instance.port,
       instance.headers ?? null,
       instance.hooks ?? null,
     );
+
+    // 转发日志到已注册的回调
     manager.onLog((log) => {
       this.logCallbacks.forEach((cb) => {
         try {
@@ -52,15 +84,47 @@ export class ProxyInstancesManager {
       });
     });
 
+    // 尝试启动，端口被占用时清理后重试
     try {
-      await manager.start(validForwards);
+      await manager.start(forwards);
       this.managers.set(instanceName, manager);
       console.log(
         `[ProxyInstancesManager] Instance ${instance.name} started successfully on port ${instance.port}`,
       );
     } catch (error) {
-      console.error(`[ProxyInstancesManager] Failed to start instance ${instance.name}:`, error);
-      throw error;
+      if (isPortInUseError(error)) {
+        await this.retryStartAfterPortCleanup(manager, instance, forwards);
+      } else {
+        console.error(`[ProxyInstancesManager] Failed to start instance ${instance.name}:`, error);
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * 清理端口后重试启动
+   */
+  private async retryStartAfterPortCleanup(
+    manager: ProxyManager,
+    instance: { name: string; port: number },
+    forwards: ForwardConfig[],
+  ): Promise<void> {
+    this.log.info(`[ProxyInstancesManager] Port ${instance.port} in use, cleaning up...`);
+    await killPort(instance.port);
+    await new Promise((resolve) => setTimeout(resolve, PORT_CLEANUP_DELAY_MS));
+
+    try {
+      await manager.start(forwards);
+      this.managers.set(instance.name, manager);
+      console.log(
+        `[ProxyInstancesManager] Instance ${instance.name} started successfully on port ${instance.port} (after cleanup)`,
+      );
+    } catch (retryError) {
+      console.error(
+        `[ProxyInstancesManager] Failed to start instance ${instance.name} after cleanup:`,
+        retryError,
+      );
+      throw retryError;
     }
   }
 
@@ -72,22 +136,13 @@ export class ProxyInstancesManager {
     console.log(`[ProxyInstancesManager] Instance ${instanceName} stopped successfully`);
   }
 
+  /**
+   * 重载实例配置
+   * 如果实例未运行则启动，否则热更新配置
+   */
   async reloadInstance(instanceName: string): Promise<void> {
     const instance = getAllInstances().find((i) => i.name === instanceName);
-    if (!instance) {
-      throw new Error("Instance not found");
-    }
-    const forwards = getNormalizedForwards(instanceName);
-    const validForwards: ForwardConfig[] = forwards.map((f) => ({
-      name: f.name,
-      target: f.target,
-      enabled: f.enabled,
-      description: f.description ?? null,
-      path: f.path ?? null,
-      methods: f.methods && f.methods.length ? f.methods : ["*"],
-      headers: f.headers ?? null,
-      hooks: f.hooks ?? null,
-    }));
+    if (!instance) throw new Error("Instance not found");
 
     const manager = this.managers.get(instanceName);
     if (!manager) {
@@ -95,7 +150,8 @@ export class ProxyInstancesManager {
       return;
     }
 
-    await manager.reload(validForwards, instance.headers ?? null, instance.hooks ?? null);
+    const forwards = toForwardConfigs(instanceName);
+    await manager.reload(forwards, instance.headers ?? null, instance.hooks ?? null);
   }
 
   /** 中断指定实例中的请求 */

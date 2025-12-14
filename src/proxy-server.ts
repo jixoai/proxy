@@ -224,6 +224,20 @@ if (parentPort) {
           parentPort?.postMessage(response);
           break;
         }
+        case "shutdown": {
+          log.info(`[Shutdown] Received shutdown message, closing server...`);
+          // server 会在后面定义，这里用 globalThis 延迟访问
+          const srv = (globalThis as any).__proxyServer;
+          if (srv) {
+            srv.close(() => {
+              log.info(`[Shutdown] Server closed`);
+              process.exit(0);
+            });
+          } else {
+            process.exit(0);
+          }
+          break;
+        }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -605,21 +619,18 @@ const server = http.createServer(async (req, res) => {
           let statusCode = proxyRes.statusCode || 502;
           let statusMessage = proxyRes.statusMessage || "";
 
-          // 流式进度更新 - throttle 1秒
+          // 流式进度更新（每秒最多更新一次）
           let totalReceivedBytes = 0;
           let lastProgressUpdate = 0;
-          const THROTTLE_MS = 1000;
-          let progressUpdated = false;
+          const PROGRESS_THROTTLE_MS = 1000;
 
           proxyRes.on("data", (chunk: Buffer) => {
             responseChunks.push(Buffer.from(chunk));
             totalReceivedBytes += chunk.length;
 
-            // throttle: 每秒最多更新一次
             const now = Date.now();
-            if (dbRecordId !== null && now - lastProgressUpdate >= THROTTLE_MS) {
+            if (dbRecordId !== null && now - lastProgressUpdate >= PROGRESS_THROTTLE_MS) {
               lastProgressUpdate = now;
-              progressUpdated = true;
               updateStreamingProgress(
                 dbRecordId,
                 totalReceivedBytes,
@@ -855,6 +866,26 @@ server.on("error", (error) => {
 dbNotifier.init();
 forwardStatsManager.init();
 
+// 注册 server 到 globalThis，以便 shutdown 消息处理可以访问
+(globalThis as any).__proxyServer = server;
+
 server.listen(PROXY_PORT, () => {
   console.log(`Proxy running on http://localhost:${PROXY_PORT} (instance: ${INSTANCE_NAME})`);
+});
+
+// 优雅关闭：当 Worker 被 terminate 时，关闭 server 并释放端口
+process.on("SIGTERM", () => {
+  log.info(`[Shutdown] Received SIGTERM, closing server...`);
+  server.close(() => {
+    log.info(`[Shutdown] Server closed`);
+    process.exit(0);
+  });
+});
+
+process.on("SIGINT", () => {
+  log.info(`[Shutdown] Received SIGINT, closing server...`);
+  server.close(() => {
+    log.info(`[Shutdown] Server closed`);
+    process.exit(0);
+  });
 });

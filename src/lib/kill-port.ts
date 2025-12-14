@@ -1,6 +1,9 @@
 // 参考 github.com/tiaanduplessis/kill-port
 import { $ } from "bun";
 import process from "node:process";
+
+const currentPid = process.pid;
+
 export const killPort = async (port: number, method = "tcp"): Promise<boolean> => {
   try {
     port = +port;
@@ -41,10 +44,18 @@ const win32KillPort = async (port: number, method: string) => {
     const pid = parts[parts.length - 1];
 
     if (protocol === method && pid !== "0" && localAddress?.endsWith(":" + port)) {
+      const pidNum = Number(pid);
+      
+      // 跳过当前进程
+      if (pidNum === currentPid) {
+        console.log(`[killPort] Skipping current process (PID ${pid})`);
+        continue;
+      }
+      
       console.log("端口占用，准备清理\n", line.trim());
 
       // 确保 PID 是一个有效的数字字符串
-      if (pid && !isNaN(Number(pid))) {
+      if (pid && !isNaN(pidNum)) {
         try {
           // 在执行前打印确切的命令
           console.log(`Executing: TaskKill /F /PID ${pid}`);
@@ -63,13 +74,23 @@ const win32KillPort = async (port: number, method: string) => {
     }
   }
 };
+
 const unixKillPort = async (port: number, method: string) => {
   const stdout = (await $`lsof -i ${method === "udp" ? "UDP" : "TCP"}:${port}`.text()).trim();
   if (stdout) {
     for (const line of stdout.split("\n")) {
       if (line.includes(method === "udp" ? "UDP" : "LISTEN")) {
+        const parts = line.split(/\s+/);
+        const pid = parts[1];
+        const pidNum = Number(pid);
+        
+        // 跳过当前进程
+        if (pidNum === currentPid) {
+          console.log(`[killPort] Skipping current process (PID ${pid})`);
+          continue;
+        }
+        
         console.log("端口占用，自动清理\n", line);
-        const pid = line.split(/\s+/)[1];
         await $`kill ${pid}`;
       }
     }
