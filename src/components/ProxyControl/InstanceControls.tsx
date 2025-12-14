@@ -529,14 +529,27 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
                 </Button>
               )}
 
-              <div className="flex items-center gap-1.5 border-l pl-2">
-                <Switch
-                  checked={autoPushConfig}
-                  onCheckedChange={handleAutoPushToggle}
-                  disabled={settingsLoading}
-                />
-                <span className="text-muted-foreground text-xs">自动</span>
-              </div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-1.5 border-l pl-2">
+                      <Switch
+                        checked={autoPushConfig}
+                        onCheckedChange={handleAutoPushToggle}
+                        disabled={settingsLoading}
+                      />
+                      <span className="text-muted-foreground text-xs">自动推送</span>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    <p className="max-w-xs text-xs">
+                      检测到配置变更时，自动推送到运行中的内核。
+                      <br />
+                      需配合全局「监听文件变更」使用。
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
           </div>
         </div>

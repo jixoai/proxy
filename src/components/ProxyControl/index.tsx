@@ -13,6 +13,7 @@ import { CreateInstanceDialog } from "./CreateInstanceDialog";
 import { InstanceList } from "./InstanceList";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function ProxyControl() {
   const {
@@ -80,14 +81,27 @@ export function ProxyControl() {
           <Button onClick={handleReload} disabled={reloadLoading}>
             {reloadLoading ? "重载中..." : "重载配置"}
           </Button>
-          <div className="text-muted-foreground flex items-center gap-2 text-sm">
-            <Switch
-              checked={autoWatchConfig}
-              disabled={watchLoading}
-              onCheckedChange={handleWatchToggle}
-            />
-            <span>自动监听配置文件</span>
-          </div>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Switch
+                    checked={autoWatchConfig}
+                    disabled={watchLoading}
+                    onCheckedChange={handleWatchToggle}
+                  />
+                  <span>监听文件变更</span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                <p className="max-w-xs text-xs">
+                  开启后，当 proxy-config.json 文件变更时自动检测。
+                  <br />
+                  配合实例的「自动推送」可实现配置热更新。
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           {instances.length > 0 && <CreateInstanceDialog onCreated={reloadInstances} />}
         </div>
       </div>
