@@ -138,12 +138,13 @@ function main(argv: string[]) {
         );
         process.exit(1);
       }
-      forwards = normalizeForwardGroups(
-        (instanceConfig.forwards ?? []).filter((f) => f && f.enabled),
-      );
+      forwards = normalizeForwardGroups((instanceConfig.forwards ?? []).filter((f) => f));
       instanceHeaders = instanceConfig.headers ?? null;
       instanceHooks = instanceConfig.hooks ?? null;
-      log.info(`[Config] Loaded ${forwards.length} forward rules for "${INSTANCE_NAME}"`);
+      const enabledCount = forwards.filter((f) => f.enabled).length;
+      log.info(
+        `[Config] Loaded ${forwards.length} forward rules (${enabledCount} enabled) for "${INSTANCE_NAME}"`,
+      );
 
       // 初始化 hooks 执行器
       if (instanceHooks || forwards.some((f) => f.hooks)) {
@@ -190,7 +191,7 @@ function main(argv: string[]) {
     // 更新配置
     instanceHeaders = newConfig.headers;
     instanceHooks = newConfig.hooks;
-    forwards = normalizeForwardGroups(newConfig.forwards.filter((f) => f && f.enabled));
+    forwards = normalizeForwardGroups(newConfig.forwards.filter((f) => f));
 
     // 启动新的 hooks executor
     if (instanceHooks || forwards.some((f) => f.hooks)) {
@@ -198,8 +199,9 @@ function main(argv: string[]) {
       await hooksExecutor.start();
     }
 
+    const enabledCount = forwards.filter((f) => f.enabled).length;
     log.info(
-      `[Reload] Config updated: ${forwards.length} forward rules, headers: ${instanceHeaders ? Object.keys(instanceHeaders).length : 0}`,
+      `[Reload] Config updated: ${forwards.length} forward rules (${enabledCount} enabled), headers: ${instanceHeaders ? Object.keys(instanceHeaders).length : 0}`,
     );
   }
 
@@ -338,6 +340,8 @@ function main(argv: string[]) {
     let fallback: { rule: ForwardRule; index: number } | null = null;
     for (let idx = 0; idx < forwards.length; idx++) {
       const rule = forwards[idx]!;
+      // 跳过禁用的规则
+      if (!rule.enabled) continue;
       if (!matchMethod(rule.methods, method)) continue;
       const rulePath = normalizePathname(rule.path || "");
       if (!rule.path || rule.path.trim() === "") {
@@ -449,6 +453,8 @@ function main(argv: string[]) {
     const candidateIndexes: number[] = forwards
       .map((rule, idx) => ({ rule, idx }))
       .filter(({ rule }) => {
+        // 跳过禁用的规则
+        if (!rule.enabled) return false;
         if (rule.name !== matched.rule.name) return false;
         if (!matchMethod(rule.methods, method)) return false;
         const rulePath = normalizePathname(rule.path || "");
