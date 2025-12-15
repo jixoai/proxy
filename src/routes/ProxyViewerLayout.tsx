@@ -4,6 +4,7 @@ import { Island } from "@/components/Island";
 import { JSONSelector } from "@/components/JSONSelector";
 import { JSONPreviewDialog } from "@/components/JSONPreviewDialog";
 import { ProxyViewerProvider } from "@/components/ProxyViewerContext";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import {
   SidebarProvider,
   Sidebar,
@@ -22,7 +23,8 @@ import { List, Settings } from "lucide-react";
 
 export function ProxyViewerLayout() {
   return (
-    <ProxyViewerProvider>
+    <ErrorBoundary>
+      <ProxyViewerProvider>
       <SidebarProvider>
         <div className="bg-background flex h-screen w-full">
           <Sidebar collapsible="icon" className="border-r **:ease-linear">
@@ -79,5 +81,6 @@ export function ProxyViewerLayout() {
         </div>
       </SidebarProvider>
     </ProxyViewerProvider>
+    </ErrorBoundary>
   );
 }

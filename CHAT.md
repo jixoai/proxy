@@ -946,3 +946,63 @@ BUG：我发现终端一直在报告这个日志 `[droid-to-claude] Listening on
 ---
 
 我要你审查：我们的每一个配置字段所带来的能力（包括前端副作用），是否存在交叉。是否违反原则
+
+---
+
+帮我构建github-action,如果version版本号变更了,那么么就会执行编译(否则跳过)
+在github-releases页面挂出maxos/win/linux三个平台的多种架构的可执行文件,releases页面还要挂出源代码。
+注意,proxy-config.json不要被打包进去。
+还有几个要改源代码的：
+
+1. 要支持完整的cli能力，建议使用yargs来开发。`--version`打印的是package.json中的版本号
+2. 我们的数据库默认文件夹(包含proxyInstanceConfig文件),改成`.jixo/.proxy/${version}/`，目前是`./src/.tmp`
+3. 我们的proxy-config.json要自动包含这个 dbPath 字段，会自动初始化成`.jixo/.proxy/`
+4. 在我们的WebUI上，这个字段用只读的方式展示出来，但是可以在WebUI上进行修改，但是修改时必须提示用户：修改dbPath想要生效，必须重启程序。
+5. 现在启动默认不清空数据库，但是可以通过`--clear`在启动的时候清理dbPath，完成后再正式启动（做初始化等工作）
+6. 前端的端口默认从 33000 开始，前端端口对于冲突就自动+1，如果到+10都不行，那么就使用随机端口。
+7. 可执行程序要有图标（如果支持）
+8. cli的options默认不要包含config文件能做到的事情。比如dbPath
+
+---
+
+我发现网页上存在大量的轮训，这部分不能优化成websocket吗？哪怕不能推送，使用websocket去轮训请求也能节省很多开销不是吗？你先别急着写代码，先调查一下是哪些问题。
+
+---
+
+
+还有，我发现cli的description是中文，请改成英文。
+
+---
+
+能否做到默认执行`--open`， 但这里的open不是简单的open，而是说，网页如果已经开着了，那么直接聚焦到这个网页进行刷新。
+我看storybook的open就是这种效果，它是怎么做到的？是不是要前端配合？
+
+关于open的解决方案，
+这是我调查的结果：
+```
+**`react-dev-utils/openBrowser`** (最推荐)
+    *   这是 Create React App 内部使用的模块，逻辑非常完善。
+    *   它会检测操作系统。如果是 macOS 且浏览器是 Chrome/Edge，它会尝试复用 Tab。
+    *   如果是其他情况，它会调用通用的打开命令。
+```
+
+---
+
+修复这个报错
+```
+[proxy-server:llm-lab] UnhandledRejection: Error: Database not initialized. Call initDatabase() first after setting data directory.
+    at getDb (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/lib/db.ts:16:15)
+    at query (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/lib/db.ts:30:12)
+    at createProxyRequest (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/lib/db-requests.ts:89:19)
+    at <anonymous> (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/proxy-server.ts:543:20)
+    at processTicksAndRejections (native:7:39)
+```
+
+---
+
+请先充分阅读这篇文章：https://bun.sh/docs/bundler/fullstack
+然后阅读变更代码。
+我觉得现在的打包方案有问题。首先我们这个项目，使用bun进行aot打包应该是完全没有问题的。
+现在最大的问题在于，如何处理Worker的打包支持。
+我觉得我们自己做一个plugin来解决是最好的。
+另外现在打包代码中，最大的误会就是把前端独立做打包了，这是绝对违反bun官方的规范的。

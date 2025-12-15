@@ -41,3 +41,14 @@ plugins/hook-logs
 # Proxy data
 src/.tmp
 config/proxy-config.json
+.jixo/
+
+# Lock files (use bun.lock only)
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Generated assets
+assets/icon.ico
+.build-frontend/
+.build-worker/

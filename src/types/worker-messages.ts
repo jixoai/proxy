@@ -22,6 +22,7 @@ export interface InstanceRuntimeConfig {
 
 /** Worker 消息类型 */
 export type WorkerMessage =
+  | { type: "init"; dataDir: string }
   | { type: "reload"; config: InstanceRuntimeConfig }
   | { type: "get-config" }
   | { type: "ping" }
@@ -30,6 +31,7 @@ export type WorkerMessage =
 
 /** Worker 响应类型 */
 export type WorkerResponse =
+  | { type: "init-result"; success: boolean; error?: string }
   | { type: "reload-result"; success: boolean; error?: string }
   | { type: "config"; config: InstanceRuntimeConfig }
   | { type: "pong" }

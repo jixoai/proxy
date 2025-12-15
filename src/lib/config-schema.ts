@@ -105,6 +105,7 @@ export const proxyInstanceSchema = z
 export const proxyGlobalSettingsSchema = z
   .object({
     autoWatchConfig: z.boolean().default(false),
+    dbPath: z.string().optional(),
   })
   .optional();
 

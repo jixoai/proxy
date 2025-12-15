@@ -14,6 +14,8 @@ import {
   type AbortReason,
 } from "./lib/db-requests";
 import { dbNotifier } from "./lib/db-notifier";
+import { setDataDir } from "./lib/runtime-paths";
+import { initDatabase } from "./lib/db";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
 import { HooksExecutor, stopAllHooks } from "./lib/hooks-executor";
@@ -187,6 +189,18 @@ if (parentPort) {
   parentPort.on("message", async (message: WorkerMessage) => {
     try {
       switch (message.type) {
+        case "init": {
+          // 初始化数据目录和数据库
+          setDataDir(message.dataDir);
+          initDatabase();
+          const response: WorkerResponse = {
+            type: "init-result",
+            success: true,
+          };
+          parentPort?.postMessage(response);
+          log.info(`[Init] Database initialized with dataDir: ${message.dataDir}`);
+          break;
+        }
         case "reload": {
           await reloadConfig(message.config);
           const response: WorkerResponse = {
@@ -244,6 +258,15 @@ if (parentPort) {
       const stack = error instanceof Error ? error.stack : undefined;
 
       switch (message.type) {
+        case "init": {
+          const response: WorkerResponse = {
+            type: "init-result",
+            success: false,
+            error: errorMessage,
+          };
+          parentPort?.postMessage(response);
+          break;
+        }
         case "reload": {
           const response: WorkerResponse = {
             type: "reload-result",

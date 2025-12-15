@@ -10,6 +10,14 @@ import type {
   InstanceRuntimeConfig,
 } from "../types/worker-messages";
 import { getInstanceByName } from "./config-store";
+import {
+  getProxyServerPath,
+  getInstanceConfigPath,
+  getTempConfigDir,
+  isStandaloneBinary,
+  getBundledProxyServerCode,
+  getDataDir,
+} from "./runtime-paths";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -68,6 +76,10 @@ export interface ForwardConfig {
 /**
  * 代理实例管理器
  * 负责管理单个代理实例的生命周期，包括启动、停止、热更新配置等
+ *
+ * 统一使用 Worker 模式运行代理服务器：
+ * - 开发模式：直接加载 TypeScript 文件
+ * - 打包模式：从内嵌的预编译 JS 代码创建 Worker
  */
 export class ProxyManager {
   private worker: Worker | null = null;
@@ -96,13 +108,23 @@ export class ProxyManager {
     this.log = createLogger(`proxy:manager:${instanceName}`);
   }
 
-  async start(forwards?: ForwardConfig[]): Promise<void> {
-    if (this.worker) throw new Error("Proxy is already running");
+  /** 检查是否正在运行 */
+  private isRunning(): boolean {
+    return this.worker !== null;
+  }
 
-    const proxyServerPath = path.join(__dirname, "../proxy-server.ts");
-    let configPath: string | undefined;
+  async start(forwards?: ForwardConfig[]): Promise<void> {
+    if (this.isRunning()) throw new Error("Proxy is already running");
 
     this.currentForwards = forwards ?? [];
+
+    // 统一使用 Worker 模式
+    await this.startWorker(forwards);
+  }
+
+  /** Worker 模式启动 */
+  private async startWorker(forwards?: ForwardConfig[]): Promise<void> {
+    let configPath: string | undefined;
 
     if (forwards && forwards.length > 0) {
       configPath = this.writeConfigFile(forwards);
@@ -111,9 +133,23 @@ export class ProxyManager {
     const argv = ["-p", String(this.port), "-i", this.instanceName];
     if (configPath) argv.push("-c", configPath);
 
-    this.worker = new Worker(proxyServerPath, {
-      argv,
-    });
+    // 根据运行模式创建 Worker
+    const proxyServerPath = getProxyServerPath();
+    if (proxyServerPath) {
+      // 开发模式：直接加载 TypeScript 文件
+      this.worker = new Worker(proxyServerPath, { argv });
+    } else {
+      // 打包模式：从预编译的 JS 代码创建 Worker
+      const bundledCode = getBundledProxyServerCode();
+      if (!bundledCode) {
+        throw new Error("Failed to load bundled proxy-server code in standalone mode");
+      }
+      // 将预编译代码写入临时文件，然后作为 Worker 加载
+      const workerJsPath = this.getWorkerJsPath();
+      fs.writeFileSync(workerJsPath, bundledCode, "utf-8");
+      this.worker = new Worker(workerJsPath, { argv });
+    }
+
     this.configPath = configPath;
     this.startTime = Date.now();
 
@@ -128,7 +164,7 @@ export class ProxyManager {
       }
 
       // 处理配置相关响应
-      if (msg?.type === "reload-result" || msg?.type === "config") {
+      if (msg?.type === "reload-result" || msg?.type === "config" || msg?.type === "init-result") {
         // 这些响应通过 sendMessage 的 Promise 处理
         return;
       }
@@ -193,6 +229,14 @@ export class ProxyManager {
       this.worker?.on("message", handler);
     });
 
+    // 发送 init 消息初始化 Worker 中的数据库
+    const initMessage: WorkerMessage = { type: "init", dataDir: getDataDir() };
+    this.worker!.postMessage(initMessage);
+    const initResponse = await this.waitForResponse("init-result", RESPONSE_TIMEOUT_MS);
+    if (initResponse.type === "init-result" && !initResponse.success) {
+      throw new Error(`Worker database init failed: ${(initResponse as any).error || "Unknown error"}`);
+    }
+
     // 启动健康检查
     this.startHealthCheck();
 
@@ -204,12 +248,12 @@ export class ProxyManager {
    * 发送 shutdown 消息让 Worker 优雅关闭，超时后强制终止
    */
   async stop(): Promise<void> {
-    if (!this.worker) throw new Error("Proxy is not running");
+    if (!this.isRunning()) throw new Error("Proxy is not running");
 
     this.stopHealthCheck();
-    
-    const workerRef = this.worker;
-    
+
+    const workerRef = this.worker!;
+
     // 先清理状态，避免 handleWorkerDeath 的竞态条件
     this.worker = null;
     this.startTime = null;
@@ -220,6 +264,9 @@ export class ProxyManager {
 
     // 清理临时配置文件
     this.cleanupConfigFile();
+
+    // 清理 Worker JS 临时文件（打包模式）
+    this.cleanupWorkerJsFile();
 
     // 短暂等待确保端口释放
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -255,7 +302,7 @@ export class ProxyManager {
 
   /** 清理临时配置文件 */
   private cleanupConfigFile(): void {
-    const configFilePath = path.join(__dirname, `../.tmp/instance-${this.instanceName}-config.json`);
+    const configFilePath = getInstanceConfigPath(this.instanceName);
     try {
       fs.unlinkSync(configFilePath);
       this.log.debug(`[ProxyManager] Config file removed: ${configFilePath}`);
@@ -276,7 +323,7 @@ export class ProxyManager {
     headers?: Record<string, string> | null,
     hooks?: HooksConfig | null,
   ): Promise<void> {
-    if (!this.worker) throw new Error("Proxy is not running");
+    if (!this.isRunning()) throw new Error("Proxy is not running");
 
     const newForwards = forwards ?? this.currentForwards;
     const newHeaders = headers !== undefined ? headers : this.instanceHeaders;
@@ -290,7 +337,7 @@ export class ProxyManager {
     };
 
     const message: WorkerMessage = { type: "reload", config };
-    this.worker.postMessage(message);
+    this.worker!.postMessage(message);
 
     const response = await this.waitForResponse("reload-result", RESPONSE_TIMEOUT_MS);
     if (response.type === "reload-result" && !response.success) {
@@ -307,7 +354,7 @@ export class ProxyManager {
     );
   }
 
-  /** 获取 Worker 当前运行时配置 */
+  /** 获取当前运行时配置 */
   async getWorkerConfig(): Promise<InstanceRuntimeConfig | null> {
     if (!this.worker) return null;
 
@@ -435,11 +482,12 @@ export class ProxyManager {
   }
 
   getStatus(): ProxyStatus {
+    const running = this.isRunning();
     return {
-      running: this.worker !== null,
+      running,
       pid: this.worker?.threadId,
       port: this.port,
-      listeningPort: this.worker ? this.port : undefined,
+      listeningPort: running ? this.port : undefined,
       uptime: this.startTime ? Date.now() - this.startTime : undefined,
     };
   }
@@ -472,9 +520,9 @@ export class ProxyManager {
 
   /** 写入 instance 配置文件（单一数据源） */
   private writeConfigFile(forwards: ForwardConfig[]): string {
-    const configDir = path.join(__dirname, "../.tmp");
+    const configDir = getTempConfigDir();
     fs.mkdirSync(configDir, { recursive: true });
-    const configPath = path.join(configDir, `instance-${this.instanceName}-config.json`);
+    const configPath = getInstanceConfigPath(this.instanceName);
     
     // 写入 InstanceRuntimeConfig 格式，不是 ProxyConfigFile 格式
     const instanceConfig: InstanceRuntimeConfig = {
@@ -490,13 +538,30 @@ export class ProxyManager {
   }
   
   /** 获取 instance 配置文件路径 */
-  getInstanceConfigPath(): string {
-    return path.join(__dirname, "../.tmp", `instance-${this.instanceName}-config.json`);
+  getConfigPath(): string {
+    return getInstanceConfigPath(this.instanceName);
   }
-  
+
+  /** 获取打包模式下 Worker JS 临时文件路径 */
+  private getWorkerJsPath(): string {
+    return path.join(getTempConfigDir(), `worker-${this.instanceName}.js`);
+  }
+
+  /** 清理打包模式下的 Worker JS 临时文件 */
+  private cleanupWorkerJsFile(): void {
+    if (!isStandaloneBinary()) return;
+    const workerJsPath = this.getWorkerJsPath();
+    try {
+      fs.unlinkSync(workerJsPath);
+      this.log.debug(`[ProxyManager] Worker JS file removed: ${workerJsPath}`);
+    } catch {
+      // 文件不存在时忽略
+    }
+  }
+
   /** 从 instance 配置文件读取配置 */
   readInstanceConfigFile(): InstanceRuntimeConfig | null {
-    const configPath = this.getInstanceConfigPath();
+    const configPath = this.getConfigPath();
     try {
       if (!fs.existsSync(configPath)) return null;
       const content = fs.readFileSync(configPath, "utf-8");

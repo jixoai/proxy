@@ -1,3 +1,9 @@
+// react-dev-utils/openBrowser 类型声明
+declare module "react-dev-utils/openBrowser" {
+  function openBrowser(url: string): boolean;
+  export default openBrowser;
+}
+
 // Popover API 类型定义
 // https://developer.mozilla.org/en-US/docs/Web/API/Popover_API
 

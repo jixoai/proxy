@@ -5,12 +5,15 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ProxyViewer } from "./ProxyViewer";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 
 const elem = document.getElementById("root")!;
 const app = (
   <StrictMode>
-    <ProxyViewer />
+    <ErrorBoundary>
+      <ProxyViewer />
+    </ErrorBoundary>
   </StrictMode>
 );
 

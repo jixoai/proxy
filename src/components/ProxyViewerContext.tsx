@@ -149,6 +149,10 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const applyingSearchRef = useRef(false);
   const [requests, setRequests] = useState<RequestData[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
   const [selectedDetail, setSelectedDetail] = useState<RequestData | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -159,6 +163,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   }, [currentPage]);
   const [livePush, setLivePush] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
 
   const [filterMethod, setFilterMethodState] = useState<string>("");
   const [filterStatus, setFilterStatusState] = useState<string>("");
@@ -492,70 +497,111 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!livePush) {
       setWsConnected(false);
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {
+          // ignore
+        } finally {
+          wsRef.current = null;
+        }
+      }
       return;
     }
 
+    let disposed = false;
+    let socket: WebSocket | null = null;
+
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-    ws.onopen = () => {
-      console.log("WebSocket connected");
-      setWsConnected(true);
-    };
+    // React 18 StrictMode (dev) 会触发 mount → unmount → mount，延迟连接可避免第一次的“瞬连瞬断”。
+    const connectTimer = window.setTimeout(() => {
+      if (disposed) return;
 
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        if (message.type === "new-request" && message.data) {
-          setRequests((prev) => [message.data, ...prev]);
-          setCurrentPage(1);
-        } else if (message.type === "update-request" && message.data) {
-          const updatedId = String(message.id);
-          setRequests((prev) => prev.map((req) => (req.id === updatedId ? message.data : req)));
+      socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
 
-          setSelectedDetail((prev) => {
-            if (prev && prev.id === updatedId) {
-              return { ...prev, ...message.data };
+      socket.onopen = () => {
+        if (wsRef.current !== socket) return;
+        console.log("WebSocket connected");
+        setWsConnected(true);
+      };
+
+      socket.onmessage = (event) => {
+        if (wsRef.current !== socket) return;
+
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "new-request" && message.data) {
+            setRequests((prev) => [message.data, ...prev]);
+            setCurrentPage(1);
+          } else if (message.type === "update-request" && message.data) {
+            const updatedId = String(message.id);
+            setRequests((prev) => prev.map((req) => (req.id === updatedId ? message.data : req)));
+
+            setSelectedDetail((prev) => {
+              if (prev && prev.id === updatedId) {
+                return { ...prev, ...message.data };
+              }
+              return prev;
+            });
+          } else if (message.type === "delete-request" && message.id) {
+            const deletedId = String(message.id);
+            setRequests((prev) => prev.filter((req) => req.id !== deletedId));
+            if (selectedIdRef.current === deletedId) {
+              setSelectedId(null);
+              setSelectedDetail(null);
             }
-            return prev;
-          });
-        } else if (message.type === "delete-request" && message.id) {
-          const deletedId = String(message.id);
-          setRequests((prev) => prev.filter((req) => req.id !== deletedId));
-          if (selectedId === deletedId) {
+          } else if (message.type === "clear-all") {
+            setRequests([]);
             setSelectedId(null);
             setSelectedDetail(null);
+            setCurrentPage(1);
+          } else if (message.type === "config-changed") {
+            // 配置文件更新，刷新实例列表并递增版本号
+            reloadInstances();
+            loadRules();
+            setConfigVersion((v) => v + 1);
           }
-        } else if (message.type === "clear-all") {
-          setRequests([]);
-          setSelectedId(null);
-          setSelectedDetail(null);
-          setCurrentPage(1);
-        } else if (message.type === "config-changed") {
-          // 配置文件更新，刷新实例列表并递增版本号
-          reloadInstances();
-          loadRules();
-          setConfigVersion((v) => v + 1);
+        } catch (error) {
+          console.error("Failed to parse WebSocket message:", error);
         }
-      } catch (error) {
-        console.error("Failed to parse WebSocket message:", error);
-      }
-    };
+      };
 
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      setWsConnected(false);
-    };
+      socket.onerror = (error) => {
+        if (wsRef.current !== socket) return;
+        console.error("WebSocket error:", error);
+        setWsConnected(false);
+      };
 
-    ws.onclose = () => {
-      console.log("WebSocket disconnected");
-      setWsConnected(false);
-    };
+      socket.onclose = () => {
+        if (wsRef.current !== socket) return;
+        console.log("WebSocket disconnected");
+        setWsConnected(false);
+      };
+    }, 50);
 
     return () => {
-      ws.close();
+      disposed = true;
+      window.clearTimeout(connectTimer);
+
+      if (!socket) return;
+
+      if (wsRef.current === socket) {
+        wsRef.current = null;
+        setWsConnected(false);
+      }
+
+      if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) {
+        try {
+          socket.close();
+        } catch (error) {
+          console.warn("Failed to close WebSocket:", error);
+        }
+      }
     };
-  }, [livePush, selectedId, reloadInstances, loadRules]);
+  }, [livePush, reloadInstances, loadRules]);
 
   const value: ProxyViewerContextValue = {
     requests,

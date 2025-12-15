@@ -3,7 +3,6 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import createDebug from "debug";
-import viewerHtml from "./viewer.html";
 import { codeToHtml } from "shiki";
 import type { HighlightRequest, HighlightResponse } from "./services/highlight.protocol";
 import { formatCode, type FormatRequest, type FormatResponse } from "./lib/biome-formatter";
@@ -35,10 +34,40 @@ import { extractContentTypeFromHeaders, isTextLikeMime } from "./lib/http-utils"
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
 import { forwardStatsManager } from "./lib/forward-stats-manager";
 import { reorderForwardsByIndexes as reorderForwardsByIndexesDirect } from "./lib/config-store";
+import { getProxyStaticDir, getStandalonePaths, isStandaloneBinary, getDataDir } from "./lib/runtime-paths";
+
+// ========== HTML 资源加载 ==========
+// 根据运行模式选择 HTML 内容：
+// - 打包模式（standalone binary）：使用预编译的内联 HTML
+// - 开发模式：使用 Bun 的 HTMLBundle（由 Bun.serve 自动处理编译）
+
+/** 打包模式下的预编译 HTML 内容 */
+let viewerHtmlContent: string | null = null;
+
+/** 开发模式下的 HTMLBundle（用于 Bun.serve 的 routes 配置） */
+let viewerHtmlBundle: any = null;
+
+if (isStandaloneBinary()) {
+  // 打包模式：从预编译模块导入内联 HTML
+  // 注意：这个导入路径在打包时会被 build.ts 生成的模块替换
+  const { BUNDLED_VIEWER_HTML } = await import("../.build-frontend/bundled-viewer");
+  viewerHtmlContent = BUNDLED_VIEWER_HTML;
+} else {
+  // 开发模式：导入 HTMLBundle
+  // Bun 会自动处理 HTML 文件中引用的 script/link 标签的编译
+  // 参考文档: https://bun.sh/docs/bundler/fullstack
+  viewerHtmlBundle = (await import("./viewer.html")).default;
+}
+
+/** 获取打包模式下的 viewer HTML 响应 */
+function getViewerHtmlResponse(): Response {
+  return new Response(viewerHtmlContent, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PROXY_DIR = path.join(__dirname, ".tmp", "proxy");
 const log = createLogger("proxy:viewer");
 const debugAutoSort = createDebug("plugins:auto-sort");
 installGlobalErrorLogger("proxy-viewer");
@@ -247,10 +276,11 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     }
   });
 
-  const OLD_PROXY_DIR = path.join(__dirname, ".tmp", "proxy");
-  if (fs.existsSync(OLD_PROXY_DIR)) {
+  // 清理旧的文件系统记录（开发模式下）
+  const proxyDir = getProxyStaticDir();
+  if (!isStandaloneBinary() && fs.existsSync(proxyDir)) {
     try {
-      fs.rmSync(OLD_PROXY_DIR, { recursive: true, force: true });
+      fs.rmSync(proxyDir, { recursive: true, force: true });
       log.info("[Cleanup] Removed old filesystem request records");
     } catch (error) {
       console.error("[Cleanup] Failed to remove old records:", error);
@@ -590,6 +620,50 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         },
       },
 
+      // ========== 数据目录 API ==========
+      "/api/settings/db-path": {
+        async GET() {
+          try {
+            const config = loadConfig();
+            return Response.json({
+              dbPath: config.settings?.dbPath ?? null,
+              currentDataDir: getDataDir(),
+            });
+          } catch (error) {
+            return Response.json({ error: String(error) }, { status: 500 });
+          }
+        },
+        async PUT(req) {
+          try {
+            const body = await req.json();
+            const newDbPath = body.dbPath;
+
+            if (typeof newDbPath !== "string" || newDbPath.trim().length === 0) {
+              return Response.json(
+                { success: false, error: "dbPath must be a non-empty string" },
+                { status: 400 },
+              );
+            }
+
+            const config = loadConfig();
+            if (!config.settings) {
+              config.settings = { autoWatchConfig: false, dbPath: newDbPath };
+            } else {
+              config.settings.dbPath = newDbPath;
+            }
+            saveConfig(config);
+
+            return Response.json({
+              success: true,
+              message: "dbPath updated. Restart required to take effect.",
+              dbPath: newDbPath,
+            });
+          } catch (error) {
+            return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+
       // ========== 请求日志 API ==========
       "/api/requests": {
         async GET(req) {
@@ -727,8 +801,16 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       "/standalone/:name": {
         async GET(req) {
           try {
+            // 单文件打包模式下不支持 standalone 构建
+            if (isStandaloneBinary()) {
+              return Response.json(
+                { error: "Standalone build is not supported in compiled binary" },
+                { status: 501 }
+              );
+            }
+
             const workerName = req.params.name;
-            const standaloneBaseDir = path.join(__dirname, "standalone");
+            const { baseDir: standaloneBaseDir, outDir: outdir } = getStandalonePaths();
             const workerPath = path.join(standaloneBaseDir, workerName);
             if (!workerPath.startsWith(standaloneBaseDir)) {
               return Response.json({ error: `Invalid worker name:${workerName}` }, { status: 400 });
@@ -739,7 +821,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
               return Response.json({ error: `Worker not found: ${workerName}` }, { status: 404 });
             }
 
-            const outdir = path.join(__dirname, ".standalone");
             const outFileName = `${workerName}.js`;
 
             const res = await Bun.build({
@@ -845,7 +926,18 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         },
       },
 
-      "/*": viewerHtml,
+      // ========== HTML 页面路由 ==========
+      // 开发模式：使用 HTMLBundle，Bun 会自动处理 script/link 的编译和 HMR
+      // 打包模式：使用预编译的内联 HTML
+      ...(viewerHtmlBundle
+        ? { "/*": viewerHtmlBundle }
+        : {
+            "/*": {
+              GET() {
+                return getViewerHtmlResponse();
+              },
+            },
+          }),
     },
 
     async fetch(req, server) {
@@ -1037,7 +1129,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
   console.log(`\n🚀 Proxy Viewer 已启动`);
   console.log(`📊 查看地址: ${server.url}`);
-  console.log(`📁 数据目录: ${PROXY_DIR}\n`);
+  console.log(`📁 数据目录: ${getDataDir()}\n`);
 
   return server;
 }

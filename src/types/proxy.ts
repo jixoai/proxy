@@ -53,6 +53,8 @@ export interface ProxyInstanceConfig {
 export interface ProxyGlobalSettings {
   /** 是否自动监听配置文件变更 */
   autoWatchConfig: boolean;
+  /** 数据存储目录路径 (相对于用户主目录或绝对路径) */
+  dbPath?: string;
 }
 
 export interface ProxyConfigFile {

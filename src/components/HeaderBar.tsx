@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Radio, RefreshCw, Trash2, X } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
+import { useMemo } from "react";
 
 export function HeaderBar() {
   const {
@@ -40,8 +41,17 @@ export function HeaderBar() {
     availableRules,
     activeRuleName,
     setActiveRuleName,
-    activeInstanceName,
   } = useProxyViewer();
+
+  const uniqueAvailableRules = useMemo(() => {
+    const seen = new Set<string>();
+    return availableRules.filter((rule) => {
+      const value = `${rule.instanceName}/${rule.name}`;
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+  }, [availableRules]);
 
   // 计算过滤后的请求数
   const filteredCount = requests.filter((req) => {
@@ -161,11 +171,14 @@ export function HeaderBar() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部规则</SelectItem>
-            {availableRules.map((rule) => (
-              <SelectItem key={`${rule.instanceName}-${rule.name}`} value={`${rule.instanceName}/${rule.name}`}>
-                {rule.name}
-              </SelectItem>
-            ))}
+            {uniqueAvailableRules.map((rule) => {
+              const value = `${rule.instanceName}/${rule.name}`;
+              return (
+                <SelectItem key={value} value={value}>
+                  {rule.name}
+                </SelectItem>
+              );
+            })}
           </SelectContent>
         </Select>
 
