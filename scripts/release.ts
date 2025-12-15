@@ -7,6 +7,7 @@
  *   bun release patch        # Bump patch version
  *   bun release minor        # Bump minor version
  *   bun release major        # Bump major version
+ *   bun release current      # Re-release current version
  *   bun release --version=1.2.3
  *   bun release -v 1.2.3
  */
@@ -180,10 +181,11 @@ async function selectVersion(currentVersion: string): Promise<string | null> {
   const majorVersion = bumpVersion(currentVersion, "major");
 
   log("Select version type:\n");
-  log(`  ${colors.bold}1)${colors.reset} patch  -> ${colors.green}${patchVersion}${colors.reset}`);
-  log(`  ${colors.bold}2)${colors.reset} minor  -> ${colors.green}${minorVersion}${colors.reset}`);
-  log(`  ${colors.bold}3)${colors.reset} major  -> ${colors.green}${majorVersion}${colors.reset}`);
-  log(`  ${colors.bold}4)${colors.reset} custom -> enter version manually`);
+  log(`  ${colors.bold}1)${colors.reset} patch   -> ${colors.green}${patchVersion}${colors.reset}`);
+  log(`  ${colors.bold}2)${colors.reset} minor   -> ${colors.green}${minorVersion}${colors.reset}`);
+  log(`  ${colors.bold}3)${colors.reset} major   -> ${colors.green}${majorVersion}${colors.reset}`);
+  log(`  ${colors.bold}4)${colors.reset} current -> ${colors.cyan}${currentVersion}${colors.reset} (re-release)`);
+  log(`  ${colors.bold}5)${colors.reset} custom  -> enter version manually`);
   log(`  ${colors.bold}q)${colors.reset} quit\n`);
 
   const choice = await prompt("Your choice [1]: ");
@@ -200,6 +202,9 @@ async function selectVersion(currentVersion: string): Promise<string | null> {
     case "major":
       return majorVersion;
     case "4":
+    case "current":
+      return currentVersion;
+    case "5":
     case "custom": {
       const customVersion = await prompt("Enter version (e.g., 1.2.3): ");
       if (!parseVersion(customVersion)) {
@@ -227,42 +232,48 @@ async function release(targetVersion: string, skipPush = false): Promise<void> {
   log(`  Current version: ${colors.dim}${currentVersion}${colors.reset}`);
   log(`  Target version:  ${colors.green}${targetVersion}${colors.reset}\n`);
 
-  // Step 1: Verify git is clean
+  // Check git status (info only)
   info("Checking git working directory...");
   if (!(await isGitClean())) {
-    error("Git working directory is not clean. Please commit or stash your changes first.");
-    process.exit(1);
+    warn("Git working directory has uncommitted changes");
+  } else {
+    success("Git working directory is clean");
   }
-  success("Git working directory is clean");
 
   // Show current branch
   const branch = await getCurrentBranch();
   info(`Current branch: ${branch}`);
 
-  // Step 2: Update package.json
-  info("Updating package.json...");
-  pkg.version = targetVersion;
-  writePackageJson(pkg);
-  success(`Updated version to ${targetVersion}`);
+  const versionChanged = currentVersion !== targetVersion;
 
-  // Step 3: Stage package.json
-  info("Staging package.json...");
-  const stageResult = await exec("git add package.json");
-  if (stageResult.exitCode !== 0) {
-    error(`Failed to stage package.json: ${stageResult.stderr}`);
-    process.exit(1);
-  }
-  success("Staged package.json");
+  if (versionChanged) {
+    // Update package.json
+    info("Updating package.json...");
+    pkg.version = targetVersion;
+    writePackageJson(pkg);
+    success(`Updated version to ${targetVersion}`);
 
-  // Step 4: Create commit
-  const commitMessage = `chore: release v${targetVersion}`;
-  info(`Creating commit: "${commitMessage}"...`);
-  const commitResult = await exec(`git commit -m "${commitMessage}"`);
-  if (commitResult.exitCode !== 0) {
-    error(`Failed to create commit: ${commitResult.stderr}`);
-    process.exit(1);
+    // Stage package.json
+    info("Staging package.json...");
+    const stageResult = await exec("git add package.json");
+    if (stageResult.exitCode !== 0) {
+      error(`Failed to stage package.json: ${stageResult.stderr}`);
+      process.exit(1);
+    }
+    success("Staged package.json");
+
+    // Create commit
+    const commitMessage = `chore: release v${targetVersion}`;
+    info(`Creating commit: "${commitMessage}"...`);
+    const commitResult = await exec(`git commit -m "${commitMessage}"`);
+    if (commitResult.exitCode !== 0) {
+      error(`Failed to create commit: ${commitResult.stderr}`);
+      process.exit(1);
+    }
+    success("Created commit");
+  } else {
+    info("Version unchanged, skipping package.json update and commit");
   }
-  success("Created commit");
 
   // Step 5: Create tag
   const tagName = `v${targetVersion}`;
@@ -302,7 +313,7 @@ async function release(targetVersion: string, skipPush = false): Promise<void> {
 // Parse command line arguments
 function parseArgs(): {
   version?: string;
-  type?: "major" | "minor" | "patch";
+  type?: "major" | "minor" | "patch" | "current";
   help?: boolean;
 } {
   const args = process.argv.slice(2);
@@ -317,7 +328,7 @@ function parseArgs(): {
       result.version = arg.split("=")[1];
     } else if (arg === "--version" || arg === "-v") {
       result.version = args[++i];
-    } else if (arg === "patch" || arg === "minor" || arg === "major") {
+    } else if (arg === "patch" || arg === "minor" || arg === "major" || arg === "current") {
       result.type = arg;
     }
   }
@@ -334,6 +345,7 @@ ${colors.bold}Usage:${colors.reset}
   bun release patch        Bump patch version (0.1.0 -> 0.1.1)
   bun release minor        Bump minor version (0.1.0 -> 0.2.0)
   bun release major        Bump major version (0.1.0 -> 1.0.0)
+  bun release current      Re-release current version (0.1.0 -> 0.1.0)
   bun release --version=X  Release specific version X
   bun release -v X         Release specific version X
 
@@ -343,6 +355,7 @@ ${colors.bold}Options:${colors.reset}
 
 ${colors.bold}Examples:${colors.reset}
   bun release patch
+  bun release current
   bun release --version=1.2.3
   bun release -v 2.0.0
 `);
@@ -371,8 +384,8 @@ async function main(): Promise<void> {
     }
     targetVersion = args.version;
   } else if (args.type) {
-    // Version type specified (patch/minor/major)
-    targetVersion = bumpVersion(currentVersion, args.type);
+    // Version type specified (patch/minor/major/current)
+    targetVersion = args.type === "current" ? currentVersion : bumpVersion(currentVersion, args.type);
   } else {
     // Interactive mode
     targetVersion = await selectVersion(currentVersion);
