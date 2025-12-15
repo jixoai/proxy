@@ -3,6 +3,9 @@ import { mkdirSync } from "node:fs";
 import * as path from "node:path";
 import { getDbPath, ensureDataDir } from "./runtime-paths";
 
+// Schema 版本号 - 每次数据库结构变更时递增
+const SCHEMA_VERSION = 1;
+
 // 延迟初始化数据库实例
 // 必须在 setDataDir() 调用之后才能访问
 let _db: Database | null = null;
@@ -40,6 +43,13 @@ export const db = {
   },
 };
 
+export class DatabaseSchemaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DatabaseSchemaError";
+  }
+}
+
 export function initDatabase() {
   // 如果已经初始化，跳过
   if (_db) {
@@ -57,25 +67,50 @@ export function initDatabase() {
   _db.run("PRAGMA journal_mode = WAL");
   _db.run("PRAGMA synchronous = NORMAL");
   _db.run("PRAGMA busy_timeout = 5000");
-  // destructive migration: drop legacy tables
-  _db.run("DROP TABLE IF EXISTS proxy_requests_v2");
-  _db.run("DROP TABLE IF EXISTS proxy_requests");
-  _db.run("DROP TABLE IF EXISTS proxy_instances");
-  _db.run("DROP TABLE IF EXISTS proxy_forwards");
 
+  // 创建 schema_meta 表（如果不存在）
   _db.run(`
-    CREATE TABLE IF NOT EXISTS proxy_requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp DATETIME NOT NULL,
-      instance_name TEXT,
-      forward_name TEXT,
-      group_name TEXT,
-      data TEXT NOT NULL
+    CREATE TABLE IF NOT EXISTS schema_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
     )
   `);
 
-  _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_time ON proxy_requests(timestamp DESC)");
-  _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_group ON proxy_requests(group_name)");
+  // 检查数据库 schema 版本
+  const versionRow = _db.query("SELECT value FROM schema_meta WHERE key = 'version'").get() as
+    | { value: string }
+    | null;
+  const dbVersion = versionRow ? parseInt(versionRow.value, 10) : 0;
 
-  console.log("[Database] proxy_requests initialized");
+  if (dbVersion === 0) {
+    // 新数据库，初始化 schema
+    _db.run(`
+      CREATE TABLE IF NOT EXISTS proxy_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp DATETIME NOT NULL,
+        instance_name TEXT,
+        forward_name TEXT,
+        group_name TEXT,
+        data TEXT NOT NULL
+      )
+    `);
+
+    _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_time ON proxy_requests(timestamp DESC)");
+    _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_group ON proxy_requests(group_name)");
+
+    // 记录版本号
+    _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [
+      String(SCHEMA_VERSION),
+    ]);
+
+    console.log("[Database] Initialized with schema version", SCHEMA_VERSION);
+  } else if (dbVersion !== SCHEMA_VERSION) {
+    // 版本不匹配
+    throw new DatabaseSchemaError(
+      `Database schema version mismatch: expected ${SCHEMA_VERSION}, found ${dbVersion}. ` +
+        `Please use --clear to reset the database.`
+    );
+  } else {
+    console.log("[Database] Schema version", dbVersion, "OK");
+  }
 }

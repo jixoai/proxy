@@ -8,7 +8,7 @@ import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import * as path from "node:path";
 import * as net from "node:net";
-import { initDatabase } from "./lib/db";
+import { initDatabase, DatabaseSchemaError } from "./lib/db";
 import { initConfigStore, loadConfig, saveConfig, getConfigFilePath } from "./lib/config-store";
 import { ProxyInstancesManager } from "./proxy-instances-manager";
 import { startViewerServer } from "./viewer-server";
@@ -202,6 +202,12 @@ async function main() {
 }
 
 main().catch((error) => {
+  if (error instanceof DatabaseSchemaError) {
+    console.error("\n❌ Database schema error:", error.message);
+    console.error("\nRun with --clear flag to reset the database:\n");
+    console.error("  jixo-proxy --clear\n");
+    process.exit(1);
+  }
   console.error("Fatal error:", error);
   process.exit(1);
 });
