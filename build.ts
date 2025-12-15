@@ -14,13 +14,14 @@ import * as path from "node:path";
 // 使用 Bun 官方的 Tailwind CSS 插件
 // 参考文档: https://bun.sh/docs/bundler/fullstack#tailwindcss-plugin
 import tailwindPlugin from "bun-plugin-tailwind";
+// Worker 打包插件
+import { findWorkerImports, buildWorkers } from "./plugins/worker-bundle";
 
 // 前端构建输出目录
 const FRONTEND_BUILD_DIR = path.join(process.cwd(), ".build-frontend");
 const FRONTEND_ENTRY = path.join(process.cwd(), "src", "viewer.html");
 // Worker 构建输出目录
 const WORKER_BUILD_DIR = path.join(process.cwd(), ".build-worker");
-const WORKER_ENTRY = path.join(process.cwd(), "src", "proxy-server.ts");
 
 // 读取 package.json 获取版本号
 const packageJson = JSON.parse(fs.readFileSync("package.json", "utf-8"));
@@ -141,61 +142,170 @@ export const BUNDLED_VIEWER_HTML = ${JSON.stringify(htmlContent)};
 }
 
 /**
- * 预编译 Worker 脚本
- * 将 proxy-server.ts 编译为独立的 JS 文件，供打包模式使用
+ * Worker 导入信息
  */
-async function buildWorker(): Promise<void> {
-  console.log("  Building proxy-server worker...");
+interface WorkerImportInfo {
+  /** 包含 Worker 导入的源文件 */
+  sourceFile: string;
+  /** 原始导入路径（相对于源文件） */
+  originalImportPath: string;
+  /** Worker 源文件的绝对路径 */
+  workerAbsolutePath: string;
+  /** 预编译后的 JS 文件路径 */
+  bundledJsPath: string;
+}
 
-  // 清理并创建 Worker 构建目录
-  if (fs.existsSync(WORKER_BUILD_DIR)) {
-    fs.rmSync(WORKER_BUILD_DIR, { recursive: true, force: true });
-  }
+/**
+ * 预编译 Worker 脚本
+ *
+ * 将 Worker TS 文件编译为独立的 JS 文件，供 `with { type: "file" }` 导入
+ *
+ * @returns Worker 导入信息列表
+ */
+async function buildWorkerFiles(): Promise<WorkerImportInfo[]> {
+  console.log("  Finding worker imports...");
+
+  // 清理构建目录
+  fs.rmSync(WORKER_BUILD_DIR, { recursive: true, force: true });
   fs.mkdirSync(WORKER_BUILD_DIR, { recursive: true });
 
-  // 使用 Bun bundler 编译 Worker
-  const result = await Bun.build({
-    entrypoints: [WORKER_ENTRY],
+  // Step 1: 扫描入口文件找到所有 Worker 导入
+  const workers = findWorkerImports([ENTRY_FILE]);
+  console.log(`  Found ${workers.length} worker(s): ${workers.map(w => path.basename(w)).join(", ")}`);
+
+  if (workers.length === 0) {
+    return [];
+  }
+
+  // Step 2: 预编译所有 Worker
+  console.log("  Building workers...");
+  const workerMapping = await buildWorkers(workers, {
     outdir: WORKER_BUILD_DIR,
-    target: "bun",
     minify: true,
-    // 编译为独立的单文件，内联所有依赖
-    // external 只排除 Node.js 内置模块
   });
 
-  if (!result.success) {
-    console.error("Worker build failed:");
-    for (const log of result.logs) {
-      console.error(log);
+  // Step 3: 收集详细的导入信息
+  const workerImports: WorkerImportInfo[] = [];
+  
+  // 找到包含 Worker 导入的源文件
+  const sourceFiles = findFilesWithWorkerImports([ENTRY_FILE]);
+  
+  for (const [workerPath, bundledPath] of workerMapping) {
+    for (const sourceFile of sourceFiles) {
+      const source = fs.readFileSync(sourceFile, "utf-8");
+      const relPath = path.relative(path.dirname(sourceFile), workerPath);
+      const importPath = relPath.startsWith("..") ? relPath : "./" + relPath;
+      
+      // 检查这个源文件是否导入了这个 Worker
+      const pattern = new RegExp(
+        `import\\s+\\w+\\s+from\\s+["']${importPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']\\s+with\\s*\\{\\s*type:\\s*["']file["']\\s*\\}`,
+        "g"
+      );
+      
+      if (pattern.test(source)) {
+        workerImports.push({
+          sourceFile,
+          originalImportPath: importPath,
+          workerAbsolutePath: workerPath,
+          bundledJsPath: bundledPath,
+        });
+      }
     }
-    throw new Error("Worker build failed");
   }
 
-  // 读取生成的文件
-  const files = fs.readdirSync(WORKER_BUILD_DIR);
-  const jsFile = files.find(f => f.endsWith(".js"));
+  return workerImports;
+}
 
-  if (!jsFile) {
-    throw new Error("Worker build missing JS file");
-  }
-
-  const jsContent = fs.readFileSync(path.join(WORKER_BUILD_DIR, jsFile), "utf-8");
-
-  // 生成嵌入模块
-  const moduleContent = `/**
- * 预编译的 proxy-server Worker 脚本（由 build.ts 自动生成）
- * 请勿手动编辑此文件
+/**
+ * 递归查找包含 Worker 导入的源文件
  */
+function findFilesWithWorkerImports(entryPaths: string[]): string[] {
+  const files: string[] = [];
+  const visited = new Set<string>();
+  
+  function scan(filePath: string): void {
+    if (visited.has(filePath)) return;
+    visited.add(filePath);
+    
+    if (!fs.existsSync(filePath)) return;
+    
+    const source = fs.readFileSync(filePath, "utf-8");
+    const dir = path.dirname(filePath);
+    
+    // 检查是否有 Worker 导入
+    if (source.includes('with { type: "file" }') || source.includes("with { type: 'file' }")) {
+      files.push(filePath);
+    }
+    
+    // 递归扫描普通 import
+    const importPattern = /import\s+(?:[\w{},\s*]+\s+from\s+)?["'](\.\/[^"']+)["'](?!\s+with)/g;
+    let match;
+    while ((match = importPattern.exec(source)) !== null) {
+      let relativePath = match[1];
+      if (relativePath) {
+        let absolutePath = path.resolve(dir, relativePath);
+        if (!absolutePath.endsWith(".ts")) {
+          if (fs.existsSync(absolutePath + ".ts")) {
+            absolutePath = absolutePath + ".ts";
+          } else if (fs.existsSync(path.join(absolutePath, "index.ts"))) {
+            absolutePath = path.join(absolutePath, "index.ts");
+          }
+        }
+        if (fs.existsSync(absolutePath)) {
+          scan(absolutePath);
+        }
+      }
+    }
+  }
+  
+  for (const entry of entryPaths) {
+    scan(entry);
+  }
+  
+  return files;
+}
 
-export const BUNDLED_PROXY_SERVER_JS = ${JSON.stringify(jsContent)};
-`;
-
-  fs.writeFileSync(
-    path.join(WORKER_BUILD_DIR, "bundled-proxy-server.ts"),
-    moduleContent
-  );
-
-  console.log("  Proxy-server worker built and bundled successfully");
+/**
+ * 临时修改源文件，将 Worker 导入路径改为预编译的 JS 文件
+ * @returns 恢复函数
+ */
+function patchWorkerImports(workerImports: WorkerImportInfo[]): () => void {
+  const backups = new Map<string, string>();
+  
+  for (const info of workerImports) {
+    // 备份原始文件内容
+    if (!backups.has(info.sourceFile)) {
+      backups.set(info.sourceFile, fs.readFileSync(info.sourceFile, "utf-8"));
+    }
+    
+    // 计算新的导入路径
+    const newImportPath = path.relative(
+      path.dirname(info.sourceFile),
+      info.bundledJsPath
+    );
+    const normalizedPath = newImportPath.startsWith("..") ? newImportPath : "./" + newImportPath;
+    
+    // 修改文件
+    let content = fs.readFileSync(info.sourceFile, "utf-8");
+    const escapedOriginal = info.originalImportPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(
+      `(import\\s+\\w+\\s+from\\s+["'])${escapedOriginal}(["']\\s+with\\s*\\{\\s*type:\\s*["']file["']\\s*\\})`,
+      "g"
+    );
+    
+    const newContent = content.replace(pattern, `$1${normalizedPath}$2`);
+    if (newContent !== content) {
+      console.log(`  Patching: ${path.basename(info.sourceFile)} (${info.originalImportPath} -> ${normalizedPath})`);
+      fs.writeFileSync(info.sourceFile, newContent, "utf-8");
+    }
+  }
+  
+  // 返回恢复函数
+  return () => {
+    for (const [file, content] of backups) {
+      fs.writeFileSync(file, content, "utf-8");
+    }
+  };
 }
 
 function formatFileSize(bytes: number): string {
@@ -233,9 +343,20 @@ async function buildBinary(targetName: TargetName): Promise<{ file: string; size
 
   console.log(`  Building for ${target.name}...`);
 
+  // 收集预编译的 Worker 文件作为额外入口点
+  const workerFiles: string[] = [];
+  if (fs.existsSync(WORKER_BUILD_DIR)) {
+    for (const f of fs.readdirSync(WORKER_BUILD_DIR)) {
+      if (f.endsWith(".js")) {
+        workerFiles.push(path.join(WORKER_BUILD_DIR, f));
+      }
+    }
+  }
+
   const args = [
     "bun", "build",
     ENTRY_FILE,
+    ...workerFiles,
     "--compile",
     `--target=${target.bunTarget}`,
     `--outfile=${outfile}`,
@@ -282,28 +403,36 @@ async function buildAllBinaries(): Promise<void> {
 
   // 先构建前端资源和 Worker
   await buildFrontend();
-  await buildWorker();
+  const workerImports = await buildWorkerFiles();
+
+  // 临时修改源文件，使用预编译的 Worker
+  const restoreFiles = patchWorkerImports(workerImports);
 
   const results: Array<{ target: string; file: string; size: string; status: string }> = [];
   const start = performance.now();
 
-  for (const target of BUILD_TARGETS) {
-    try {
-      const { file, size } = await buildBinary(target.name);
-      results.push({
-        target: target.name,
-        file: path.basename(file),
-        size: formatFileSize(size),
-        status: "✅",
-      });
-    } catch (error) {
-      results.push({
-        target: target.name,
-        file: "-",
-        size: "-",
-        status: `❌ ${error instanceof Error ? error.message : String(error)}`,
-      });
+  try {
+    for (const target of BUILD_TARGETS) {
+      try {
+        const { file, size } = await buildBinary(target.name);
+        results.push({
+          target: target.name,
+          file: path.basename(file),
+          size: formatFileSize(size),
+          status: "✅",
+        });
+      } catch (error) {
+        results.push({
+          target: target.name,
+          file: "-",
+          size: "-",
+          status: `❌ ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
     }
+  } finally {
+    // 恢复源文件
+    restoreFiles();
   }
 
   const end = performance.now();
@@ -322,7 +451,10 @@ async function buildSingleBinary(targetName?: string): Promise<void> {
 
   // 先构建前端资源和 Worker
   await buildFrontend();
-  await buildWorker();
+  const workerImports = await buildWorkerFiles();
+
+  // 临时修改源文件，使用预编译的 Worker
+  const restoreFiles = patchWorkerImports(workerImports);
 
   const start = performance.now();
 
@@ -337,6 +469,9 @@ async function buildSingleBinary(targetName?: string): Promise<void> {
   } catch (error) {
     console.error(`\n❌ Build failed: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);
+  } finally {
+    // 恢复源文件
+    restoreFiles();
   }
 }
 

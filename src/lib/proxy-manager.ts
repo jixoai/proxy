@@ -1,6 +1,5 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { createLogger, type Logger } from "./logger";
 import type { HooksConfig } from "../types/proxy";
@@ -11,16 +10,16 @@ import type {
 } from "../types/worker-messages";
 import { getInstanceByName } from "./config-store";
 import {
-  getProxyServerPath,
   getInstanceConfigPath,
   getTempConfigDir,
-  isStandaloneBinary,
-  getBundledProxyServerCode,
   getDataDir,
 } from "./runtime-paths";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// 使用 with { type: "file" } 导入 Worker 路径
+// - 开发模式：直接执行 TS 文件
+// - 打包模式：build 脚本会临时修改此路径指向预编译的 JS 文件
+// @ts-expect-error TypeScript 不支持 `with { type: "file" }` 语法，但 Bun 支持
+import proxyServerPath from "../../.build-worker/proxy-server.js" with { type: "file" };
 
 /** Worker 停止超时时间（毫秒） */
 const WORKER_STOP_TIMEOUT_MS = 3000;
@@ -133,22 +132,10 @@ export class ProxyManager {
     const argv = ["-p", String(this.port), "-i", this.instanceName];
     if (configPath) argv.push("-c", configPath);
 
-    // 根据运行模式创建 Worker
-    const proxyServerPath = getProxyServerPath();
-    if (proxyServerPath) {
-      // 开发模式：直接加载 TypeScript 文件
-      this.worker = new Worker(proxyServerPath, { argv });
-    } else {
-      // 打包模式：从预编译的 JS 代码创建 Worker
-      const bundledCode = getBundledProxyServerCode();
-      if (!bundledCode) {
-        throw new Error("Failed to load bundled proxy-server code in standalone mode");
-      }
-      // 将预编译代码写入临时文件，然后作为 Worker 加载
-      const workerJsPath = this.getWorkerJsPath();
-      fs.writeFileSync(workerJsPath, bundledCode, "utf-8");
-      this.worker = new Worker(workerJsPath, { argv });
-    }
+    // 直接使用导入的 Worker 路径
+    // - 开发模式：proxyServerPath 指向 TS 文件
+    // - 打包模式：proxyServerPath 指向预编译的 JS 文件（由 build 脚本临时修改）
+    this.worker = new Worker(proxyServerPath, { argv });
 
     this.configPath = configPath;
     this.startTime = Date.now();
@@ -264,9 +251,6 @@ export class ProxyManager {
 
     // 清理临时配置文件
     this.cleanupConfigFile();
-
-    // 清理 Worker JS 临时文件（打包模式）
-    this.cleanupWorkerJsFile();
 
     // 短暂等待确保端口释放
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -540,23 +524,6 @@ export class ProxyManager {
   /** 获取 instance 配置文件路径 */
   getConfigPath(): string {
     return getInstanceConfigPath(this.instanceName);
-  }
-
-  /** 获取打包模式下 Worker JS 临时文件路径 */
-  private getWorkerJsPath(): string {
-    return path.join(getTempConfigDir(), `worker-${this.instanceName}.js`);
-  }
-
-  /** 清理打包模式下的 Worker JS 临时文件 */
-  private cleanupWorkerJsFile(): void {
-    if (!isStandaloneBinary()) return;
-    const workerJsPath = this.getWorkerJsPath();
-    try {
-      fs.unlinkSync(workerJsPath);
-      this.log.debug(`[ProxyManager] Worker JS file removed: ${workerJsPath}`);
-    } catch {
-      // 文件不存在时忽略
-    }
   }
 
   /** 从 instance 配置文件读取配置 */

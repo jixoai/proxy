@@ -579,6 +579,7 @@ const server = http.createServer(async (req, res) => {
           url: requestUrl.href,
           headers: req.headers as Record<string, string | string[]>,
           forwardedHeaders: forwardHeaders as Record<string, string | string[]>,
+          targetUrl: targetUrl.href,
           bodyDataUrl: originalRequestBodyDataUrl,
           bodySize: originalRequestBody.length,
         },

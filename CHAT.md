@@ -1002,7 +1002,17 @@ BUG：我发现终端一直在报告这个日志 `[droid-to-claude] Listening on
 
 请先充分阅读这篇文章：https://bun.sh/docs/bundler/fullstack
 然后阅读变更代码。
-我觉得现在的打包方案有问题。首先我们这个项目，使用bun进行aot打包应该是完全没有问题的。
+我觉得现在的打包方案有问题(你可以看这个commit:a66322e7b6ceb901eb42178fdb6de6e4ff99ad9a的变更内容了解详情)。
+首先我们这个项目，使用bun进行aot打包应该是完全没有问题的。
 现在最大的问题在于，如何处理Worker的打包支持。
 我觉得我们自己做一个plugin来解决是最好的。
 另外现在打包代码中，最大的误会就是把前端独立做打包了，这是绝对违反bun官方的规范的。
+
+---
+
+应该是直接`import('xxx.ts')`改成`import('<bundle-assets>/<worker-entry>/index.js')`类似这种效果
+
+---
+
+不是啊,我还是没搞明白你的方案,我觉得你被当下的的代码带偏了,你最好再看看我给你的commit。我的
+意思是,使用符合直觉的方案:`new Worker(import.meta.resolve("./proxy-server.ts"))`,然后用bun-build-plugin去解析这里的代码,让最终编译出来的代码是`import.meta.resolve(import.meta.resolve("../<bundle-assets>/<worker-entry>/index.js"))`。

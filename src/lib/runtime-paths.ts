@@ -32,25 +32,6 @@ export function isStandaloneBinary(): boolean {
   return __dirname.startsWith("/$bunfs");
 }
 
-/**
- * 获取预编译的 Worker JS 代码（仅打包模式可用）
- * 在编译时通过 import 内嵌到二进制文件中
- */
-export function getBundledProxyServerCode(): string | null {
-  if (!isStandaloneBinary()) {
-    return null;
-  }
-  // 打包模式下，从预编译模块获取代码
-  // 这个 import 会在 bun build 时被内联
-  try {
-    // 动态导入预编译的 Worker 代码
-    const { BUNDLED_PROXY_SERVER_JS } = require("../../.build-worker/bundled-proxy-server");
-    return BUNDLED_PROXY_SERVER_JS;
-  } catch {
-    return null;
-  }
-}
-
 /** 运行时设置的数据目录（可通过 CLI 或配置文件设置） */
 let customDataDir: string | null = null;
 
@@ -105,19 +86,6 @@ export function getDbPath(): string {
     return path.resolve(process.env.PROXY_DB_PATH);
   }
   return path.join(getDataDir(), "proxy.db");
-}
-
-/**
- * 获取代理服务器脚本路径
- *
- * - 开发模式：返回 src/proxy-server.ts
- * - 打包模式：返回 null（应使用 getBundledProxyServerCode 获取内嵌代码）
- */
-export function getProxyServerPath(): string | null {
-  if (isStandaloneBinary()) {
-    return null;
-  }
-  return path.join(__dirname, "../proxy-server.ts");
 }
 
 /** 获取临时配置文件目录 */

@@ -13,6 +13,8 @@ export interface RequestData {
   url: string;
   headers: Record<string, string | string[]>;
   forwardedHeaders?: Record<string, string | string[]>;
+  /** Forward Rule 计算出的真正转发目标URL（无hook时的目标） */
+  targetUrl?: string;
   bodyDataUrl: string | null;
   bodySize: number;
 }

@@ -113,7 +113,7 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
       isWebSocket: req.is_websocket,
       websocketDirection: req.websocket_direction,
       errorMessage: req.error_message,
-      targetUrl: hasHookedRequest ? req.hookedRequest!.url : req.request.url,
+      targetUrl: hasHookedRequest ? req.hookedRequest!.url : (req.request.targetUrl ?? req.request.url),
       originUrl: req.request.url,
       forwardedHeaders: req.request.forwardedHeaders,
       request: {
