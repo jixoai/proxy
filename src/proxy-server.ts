@@ -5,7 +5,6 @@ import * as path from "node:path";
 import { URL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { parentPort } from "node:worker_threads";
 import createDebug from "debug";
 import {
   createProxyRequest,
@@ -32,882 +31,906 @@ import { forwardStatsManager } from "./lib/forward-stats-manager";
 
 const debugNotifier = createDebug("plugins:db-notifier");
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+declare var self: Worker;
+const parentPort = typeof self.postMessage === "function" ? self : null;
 
-const args = parseArgs({
-  argv: process.argv.slice(2),
-  allowPositionals: true,
-  options: {
-    port: { type: "string", short: "p", default: "27890" },
-    config: { type: "string", short: "c" },
-    instance: { type: "string", short: "i" },
-  },
-});
+parentPort
+  ? new Promise<string[]>((resolve) => {
+      parentPort.postMessage({ type: "env-ready" });
+      const handler = (event: MessageEvent) => {
+        const msg = event.data as WorkerMessage;
+        if (msg.type === "pre-init") {
+          resolve(msg.argv);
+          parentPort.removeEventListener("message", handler);
+        }
+      };
+      parentPort.addEventListener("message", handler);
+    }).then(main)
+  : main(process.argv.slice(2));
 
-const PROXY_PORT = args.values.port;
-const INSTANCE_NAME = args.values.instance ?? "default";
-const log = createLogger(`proxy:server:${INSTANCE_NAME}`);
-installGlobalErrorLogger(`proxy-server:${INSTANCE_NAME}`);
-
-const CLIENT_DISCONNECT: AbortReason = "client_disconnect";
-const USER_ABORT: AbortReason = "user_abort";
-
-function isAbortReason(value: unknown): value is AbortReason {
-  return value === CLIENT_DISCONNECT || value === USER_ABORT;
-}
-
-function getAbortReasonFromSignal(signal: AbortSignal): AbortReason {
-  return isAbortReason(signal.reason) ? signal.reason : CLIENT_DISCONNECT;
-}
-
-class ProxyRequestAbortedError extends Error {
-  readonly abortReason: AbortReason;
-
-  constructor(abortReason: AbortReason) {
-    super("Request aborted");
-    this.name = "ProxyRequestAbortedError";
-    this.abortReason = abortReason;
-  }
-}
-
-// 在 worker 模式下，将日志透传给父线程以便 UI 实时展示
-if (parentPort) {
-  const originalConsole = { ...console };
-  (["log", "info", "warn", "error"] as const).forEach((level) => {
-    const original = originalConsole[level];
-    console[level] = (...payload: unknown[]) => {
-      const message = payload.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(" ");
-      parentPort?.postMessage({
-        type: "log",
-        level,
-        message,
-        timestamp: Date.now(),
-        instanceName: INSTANCE_NAME,
-      });
-      original.apply(originalConsole, payload as never);
-    };
+function main(argv: string[]) {
+  const args = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      port: { type: "string", short: "p", default: "0" },
+      config: { type: "string", short: "c" },
+      instance: { type: "string", short: "i" },
+    },
   });
-}
 
-interface ForwardRule {
-  name: string;
-  target: string;
-  enabled: boolean;
-  description?: string | null;
-  path?: string | null;
-  methods?: string[];
-  headers?: Record<string, string> | null;
-  hooks?: HooksConfig | null;
-}
+  const PROXY_PORT = args.values.port;
+  const INSTANCE_NAME = args.values.instance ?? "default";
+  const log = createLogger(`proxy:server:${INSTANCE_NAME}`);
+  installGlobalErrorLogger(`proxy-server:${INSTANCE_NAME}`);
 
-let forwards: ForwardRule[] = [];
-let instanceHeaders: Record<string, string> | null = null;
-let instanceHooks: HooksConfig | null = null;
-let hooksExecutor: HooksExecutor | null = null;
+  const CLIENT_DISCONNECT: AbortReason = "client_disconnect";
+  const USER_ABORT: AbortReason = "user_abort";
 
-if (args.values.config) {
-  try {
-    const content = fs.readFileSync(args.values.config, "utf-8");
-    // 读取 InstanceRuntimeConfig 格式（单一数据源）
-    const instanceConfig = JSON.parse(content) as {
-      name: string;
-      headers?: Record<string, string> | null;
-      hooks?: HooksConfig | null;
-      forwards: ForwardRule[];
-    };
+  function isAbortReason(value: unknown): value is AbortReason {
+    return value === CLIENT_DISCONNECT || value === USER_ABORT;
+  }
 
-    if (instanceConfig.name !== INSTANCE_NAME) {
-      console.error(`[Config] Config file instance name "${instanceConfig.name}" does not match "${INSTANCE_NAME}"`);
-      process.exit(1);
+  function getAbortReasonFromSignal(signal: AbortSignal): AbortReason {
+    return isAbortReason(signal.reason) ? signal.reason : CLIENT_DISCONNECT;
+  }
+
+  class ProxyRequestAbortedError extends Error {
+    readonly abortReason: AbortReason;
+
+    constructor(abortReason: AbortReason) {
+      super("Request aborted");
+      this.name = "ProxyRequestAbortedError";
+      this.abortReason = abortReason;
     }
-    forwards = normalizeForwardGroups((instanceConfig.forwards ?? []).filter((f) => f && f.enabled));
-    instanceHeaders = instanceConfig.headers ?? null;
-    instanceHooks = instanceConfig.hooks ?? null;
-    log.info(`[Config] Loaded ${forwards.length} forward rules for "${INSTANCE_NAME}"`);
-
-    // 初始化 hooks 执行器
-    if (instanceHooks || forwards.some((f) => f.hooks)) {
-      hooksExecutor = new HooksExecutor(INSTANCE_NAME, instanceHooks);
-      hooksExecutor.start().catch((err) => {
-        console.error("[Hooks] Failed to start hooks executor:", err);
-      });
-    }
-  } catch (error) {
-    console.error("[Config] Failed to load config:", error);
-    process.exit(1);
   }
-}
-
-/** 获取当前运行时配置 */
-function getCurrentConfig(): InstanceRuntimeConfig {
-  return {
-    name: INSTANCE_NAME,
-    headers: instanceHeaders,
-    hooks: instanceHooks,
-    forwards: forwards.map((f) => ({
-      name: f.name,
-      target: f.target,
-      enabled: f.enabled,
-      description: f.description,
-      path: f.path,
-      methods: f.methods,
-      headers: f.headers,
-      hooks: f.hooks,
-    })),
-  };
-}
-
-/** 热更新配置（不重启服务器） */
-async function reloadConfig(newConfig: InstanceRuntimeConfig): Promise<void> {
-  log.info(`[Reload] Applying new config for "${INSTANCE_NAME}"...`);
-
-  // 停止旧的 hooks executor
-  if (hooksExecutor) {
-    await hooksExecutor.stop();
-    hooksExecutor = null;
+  // 在 worker 模式下，将日志透传给父线程以便 UI 实时展示
+  if (parentPort) {
+    const originalConsole = { ...console };
+    (["log", "info", "warn", "error"] as const).forEach((level) => {
+      const original = originalConsole[level];
+      console[level] = (...payload: unknown[]) => {
+        const message = payload
+          .map((v) => (typeof v === "string" ? v : JSON.stringify(v)))
+          .join(" ");
+        parentPort.postMessage({
+          type: "log",
+          level,
+          message,
+          timestamp: Date.now(),
+          instanceName: INSTANCE_NAME,
+        });
+        original.apply(originalConsole, payload as never);
+      };
+    });
   }
 
-  // 更新配置
-  instanceHeaders = newConfig.headers;
-  instanceHooks = newConfig.hooks;
-  forwards = normalizeForwardGroups(newConfig.forwards.filter((f) => f && f.enabled));
-
-  // 启动新的 hooks executor
-  if (instanceHooks || forwards.some((f) => f.hooks)) {
-    hooksExecutor = new HooksExecutor(INSTANCE_NAME, instanceHooks);
-    await hooksExecutor.start();
+  interface ForwardRule {
+    name: string;
+    target: string;
+    enabled: boolean;
+    description?: string | null;
+    path?: string | null;
+    methods?: string[];
+    headers?: Record<string, string> | null;
+    hooks?: HooksConfig | null;
   }
 
-  log.info(
-    `[Reload] Config updated: ${forwards.length} forward rules, headers: ${instanceHeaders ? Object.keys(instanceHeaders).length : 0}`,
-  );
-}
+  let forwards: ForwardRule[] = [];
+  let instanceHeaders: Record<string, string> | null = null;
+  let instanceHooks: HooksConfig | null = null;
+  let hooksExecutor: HooksExecutor | null = null;
 
-// Worker 消息处理
-if (parentPort) {
-  parentPort.on("message", async (message: WorkerMessage) => {
+  if (args.values.config) {
     try {
-      switch (message.type) {
-        case "init": {
-          // 初始化数据目录和数据库
-          setDataDir(message.dataDir);
-          initDatabase();
-          const response: WorkerResponse = {
-            type: "init-result",
-            success: true,
-          };
-          parentPort?.postMessage(response);
-          log.info(`[Init] Database initialized with dataDir: ${message.dataDir}`);
-          break;
-        }
-        case "reload": {
-          await reloadConfig(message.config);
-          const response: WorkerResponse = {
-            type: "reload-result",
-            success: true,
-          };
-          parentPort?.postMessage(response);
-          break;
-        }
-        case "get-config": {
-          const response: WorkerResponse = {
-            type: "config",
-            config: getCurrentConfig(),
-          };
-          parentPort?.postMessage(response);
-          break;
-        }
-        case "ping": {
-          const response: WorkerResponse = { type: "pong" };
-          parentPort?.postMessage(response);
-          break;
-        }
-        case "abort-request": {
-          const controller = activeRequests.get(message.dbRecordId);
-          const success = !!controller;
-          if (controller) {
-            controller.abort(USER_ABORT);
-            log.info(`[Abort] Request #${message.dbRecordId} aborted by user`);
-          }
-          const response: WorkerResponse = {
-            type: "abort-result",
-            success,
-            dbRecordId: message.dbRecordId,
-          };
-          parentPort?.postMessage(response);
-          break;
-        }
-        case "shutdown": {
-          log.info(`[Shutdown] Received shutdown message, closing server...`);
-          // server 会在后面定义，这里用 globalThis 延迟访问
-          const srv = (globalThis as any).__proxyServer;
-          if (srv) {
-            srv.close(() => {
-              log.info(`[Shutdown] Server closed`);
-              process.exit(0);
-            });
-          } else {
-            process.exit(0);
-          }
-          break;
-        }
+      const content = fs.readFileSync(args.values.config, "utf-8");
+      // 读取 InstanceRuntimeConfig 格式（单一数据源）
+      const instanceConfig = JSON.parse(content) as {
+        name: string;
+        headers?: Record<string, string> | null;
+        hooks?: HooksConfig | null;
+        forwards: ForwardRule[];
+      };
+
+      if (instanceConfig.name !== INSTANCE_NAME) {
+        console.error(
+          `[Config] Config file instance name "${instanceConfig.name}" does not match "${INSTANCE_NAME}"`,
+        );
+        process.exit(1);
+      }
+      forwards = normalizeForwardGroups(
+        (instanceConfig.forwards ?? []).filter((f) => f && f.enabled),
+      );
+      instanceHeaders = instanceConfig.headers ?? null;
+      instanceHooks = instanceConfig.hooks ?? null;
+      log.info(`[Config] Loaded ${forwards.length} forward rules for "${INSTANCE_NAME}"`);
+
+      // 初始化 hooks 执行器
+      if (instanceHooks || forwards.some((f) => f.hooks)) {
+        hooksExecutor = new HooksExecutor(INSTANCE_NAME, instanceHooks);
+        hooksExecutor.start().catch((err) => {
+          console.error("[Hooks] Failed to start hooks executor:", err);
+        });
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const stack = error instanceof Error ? error.stack : undefined;
-
-      switch (message.type) {
-        case "init": {
-          const response: WorkerResponse = {
-            type: "init-result",
-            success: false,
-            error: errorMessage,
-          };
-          parentPort?.postMessage(response);
-          break;
-        }
-        case "reload": {
-          const response: WorkerResponse = {
-            type: "reload-result",
-            success: false,
-            error: errorMessage,
-          };
-          parentPort?.postMessage(response);
-          break;
-        }
-        case "abort-request": {
-          const response: WorkerResponse = {
-            type: "abort-result",
-            success: false,
-            dbRecordId: message.dbRecordId,
-          };
-          parentPort?.postMessage(response);
-          break;
-        }
-        default: {
-          const response: WorkerResponse = {
-            type: "server-error",
-            error: errorMessage,
-            stack,
-            port: Number(PROXY_PORT),
-          };
-          parentPort?.postMessage(response);
-          break;
-        }
-      }
-    }
-  });
-}
-
-function matchMethod(ruleMethods: string[] | undefined, requestMethod: string): boolean {
-  const method = (requestMethod || "GET").toUpperCase();
-  if (!ruleMethods || ruleMethods.length === 0) return true;
-  if (ruleMethods.includes("*")) return true;
-  return ruleMethods.map((m) => m.toUpperCase()).includes(method);
-}
-
-function matchForwardRule(
-  requestMethod: string,
-  pathname: string,
-): { rule: ForwardRule; index: number } | null {
-  if (forwards.length === 0) return null;
-  const normalizedPath = normalizePathname(pathname);
-  const method = (requestMethod || "GET").toUpperCase();
-
-  let fallback: { rule: ForwardRule; index: number } | null = null;
-  for (let idx = 0; idx < forwards.length; idx++) {
-    const rule = forwards[idx]!;
-    if (!matchMethod(rule.methods, method)) continue;
-    const rulePath = normalizePathname(rule.path || "");
-    if (!rule.path || rule.path.trim() === "") {
-      if (!fallback) fallback = { rule, index: idx };
-      continue;
-    }
-    if (normalizedPath.startsWith(rulePath)) return { rule, index: idx };
-  }
-  return fallback;
-}
-
-function joinPaths(basePath: string, suffix: string): string {
-  const base = normalizePathname(basePath);
-  if (!suffix || suffix === "/") return base;
-  const b = base.endsWith("/") ? base.slice(0, -1) : base;
-  const s = suffix.startsWith("/") ? suffix : `/${suffix}`;
-  return `${b}${s}`;
-}
-
-function buildTargetUrl(rule: ForwardRule, requestUrl: URL): URL {
-  const targetBase = new URL(rule.target);
-  const incomingPath = normalizePathname(requestUrl.pathname);
-  const rulePathRaw = rule.path ? normalizePathname(rule.path) : "";
-
-  let finalPath: string;
-  if (rulePathRaw && incomingPath.startsWith(rulePathRaw)) {
-    const suffix = incomingPath.slice(rulePathRaw.length) || "/";
-    finalPath =
-      suffix === "/" ? targetBase.pathname || "/" : joinPaths(targetBase.pathname || "/", suffix);
-  } else if (!rulePathRaw) {
-    const basePath = targetBase.pathname || "/";
-    finalPath = basePath === "/" || basePath === "" ? incomingPath : basePath;
-  } else {
-    finalPath = joinPaths(targetBase.pathname || "/", incomingPath);
-  }
-  targetBase.pathname = finalPath;
-  targetBase.search = requestUrl.search;
-  return targetBase;
-}
-
-function applyCustomHeaders(
-  headers: http.OutgoingHttpHeaders,
-  additions: Record<string, string> | null | undefined,
-): void {
-  if (!additions) return;
-  for (const [rawKey, value] of Object.entries(additions)) {
-    const isRegex = rawKey.startsWith("/") && rawKey.endsWith("/") && rawKey.length > 2;
-    const targetKeys: string[] = [];
-    if (isRegex) {
-      const pattern = rawKey.slice(1, -1);
-      const regex = new RegExp(pattern, "i");
-      for (const existing of Object.keys(headers)) {
-        if (regex.test(existing)) targetKeys.push(existing);
-      }
-      if (targetKeys.length === 0) continue;
-    } else {
-      targetKeys.push(rawKey.toLowerCase());
-    }
-    for (const key of targetKeys) {
-      if (value === "/DELETE") {
-        delete headers[key];
-      } else {
-        headers[key] = value;
-      }
+      console.error("[Config] Failed to load config:", error);
+      process.exit(1);
     }
   }
-}
 
-let requestCounter = 0;
+  /** 获取当前运行时配置 */
+  function getCurrentConfig(): InstanceRuntimeConfig {
+    return {
+      name: INSTANCE_NAME,
+      headers: instanceHeaders,
+      hooks: instanceHooks,
+      forwards: forwards.map((f) => ({
+        name: f.name,
+        target: f.target,
+        enabled: f.enabled,
+        description: f.description,
+        path: f.path,
+        methods: f.methods,
+        headers: f.headers,
+        hooks: f.hooks,
+      })),
+    };
+  }
 
-// 存储活跃请求的 AbortController，用于支持请求中断
-const activeRequests = new Map<number, AbortController>();
+  /** 热更新配置（不重启服务器） */
+  async function reloadConfig(newConfig: InstanceRuntimeConfig): Promise<void> {
+    log.info(`[Reload] Applying new config for "${INSTANCE_NAME}"...`);
 
-const server = http.createServer(async (req, res) => {
-  const startTime = Date.now();
-  const requestId = `${++requestCounter}`;
-  const timestamp = new Date().toISOString();
-
-  // 创建 AbortController 用于级联取消整个请求链路
-  const abortController = new AbortController();
-  const { signal: abortSignal } = abortController;
-  let isClientDisconnected = false;
-
-  // 监听上游客户端断开连接
-  const handleClientClose = () => {
-    if (!res.writableEnded && !isClientDisconnected) {
-      isClientDisconnected = true;
-      abortController.abort(CLIENT_DISCONNECT);
-      log.info(`[Abort] Client disconnected for request #${requestId}`);
+    // 停止旧的 hooks executor
+    if (hooksExecutor) {
+      await hooksExecutor.stop();
+      hooksExecutor = null;
     }
-  };
-  req.on("aborted", handleClientClose);
-  res.on("close", handleClientClose);
 
-  const protocol = req.headers["x-forwarded-proto"] || "http";
-  const requestUrl = new URL(
-    req.url || "/",
-    `${protocol}://${req.headers.host || `localhost:${PROXY_PORT}`}`,
-  );
-  const method = (req.method || "GET").toUpperCase();
+    // 更新配置
+    instanceHeaders = newConfig.headers;
+    instanceHooks = newConfig.hooks;
+    forwards = normalizeForwardGroups(newConfig.forwards.filter((f) => f && f.enabled));
 
-  const matched = matchForwardRule(method, requestUrl.pathname);
-  if (!matched) {
-    res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "No forward rules configured" }));
-    return;
-  }
-
-  const candidateIndexes: number[] = forwards
-    .map((rule, idx) => ({ rule, idx }))
-    .filter(({ rule }) => {
-      if (rule.name !== matched.rule.name) return false;
-      if (!matchMethod(rule.methods, method)) return false;
-      const rulePath = normalizePathname(rule.path || "");
-      const normalizedPath = normalizePathname(requestUrl.pathname);
-      if (!rule.path || rule.path.trim() === "") return true;
-      return normalizedPath.startsWith(rulePath);
-    })
-    .map(({ idx }) => idx);
-
-  if (candidateIndexes.length === 0) {
-    candidateIndexes.push(matched.index);
-  }
-
-  const requestBodyChunks: Buffer[] = [];
-  for await (const chunk of req) {
-    requestBodyChunks.push(chunk as Buffer);
-  }
-  const originalRequestBody = Buffer.concat(requestBodyChunks);
-  const requestContentType = (req.headers["content-type"] as string) || null;
-  const originalRequestBodyDataUrl =
-    originalRequestBody.length > 0
-      ? bufferToDataUrl(originalRequestBody, requestContentType)
-      : null;
-
-  const hopByHopKeys = [
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-    "content-length",
-  ];
-
-  const sanitizeResponseHeaders = (
-    headers: http.IncomingHttpHeaders,
-    bodyLength: number,
-  ): http.OutgoingHttpHeaders => {
-    const clean: http.OutgoingHttpHeaders = { ...headers };
-    for (const key of hopByHopKeys) {
-      delete (clean as Record<string, unknown>)[key as string];
+    // 启动新的 hooks executor
+    if (instanceHooks || forwards.some((f) => f.hooks)) {
+      hooksExecutor = new HooksExecutor(INSTANCE_NAME, instanceHooks);
+      await hooksExecutor.start();
     }
-    clean["content-length"] = bodyLength;
-    return clean;
-  };
 
-  let dbRecordId: number | null = null;
-  let finalResult: {
-    statusCode: number;
-    statusMessage: string;
-    headers: http.OutgoingHttpHeaders;
-    bodyBuffer: Buffer;
-    contentType: string | null;
-    ttfbMs: number;
-    bodyMs: number;
-    errorMessage?: string;
-    abortReason?: AbortReason;
-    forwardRule: ForwardRule;
-  } | null = null;
+    log.info(
+      `[Reload] Config updated: ${forwards.length} forward rules, headers: ${instanceHeaders ? Object.keys(instanceHeaders).length : 0}`,
+    );
+  }
 
-  for (let i = 0; i < candidateIndexes.length; i++) {
-    const ruleIndex = candidateIndexes[i];
-    const forwardRule = forwards[ruleIndex as number]!;
-
-    if (hooksExecutor && (instanceHooks || forwardRule.hooks)) {
+  // Worker 消息处理
+  if (parentPort) {
+    parentPort.addEventListener("message", async (event) => {
+      const message: WorkerMessage = event.data;
       try {
-        await hooksExecutor.setForwardHooks(forwardRule.name, forwardRule.hooks ?? null);
-      } catch (err) {
-        console.error("[Hooks] Failed to set forward hooks:", err);
-      }
-    }
-
-    let targetUrl = buildTargetUrl(forwardRule, requestUrl);
-    const forwardHeaders: http.OutgoingHttpHeaders = { ...req.headers };
-    forwardHeaders.host = targetUrl.host;
-    applyCustomHeaders(forwardHeaders, instanceHeaders);
-    applyCustomHeaders(forwardHeaders, forwardRule.headers ?? null);
-
-    let hookedMethod = method;
-    let hookedTargetUrl = targetUrl;
-    let hookedRequestBody = originalRequestBody;
-    let hookedForwardHeaders: http.OutgoingHttpHeaders = { ...forwardHeaders };
-    let hasRequestHookChanges = false;
-
-    if (hooksExecutor?.hasRequestHooks) {
-      try {
-        const hookResult = await hooksExecutor.executeRequestHooks({
-          method,
-          url: targetUrl.href,
-          headers: hookedForwardHeaders as Record<string, string | string[]>,
-          body: hookedRequestBody,
-          signal: abortSignal,
-        });
-
-        if (hookResult.method && hookResult.method !== hookedMethod) {
-          hookedMethod = hookResult.method;
-          hasRequestHookChanges = true;
-        }
-        if (hookResult.url && hookResult.url !== hookedTargetUrl.href) {
-          hookedTargetUrl = new URL(hookResult.url);
-          hasRequestHookChanges = true;
-          hookedForwardHeaders.host = hookedTargetUrl.host;
-        }
-        if (hookResult.headers) {
-          hookedForwardHeaders = hookResult.headers as http.OutgoingHttpHeaders;
-          hookedForwardHeaders.host = hookedTargetUrl.host;
-          hasRequestHookChanges = true;
-        }
-        if (hookResult.body !== undefined) {
-          const nextBody = Buffer.from(hookResult.body);
-          if (!nextBody.equals(hookedRequestBody)) {
-            hasRequestHookChanges = true;
+        switch (message.type) {
+          case "init": {
+            // 初始化数据目录和数据库
+            setDataDir(message.dataDir);
+            initDatabase();
+            const response: WorkerResponse = {
+              type: "init-result",
+              success: true,
+            };
+            parentPort.postMessage(response);
+            log.info(`[Init] Database initialized with dataDir: ${message.dataDir}`);
+            break;
           }
-          hookedRequestBody = nextBody;
-        }
-      } catch (err) {
-        console.error("[Hooks] Request hook error:", err);
-      }
-    }
-
-    const hookedRequestBodyDataUrl =
-      hookedRequestBody.length > 0 ? bufferToDataUrl(hookedRequestBody, requestContentType) : null;
-
-    if (hookedForwardHeaders["content-length"] !== undefined) {
-      if (hookedRequestBody.length > 0) {
-        hookedForwardHeaders["content-length"] = hookedRequestBody.length;
-      } else {
-        delete hookedForwardHeaders["content-length"];
-      }
-    }
-
-    if (dbRecordId === null) {
-      dbRecordId = createProxyRequest({
-        request_id: requestId,
-        timestamp,
-        instance_name: INSTANCE_NAME,
-        forward_name: forwardRule.name,
-        group_name: `${INSTANCE_NAME}/${forwardRule.name}`,
-        status: "pending",
-        abort_reason: null,
-        is_websocket: false,
-        websocket_direction: null,
-        error_message: null,
-        request: {
-          method,
-          url: requestUrl.href,
-          headers: req.headers as Record<string, string | string[]>,
-          forwardedHeaders: forwardHeaders as Record<string, string | string[]>,
-          targetUrl: targetUrl.href,
-          bodyDataUrl: originalRequestBodyDataUrl,
-          bodySize: originalRequestBody.length,
-        },
-        hookedRequest: hasRequestHookChanges
-          ? {
-              method: hookedMethod,
-              url: hookedTargetUrl.href,
-              headers: hookedForwardHeaders as Record<string, string | string[]>,
-              bodyDataUrl: hookedRequestBodyDataUrl,
-              bodySize: hookedRequestBody.length,
+          case "reload": {
+            await reloadConfig(message.config);
+            const response: WorkerResponse = {
+              type: "reload-result",
+              success: true,
+            };
+            parentPort.postMessage(response);
+            break;
+          }
+          case "get-config": {
+            const response: WorkerResponse = {
+              type: "config",
+              config: getCurrentConfig(),
+            };
+            parentPort.postMessage(response);
+            break;
+          }
+          case "ping": {
+            const response: WorkerResponse = { type: "pong" };
+            parentPort.postMessage(response);
+            break;
+          }
+          case "abort-request": {
+            const controller = activeRequests.get(message.dbRecordId);
+            const success = !!controller;
+            if (controller) {
+              controller.abort(USER_ABORT);
+              log.info(`[Abort] Request #${message.dbRecordId} aborted by user`);
             }
-          : undefined,
-        response: undefined,
-      });
-      // 注册到活跃请求 Map，支持外部中断
-      activeRequests.set(dbRecordId, abortController);
-      debugNotifier("about to notify insert, dbRecordId: %d", dbRecordId);
-      dbNotifier.notify("insert", "proxy_requests", dbRecordId);
-      debugNotifier("notify insert completed");
+            const response: WorkerResponse = {
+              type: "abort-result",
+              success,
+              dbRecordId: message.dbRecordId,
+            };
+            parentPort.postMessage(response);
+            break;
+          }
+          case "shutdown": {
+            log.info(`[Shutdown] Received shutdown message, closing server...`);
+            // server 会在后面定义，这里用 globalThis 延迟访问
+            const srv = (globalThis as any).__proxyServer;
+            if (srv) {
+              srv.close(() => {
+                log.info(`[Shutdown] Server closed`);
+                process.exit(0);
+              });
+            } else {
+              process.exit(0);
+            }
+            break;
+          }
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : undefined;
+
+        switch (message.type) {
+          case "init": {
+            const response: WorkerResponse = {
+              type: "init-result",
+              success: false,
+              error: errorMessage,
+            };
+            parentPort.postMessage(response);
+            break;
+          }
+          case "reload": {
+            const response: WorkerResponse = {
+              type: "reload-result",
+              success: false,
+              error: errorMessage,
+            };
+            parentPort.postMessage(response);
+            break;
+          }
+          case "abort-request": {
+            const response: WorkerResponse = {
+              type: "abort-result",
+              success: false,
+              dbRecordId: message.dbRecordId,
+            };
+            parentPort.postMessage(response);
+            break;
+          }
+          default: {
+            const response: WorkerResponse = {
+              type: "server-error",
+              error: errorMessage,
+              stack,
+              port: Number(PROXY_PORT),
+            };
+            parentPort.postMessage(response);
+            break;
+          }
+        }
+      }
+    });
+  }
+
+  function matchMethod(ruleMethods: string[] | undefined, requestMethod: string): boolean {
+    const method = (requestMethod || "GET").toUpperCase();
+    if (!ruleMethods || ruleMethods.length === 0) return true;
+    if (ruleMethods.includes("*")) return true;
+    return ruleMethods.map((m) => m.toUpperCase()).includes(method);
+  }
+
+  function matchForwardRule(
+    requestMethod: string,
+    pathname: string,
+  ): { rule: ForwardRule; index: number } | null {
+    if (forwards.length === 0) return null;
+    const normalizedPath = normalizePathname(pathname);
+    const method = (requestMethod || "GET").toUpperCase();
+
+    let fallback: { rule: ForwardRule; index: number } | null = null;
+    for (let idx = 0; idx < forwards.length; idx++) {
+      const rule = forwards[idx]!;
+      if (!matchMethod(rule.methods, method)) continue;
+      const rulePath = normalizePathname(rule.path || "");
+      if (!rule.path || rule.path.trim() === "") {
+        if (!fallback) fallback = { rule, index: idx };
+        continue;
+      }
+      if (normalizedPath.startsWith(rulePath)) return { rule, index: idx };
+    }
+    return fallback;
+  }
+
+  function joinPaths(basePath: string, suffix: string): string {
+    const base = normalizePathname(basePath);
+    if (!suffix || suffix === "/") return base;
+    const b = base.endsWith("/") ? base.slice(0, -1) : base;
+    const s = suffix.startsWith("/") ? suffix : `/${suffix}`;
+    return `${b}${s}`;
+  }
+
+  function buildTargetUrl(rule: ForwardRule, requestUrl: URL): URL {
+    const targetBase = new URL(rule.target);
+    const incomingPath = normalizePathname(requestUrl.pathname);
+    const rulePathRaw = rule.path ? normalizePathname(rule.path) : "";
+
+    let finalPath: string;
+    if (rulePathRaw && incomingPath.startsWith(rulePathRaw)) {
+      const suffix = incomingPath.slice(rulePathRaw.length) || "/";
+      finalPath =
+        suffix === "/" ? targetBase.pathname || "/" : joinPaths(targetBase.pathname || "/", suffix);
+    } else if (!rulePathRaw) {
+      const basePath = targetBase.pathname || "/";
+      finalPath = basePath === "/" || basePath === "" ? incomingPath : basePath;
+    } else {
+      finalPath = joinPaths(targetBase.pathname || "/", incomingPath);
+    }
+    targetBase.pathname = finalPath;
+    targetBase.search = requestUrl.search;
+    return targetBase;
+  }
+
+  function applyCustomHeaders(
+    headers: http.OutgoingHttpHeaders,
+    additions: Record<string, string> | null | undefined,
+  ): void {
+    if (!additions) return;
+    for (const [rawKey, value] of Object.entries(additions)) {
+      const isRegex = rawKey.startsWith("/") && rawKey.endsWith("/") && rawKey.length > 2;
+      const targetKeys: string[] = [];
+      if (isRegex) {
+        const pattern = rawKey.slice(1, -1);
+        const regex = new RegExp(pattern, "i");
+        for (const existing of Object.keys(headers)) {
+          if (regex.test(existing)) targetKeys.push(existing);
+        }
+        if (targetKeys.length === 0) continue;
+      } else {
+        targetKeys.push(rawKey.toLowerCase());
+      }
+      for (const key of targetKeys) {
+        if (value === "/DELETE") {
+          delete headers[key];
+        } else {
+          headers[key] = value;
+        }
+      }
+    }
+  }
+
+  let requestCounter = 0;
+
+  // 存储活跃请求的 AbortController，用于支持请求中断
+  const activeRequests = new Map<number, AbortController>();
+
+  const server = http.createServer(async (req, res) => {
+    const startTime = Date.now();
+    const requestId = `${++requestCounter}`;
+    const timestamp = new Date().toISOString();
+
+    // 创建 AbortController 用于级联取消整个请求链路
+    const abortController = new AbortController();
+    const { signal: abortSignal } = abortController;
+    let isClientDisconnected = false;
+
+    // 监听上游客户端断开连接
+    const handleClientClose = () => {
+      if (!res.writableEnded && !isClientDisconnected) {
+        isClientDisconnected = true;
+        abortController.abort(CLIENT_DISCONNECT);
+        log.info(`[Abort] Client disconnected for request #${requestId}`);
+      }
+    };
+    req.on("aborted", handleClientClose);
+    res.on("close", handleClientClose);
+
+    const protocol = req.headers["x-forwarded-proto"] || "http";
+    const requestUrl = new URL(
+      req.url || "/",
+      `${protocol}://${req.headers.host || `localhost:${PROXY_PORT}`}`,
+    );
+    const method = (req.method || "GET").toUpperCase();
+
+    const matched = matchForwardRule(method, requestUrl.pathname);
+    if (!matched) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "No forward rules configured" }));
+      return;
     }
 
-    const attemptStart = Date.now();
-    const isHttps = hookedTargetUrl.protocol === "https:";
-    const requestModule = isHttps ? https : http;
-    const defaultPort = isHttps ? 443 : 80;
+    const candidateIndexes: number[] = forwards
+      .map((rule, idx) => ({ rule, idx }))
+      .filter(({ rule }) => {
+        if (rule.name !== matched.rule.name) return false;
+        if (!matchMethod(rule.methods, method)) return false;
+        const rulePath = normalizePathname(rule.path || "");
+        const normalizedPath = normalizePathname(requestUrl.pathname);
+        if (!rule.path || rule.path.trim() === "") return true;
+        return normalizedPath.startsWith(rulePath);
+      })
+      .map(({ idx }) => idx);
 
-    const attemptResult = await new Promise<{
+    if (candidateIndexes.length === 0) {
+      candidateIndexes.push(matched.index);
+    }
+
+    const requestBodyChunks: Buffer[] = [];
+    for await (const chunk of req) {
+      requestBodyChunks.push(chunk as Buffer);
+    }
+    const originalRequestBody = Buffer.concat(requestBodyChunks);
+    const requestContentType = (req.headers["content-type"] as string) || null;
+    const originalRequestBodyDataUrl =
+      originalRequestBody.length > 0
+        ? bufferToDataUrl(originalRequestBody, requestContentType)
+        : null;
+
+    const hopByHopKeys = [
+      "connection",
+      "keep-alive",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "te",
+      "trailers",
+      "transfer-encoding",
+      "upgrade",
+      "content-length",
+    ];
+
+    const sanitizeResponseHeaders = (
+      headers: http.IncomingHttpHeaders,
+      bodyLength: number,
+    ): http.OutgoingHttpHeaders => {
+      const clean: http.OutgoingHttpHeaders = { ...headers };
+      for (const key of hopByHopKeys) {
+        delete (clean as Record<string, unknown>)[key as string];
+      }
+      clean["content-length"] = bodyLength;
+      return clean;
+    };
+
+    let dbRecordId: number | null = null;
+    let finalResult: {
       statusCode: number;
       statusMessage: string;
       headers: http.OutgoingHttpHeaders;
       bodyBuffer: Buffer;
       contentType: string | null;
-      errorMessage?: string;
-      abortReason?: AbortReason;
       ttfbMs: number;
       bodyMs: number;
-    }>((resolve, reject) => {
-      // 检查是否已经被中断
-      if (abortSignal.aborted) {
-        reject(new ProxyRequestAbortedError(getAbortReasonFromSignal(abortSignal)));
-        return;
+      errorMessage?: string;
+      abortReason?: AbortReason;
+      forwardRule: ForwardRule;
+    } | null = null;
+
+    for (let i = 0; i < candidateIndexes.length; i++) {
+      const ruleIndex = candidateIndexes[i];
+      const forwardRule = forwards[ruleIndex as number]!;
+
+      if (hooksExecutor && (instanceHooks || forwardRule.hooks)) {
+        try {
+          await hooksExecutor.setForwardHooks(forwardRule.name, forwardRule.hooks ?? null);
+        } catch (err) {
+          console.error("[Hooks] Failed to set forward hooks:", err);
+        }
       }
 
-      let proxyResRef: http.IncomingMessage | null = null;
-      const proxyReq = requestModule.request(
-        {
-          hostname: hookedTargetUrl.hostname,
-          port: hookedTargetUrl.port || defaultPort,
-          path: hookedTargetUrl.pathname + hookedTargetUrl.search,
-          method: hookedMethod,
-          headers: hookedForwardHeaders,
-        },
-        async (proxyRes) => {
-          proxyResRef = proxyRes;
-          // TTFB: 收到响应头的时间
-          const responseStartTime = Date.now();
-          const ttfbMs = responseStartTime - attemptStart;
-          const responseChunks: Buffer[] = [];
+      let targetUrl = buildTargetUrl(forwardRule, requestUrl);
+      const forwardHeaders: http.OutgoingHttpHeaders = { ...req.headers };
+      forwardHeaders.host = targetUrl.host;
+      applyCustomHeaders(forwardHeaders, instanceHeaders);
+      applyCustomHeaders(forwardHeaders, forwardRule.headers ?? null);
 
-          let responseHeaders = { ...proxyRes.headers };
-          let statusCode = proxyRes.statusCode || 502;
-          let statusMessage = proxyRes.statusMessage || "";
+      let hookedMethod = method;
+      let hookedTargetUrl = targetUrl;
+      let hookedRequestBody = originalRequestBody;
+      let hookedForwardHeaders: http.OutgoingHttpHeaders = { ...forwardHeaders };
+      let hasRequestHookChanges = false;
 
-          // 流式进度更新（每秒最多更新一次）
-          let totalReceivedBytes = 0;
-          let lastProgressUpdate = 0;
-          const PROGRESS_THROTTLE_MS = 1000;
-
-          proxyRes.on("data", (chunk: Buffer) => {
-            responseChunks.push(Buffer.from(chunk));
-            totalReceivedBytes += chunk.length;
-
-            const now = Date.now();
-            if (dbRecordId !== null && now - lastProgressUpdate >= PROGRESS_THROTTLE_MS) {
-              lastProgressUpdate = now;
-              updateStreamingProgress(
-                dbRecordId,
-                totalReceivedBytes,
-                ttfbMs,
-                statusCode,
-                statusMessage,
-                responseHeaders as Record<string, string | string[]>,
-              );
-              dbNotifier.notify("update", "proxy_requests", dbRecordId);
-            }
+      if (hooksExecutor?.hasRequestHooks) {
+        try {
+          const hookResult = await hooksExecutor.executeRequestHooks({
+            method,
+            url: targetUrl.href,
+            headers: hookedForwardHeaders as Record<string, string | string[]>,
+            body: hookedRequestBody,
+            signal: abortSignal,
           });
 
-          proxyRes.on("end", async () => {
-            const bodyMs = Date.now() - responseStartTime;
-            let bodyBuffer = Buffer.concat(responseChunks);
-            let contentType = (responseHeaders["content-type"] as string) ?? null;
+          if (hookResult.method && hookResult.method !== hookedMethod) {
+            hookedMethod = hookResult.method;
+            hasRequestHookChanges = true;
+          }
+          if (hookResult.url && hookResult.url !== hookedTargetUrl.href) {
+            hookedTargetUrl = new URL(hookResult.url);
+            hasRequestHookChanges = true;
+            hookedForwardHeaders.host = hookedTargetUrl.host;
+          }
+          if (hookResult.headers) {
+            hookedForwardHeaders = hookResult.headers as http.OutgoingHttpHeaders;
+            hookedForwardHeaders.host = hookedTargetUrl.host;
+            hasRequestHookChanges = true;
+          }
+          if (hookResult.body !== undefined) {
+            const nextBody = Buffer.from(hookResult.body);
+            if (!nextBody.equals(hookedRequestBody)) {
+              hasRequestHookChanges = true;
+            }
+            hookedRequestBody = nextBody;
+          }
+        } catch (err) {
+          console.error("[Hooks] Request hook error:", err);
+        }
+      }
 
-            if (hooksExecutor?.hasResponseHooks) {
-              try {
-                const hookResult = await hooksExecutor.executeResponseHooks({
+      const hookedRequestBodyDataUrl =
+        hookedRequestBody.length > 0
+          ? bufferToDataUrl(hookedRequestBody, requestContentType)
+          : null;
+
+      if (hookedForwardHeaders["content-length"] !== undefined) {
+        if (hookedRequestBody.length > 0) {
+          hookedForwardHeaders["content-length"] = hookedRequestBody.length;
+        } else {
+          delete hookedForwardHeaders["content-length"];
+        }
+      }
+
+      if (dbRecordId === null) {
+        dbRecordId = createProxyRequest({
+          request_id: requestId,
+          timestamp,
+          instance_name: INSTANCE_NAME,
+          forward_name: forwardRule.name,
+          group_name: `${INSTANCE_NAME}/${forwardRule.name}`,
+          status: "pending",
+          abort_reason: null,
+          is_websocket: false,
+          websocket_direction: null,
+          error_message: null,
+          request: {
+            method,
+            url: requestUrl.href,
+            headers: req.headers as Record<string, string | string[]>,
+            forwardedHeaders: forwardHeaders as Record<string, string | string[]>,
+            targetUrl: targetUrl.href,
+            bodyDataUrl: originalRequestBodyDataUrl,
+            bodySize: originalRequestBody.length,
+          },
+          hookedRequest: hasRequestHookChanges
+            ? {
+                method: hookedMethod,
+                url: hookedTargetUrl.href,
+                headers: hookedForwardHeaders as Record<string, string | string[]>,
+                bodyDataUrl: hookedRequestBodyDataUrl,
+                bodySize: hookedRequestBody.length,
+              }
+            : undefined,
+          response: undefined,
+        });
+        // 注册到活跃请求 Map，支持外部中断
+        activeRequests.set(dbRecordId, abortController);
+        debugNotifier("about to notify insert, dbRecordId: %d", dbRecordId);
+        dbNotifier.notify("insert", "proxy_requests", dbRecordId);
+        debugNotifier("notify insert completed");
+      }
+
+      const attemptStart = Date.now();
+      const isHttps = hookedTargetUrl.protocol === "https:";
+      const requestModule = isHttps ? https : http;
+      const defaultPort = isHttps ? 443 : 80;
+
+      const attemptResult = await new Promise<{
+        statusCode: number;
+        statusMessage: string;
+        headers: http.OutgoingHttpHeaders;
+        bodyBuffer: Buffer;
+        contentType: string | null;
+        errorMessage?: string;
+        abortReason?: AbortReason;
+        ttfbMs: number;
+        bodyMs: number;
+      }>((resolve, reject) => {
+        // 检查是否已经被中断
+        if (abortSignal.aborted) {
+          reject(new ProxyRequestAbortedError(getAbortReasonFromSignal(abortSignal)));
+          return;
+        }
+
+        let proxyResRef: http.IncomingMessage | null = null;
+        const proxyReq = requestModule.request(
+          {
+            hostname: hookedTargetUrl.hostname,
+            port: hookedTargetUrl.port || defaultPort,
+            path: hookedTargetUrl.pathname + hookedTargetUrl.search,
+            method: hookedMethod,
+            headers: hookedForwardHeaders,
+          },
+          async (proxyRes) => {
+            proxyResRef = proxyRes;
+            // TTFB: 收到响应头的时间
+            const responseStartTime = Date.now();
+            const ttfbMs = responseStartTime - attemptStart;
+            const responseChunks: Buffer[] = [];
+
+            let responseHeaders = { ...proxyRes.headers };
+            let statusCode = proxyRes.statusCode || 502;
+            let statusMessage = proxyRes.statusMessage || "";
+
+            // 流式进度更新（每秒最多更新一次）
+            let totalReceivedBytes = 0;
+            let lastProgressUpdate = 0;
+            const PROGRESS_THROTTLE_MS = 1000;
+
+            proxyRes.on("data", (chunk: Buffer) => {
+              responseChunks.push(Buffer.from(chunk));
+              totalReceivedBytes += chunk.length;
+
+              const now = Date.now();
+              if (dbRecordId !== null && now - lastProgressUpdate >= PROGRESS_THROTTLE_MS) {
+                lastProgressUpdate = now;
+                updateStreamingProgress(
+                  dbRecordId,
+                  totalReceivedBytes,
+                  ttfbMs,
                   statusCode,
                   statusMessage,
-                  headers: responseHeaders as Record<string, string | string[]>,
-                  body: bodyBuffer,
-                  signal: abortSignal,
-                });
-                if (hookResult.statusCode !== undefined) statusCode = hookResult.statusCode;
-                if (hookResult.statusMessage !== undefined)
-                  statusMessage = hookResult.statusMessage;
-                if (hookResult.headers)
-                  responseHeaders = hookResult.headers as http.IncomingHttpHeaders;
-                if (hookResult.body !== undefined) bodyBuffer = Buffer.from(hookResult.body);
-                contentType = (responseHeaders["content-type"] as string) ?? contentType;
-              } catch (err) {
-                console.error("[Hooks] Response hook error:", err);
+                  responseHeaders as Record<string, string | string[]>,
+                );
+                dbNotifier.notify("update", "proxy_requests", dbRecordId);
               }
-            }
-
-            const cleanedHeaders = sanitizeResponseHeaders(responseHeaders, bodyBuffer.length);
-
-            resolve({
-              statusCode,
-              statusMessage,
-              headers: cleanedHeaders,
-              bodyBuffer,
-              contentType,
-              ttfbMs,
-              bodyMs,
             });
-          });
-        },
-      );
 
-      const cleanup = () => {
-        abortSignal.removeEventListener("abort", handleAbort);
-      };
+            proxyRes.on("end", async () => {
+              const bodyMs = Date.now() - responseStartTime;
+              let bodyBuffer = Buffer.concat(responseChunks);
+              let contentType = (responseHeaders["content-type"] as string) ?? null;
 
-      proxyReq.on("error", (error) => {
-        cleanup();
-        const errorTtfb = Date.now() - attemptStart;
-        const errorBody = Buffer.from(
-          JSON.stringify({
-            error: "代理请求失败",
-            message: error.message,
-          }),
-        );
-        resolve({
-          statusCode: 502,
-          statusMessage: "Bad Gateway",
-          headers: {
-            "content-type": "application/json",
-            "content-length": errorBody.length,
+              if (hooksExecutor?.hasResponseHooks) {
+                try {
+                  const hookResult = await hooksExecutor.executeResponseHooks({
+                    statusCode,
+                    statusMessage,
+                    headers: responseHeaders as Record<string, string | string[]>,
+                    body: bodyBuffer,
+                    signal: abortSignal,
+                  });
+                  if (hookResult.statusCode !== undefined) statusCode = hookResult.statusCode;
+                  if (hookResult.statusMessage !== undefined)
+                    statusMessage = hookResult.statusMessage;
+                  if (hookResult.headers)
+                    responseHeaders = hookResult.headers as http.IncomingHttpHeaders;
+                  if (hookResult.body !== undefined) bodyBuffer = Buffer.from(hookResult.body);
+                  contentType = (responseHeaders["content-type"] as string) ?? contentType;
+                } catch (err) {
+                  console.error("[Hooks] Response hook error:", err);
+                }
+              }
+
+              const cleanedHeaders = sanitizeResponseHeaders(responseHeaders, bodyBuffer.length);
+
+              resolve({
+                statusCode,
+                statusMessage,
+                headers: cleanedHeaders,
+                bodyBuffer,
+                contentType,
+                ttfbMs,
+                bodyMs,
+              });
+            });
           },
-          bodyBuffer: errorBody,
-          contentType: "application/json",
-          errorMessage: error.message,
-          ttfbMs: errorTtfb,
-          bodyMs: 0,
+        );
+
+        const cleanup = () => {
+          abortSignal.removeEventListener("abort", handleAbort);
+        };
+
+        proxyReq.on("error", (error) => {
+          cleanup();
+          const errorTtfb = Date.now() - attemptStart;
+          const errorBody = Buffer.from(
+            JSON.stringify({
+              error: "代理请求失败",
+              message: error.message,
+            }),
+          );
+          resolve({
+            statusCode: 502,
+            statusMessage: "Bad Gateway",
+            headers: {
+              "content-type": "application/json",
+              "content-length": errorBody.length,
+            },
+            bodyBuffer: errorBody,
+            contentType: "application/json",
+            errorMessage: error.message,
+            ttfbMs: errorTtfb,
+            bodyMs: 0,
+          });
         });
+
+        // 监听 abort 信号，中断代理请求
+        const handleAbort = () => {
+          const abortReason = getAbortReasonFromSignal(abortSignal);
+          proxyReq.destroy();
+          proxyResRef?.destroy();
+          cleanup();
+          reject(new ProxyRequestAbortedError(abortReason));
+        };
+        abortSignal.addEventListener("abort", handleAbort);
+
+        // 如果在绑定 listener 之前就已触发 abort，确保立刻中断
+        if (abortSignal.aborted) {
+          handleAbort();
+          return;
+        }
+
+        if (hookedRequestBody.length > 0) proxyReq.write(hookedRequestBody);
+        proxyReq.end();
+      }).catch((err) => {
+        // 处理中断异常
+        if (err instanceof ProxyRequestAbortedError) {
+          const statusMessage =
+            err.abortReason === USER_ABORT ? "User Aborted Request" : "Client Closed Request";
+          const errorMessage =
+            err.abortReason === USER_ABORT ? "Request aborted by user" : "Client disconnected";
+          return {
+            statusCode: 499,
+            statusMessage,
+            headers: {} as http.OutgoingHttpHeaders,
+            bodyBuffer: Buffer.alloc(0),
+            contentType: null,
+            errorMessage,
+            abortReason: err.abortReason,
+            ttfbMs: Date.now() - attemptStart,
+            bodyMs: 0,
+          };
+        }
+        throw err;
       });
 
-      // 监听 abort 信号，中断代理请求
-      const handleAbort = () => {
-        const abortReason = getAbortReasonFromSignal(abortSignal);
-        proxyReq.destroy();
-        proxyResRef?.destroy();
-        cleanup();
-        reject(new ProxyRequestAbortedError(abortReason));
+      const wasAborted = attemptResult.abortReason !== undefined;
+
+      // 上报统计数据（使用 TTFB 作为延迟指标，因为 SSE/event-stream 响应的 bodyMs 可能很长）
+      const isFailureStatus = attemptResult.statusCode >= 400 && attemptResult.statusCode <= 599;
+      const success = !attemptResult.errorMessage && !isFailureStatus;
+
+      // 计算 endpointIndex: 在同名规则组中的位置
+      const endpointIndex = candidateIndexes.indexOf(ruleIndex as number);
+      if (!wasAborted) {
+        forwardStatsManager.sendReport(
+          INSTANCE_NAME,
+          forwardRule.name,
+          endpointIndex,
+          hookedTargetUrl.href,
+          attemptResult.ttfbMs, // 使用 TTFB 而非总耗时，避免流式响应造成延迟统计偏高
+          success,
+        );
+      }
+
+      finalResult = {
+        ...attemptResult,
+        forwardRule,
       };
-      abortSignal.addEventListener("abort", handleAbort);
 
-      // 如果在绑定 listener 之前就已触发 abort，确保立刻中断
-      if (abortSignal.aborted) {
-        handleAbort();
-        return;
+      if (wasAborted) {
+        break;
       }
 
-      if (hookedRequestBody.length > 0) proxyReq.write(hookedRequestBody);
-      proxyReq.end();
-    }).catch((err) => {
-      // 处理中断异常
-      if (err instanceof ProxyRequestAbortedError) {
-        const statusMessage =
-          err.abortReason === USER_ABORT ? "User Aborted Request" : "Client Closed Request";
-        const errorMessage =
-          err.abortReason === USER_ABORT ? "Request aborted by user" : "Client disconnected";
-        return {
-          statusCode: 499,
-          statusMessage,
-          headers: {} as http.OutgoingHttpHeaders,
-          bodyBuffer: Buffer.alloc(0),
-          contentType: null,
-          errorMessage,
-          abortReason: err.abortReason,
-          ttfbMs: Date.now() - attemptStart,
-          bodyMs: 0,
-        };
+      if (!isFailureStatus) {
+        break;
       }
-      throw err;
+
+      const hasMore = i < candidateIndexes.length - 1;
+      if (!hasMore) break;
+    }
+
+    if (!finalResult || !finalResult.forwardRule || dbRecordId === null) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "No available forward result" }));
+      return;
+    }
+
+    const responseBodyDataUrl =
+      finalResult.bodyBuffer.length > 0
+        ? bufferToDataUrl(finalResult.bodyBuffer, finalResult.contentType ?? undefined)
+        : null;
+
+    const isRequestAborted = finalResult.abortReason !== undefined;
+    updateProxyRequest(dbRecordId, {
+      status: isRequestAborted ? "aborted" : finalResult.errorMessage ? "error" : "completed",
+      abort_reason: isRequestAborted ? finalResult.abortReason! : null,
+      error_message: finalResult.errorMessage ?? null,
+      forward_name: finalResult.forwardRule.name,
+      response: {
+        statusCode: finalResult.statusCode,
+        statusMessage: finalResult.statusMessage,
+        headers: finalResult.headers as Record<string, string | string[]>,
+        bodyDataUrl: responseBodyDataUrl,
+        bodySize: finalResult.bodyBuffer.length,
+        ttfbMs: finalResult.ttfbMs,
+        bodyMs: finalResult.bodyMs,
+        contentType: finalResult.contentType ?? null,
+      },
     });
+    dbNotifier.notify("update", "proxy_requests", dbRecordId);
 
-    const wasAborted = attemptResult.abortReason !== undefined;
+    // 清理活跃请求 Map
+    activeRequests.delete(dbRecordId);
 
-    // 上报统计数据（使用 TTFB 作为延迟指标，因为 SSE/event-stream 响应的 bodyMs 可能很长）
-    const isFailureStatus = attemptResult.statusCode >= 400 && attemptResult.statusCode <= 599;
-    const success = !attemptResult.errorMessage && !isFailureStatus;
-
-    // 计算 endpointIndex: 在同名规则组中的位置
-    const endpointIndex = candidateIndexes.indexOf(ruleIndex as number);
-    if (!wasAborted) {
-      forwardStatsManager.sendReport(
-        INSTANCE_NAME,
-        forwardRule.name,
-        endpointIndex,
-        hookedTargetUrl.href,
-        attemptResult.ttfbMs, // 使用 TTFB 而非总耗时，避免流式响应造成延迟统计偏高
-        success,
-      );
+    // 如果已经被中断，不再发送响应
+    if (isClientDisconnected) {
+      return;
     }
 
-    finalResult = {
-      ...attemptResult,
-      forwardRule,
+    res.writeHead(finalResult.statusCode, finalResult.statusMessage, finalResult.headers);
+    res.end(finalResult.bodyBuffer);
+  });
+
+  server.on("upgrade", (req, socket, head) => {
+    const protocol = req.headers["x-forwarded-proto"] || "http";
+    const requestUrl = new URL(
+      req.url || "/",
+      `${protocol}://${req.headers.host || `localhost:${PROXY_PORT}`}`,
+    );
+
+    const matched = matchForwardRule("GET", requestUrl.pathname);
+    if (!matched) {
+      socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    const targetUrl = buildTargetUrl(matched.rule, requestUrl);
+
+    handleWebSocketProxy(req, socket, head, targetUrl, INSTANCE_NAME, matched.rule.name);
+  });
+
+  server.on("error", (error) => {
+    console.error("服务器错误:", error);
+    const resp: WorkerResponse = {
+      type: "server-error",
+      error: String(error),
+      code: (error as NodeJS.ErrnoException).code,
+      stack: error instanceof Error ? error.stack : undefined,
+      port: Number(PROXY_PORT),
     };
-
-    if (wasAborted) {
-      break;
-    }
-
-    if (!isFailureStatus) {
-      break;
-    }
-
-    const hasMore = i < candidateIndexes.length - 1;
-    if (!hasMore) break;
-  }
-
-  if (!finalResult || !finalResult.forwardRule || dbRecordId === null) {
-    res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "No available forward result" }));
-    return;
-  }
-
-  const responseBodyDataUrl =
-    finalResult.bodyBuffer.length > 0
-      ? bufferToDataUrl(finalResult.bodyBuffer, finalResult.contentType ?? undefined)
-      : null;
-
-  const isRequestAborted = finalResult.abortReason !== undefined;
-  updateProxyRequest(dbRecordId, {
-    status: isRequestAborted ? "aborted" : finalResult.errorMessage ? "error" : "completed",
-    abort_reason: isRequestAborted ? finalResult.abortReason! : null,
-    error_message: finalResult.errorMessage ?? null,
-    forward_name: finalResult.forwardRule.name,
-    response: {
-      statusCode: finalResult.statusCode,
-      statusMessage: finalResult.statusMessage,
-      headers: finalResult.headers as Record<string, string | string[]>,
-      bodyDataUrl: responseBodyDataUrl,
-      bodySize: finalResult.bodyBuffer.length,
-      ttfbMs: finalResult.ttfbMs,
-      bodyMs: finalResult.bodyMs,
-      contentType: finalResult.contentType ?? null,
-    },
+    parentPort?.postMessage(resp);
   });
-  dbNotifier.notify("update", "proxy_requests", dbRecordId);
 
-  // 清理活跃请求 Map
-  activeRequests.delete(dbRecordId);
+  dbNotifier.init();
+  forwardStatsManager.init();
 
-  // 如果已经被中断，不再发送响应
-  if (isClientDisconnected) {
-    return;
-  }
+  // 注册 server 到 globalThis，以便 shutdown 消息处理可以访问
+  (globalThis as any).__proxyServer = server;
 
-  res.writeHead(finalResult.statusCode, finalResult.statusMessage, finalResult.headers);
-  res.end(finalResult.bodyBuffer);
-});
-
-server.on("upgrade", (req, socket, head) => {
-  const protocol = req.headers["x-forwarded-proto"] || "http";
-  const requestUrl = new URL(
-    req.url || "/",
-    `${protocol}://${req.headers.host || `localhost:${PROXY_PORT}`}`,
-  );
-
-  const matched = matchForwardRule("GET", requestUrl.pathname);
-  if (!matched) {
-    socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
-  const targetUrl = buildTargetUrl(matched.rule, requestUrl);
-
-  handleWebSocketProxy(req, socket, head, targetUrl, INSTANCE_NAME, matched.rule.name);
-});
-
-server.on("error", (error) => {
-  console.error("服务器错误:", error);
-  const resp: WorkerResponse = {
-    type: "server-error",
-    error: String(error),
-    code: (error as NodeJS.ErrnoException).code,
-    stack: error instanceof Error ? error.stack : undefined,
-    port: Number(PROXY_PORT),
-  };
-  parentPort?.postMessage(resp);
-});
-
-dbNotifier.init();
-forwardStatsManager.init();
-
-// 注册 server 到 globalThis，以便 shutdown 消息处理可以访问
-(globalThis as any).__proxyServer = server;
-
-server.listen(PROXY_PORT, () => {
-  console.log(`Proxy running on http://localhost:${PROXY_PORT} (instance: ${INSTANCE_NAME})`);
-});
-
-// 优雅关闭：当 Worker 被 terminate 时，关闭 server 并释放端口
-process.on("SIGTERM", () => {
-  log.info(`[Shutdown] Received SIGTERM, closing server...`);
-  server.close(() => {
-    log.info(`[Shutdown] Server closed`);
-    process.exit(0);
+  server.listen(PROXY_PORT, () => {
+    console.log(`Proxy running on http://localhost:${PROXY_PORT} (instance: ${INSTANCE_NAME})`);
   });
-});
 
-process.on("SIGINT", () => {
-  log.info(`[Shutdown] Received SIGINT, closing server...`);
-  server.close(() => {
-    log.info(`[Shutdown] Server closed`);
-    process.exit(0);
+  // 优雅关闭：当 Worker 被 terminate 时，关闭 server 并释放端口
+  process.on("SIGTERM", () => {
+    log.info(`[Shutdown] Received SIGTERM, closing server...`);
+    server.close(() => {
+      log.info(`[Shutdown] Server closed`);
+      process.exit(0);
+    });
   });
-});
+
+  process.on("SIGINT", () => {
+    log.info(`[Shutdown] Received SIGINT, closing server...`);
+    server.close(() => {
+      log.info(`[Shutdown] Server closed`);
+      process.exit(0);
+    });
+  });
+}

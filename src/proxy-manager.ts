@@ -1,25 +1,17 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { Worker } from "node:worker_threads";
-import { createLogger, type Logger } from "./logger";
-import type { HooksConfig } from "../types/proxy";
-import type {
-  WorkerMessage,
-  WorkerResponse,
-  InstanceRuntimeConfig,
-} from "../types/worker-messages";
-import { getInstanceByName } from "./config-store";
-import {
-  getInstanceConfigPath,
-  getTempConfigDir,
-  getDataDir,
-} from "./runtime-paths";
+import { createLogger, type Logger } from "./lib/logger";
+import type { HooksConfig } from "./types/proxy";
+import type { WorkerMessage, WorkerResponse, InstanceRuntimeConfig } from "./types/worker-messages";
+import { getInstanceByName } from "./lib/config-store";
+import { getInstanceConfigPath, getTempConfigDir, getDataDir } from "./lib/runtime-paths";
+import { sleep } from "bun";
 
 // 使用 with { type: "file" } 导入 Worker 路径
 // - 开发模式：直接执行 TS 文件
 // - 打包模式：build 脚本会临时修改此路径指向预编译的 JS 文件
-// @ts-expect-error TypeScript 不支持 `with { type: "file" }` 语法，但 Bun 支持
-import proxyServerPath from "../../.build-worker/proxy-server.js" with { type: "file" };
+// // @ts-expect-error TypeScript 不支持 `with { type: "file" }` 语法，但 Bun 支持
+// import proxyServerPath from "../proxy-server.ts" with { type: "file" };
 
 /** Worker 停止超时时间（毫秒） */
 const WORKER_STOP_TIMEOUT_MS = 3000;
@@ -81,6 +73,16 @@ export interface ForwardConfig {
  * - 打包模式：从内嵌的预编译 JS 代码创建 Worker
  */
 export class ProxyManager {
+  static #WorkerIdAcc = 1;
+  static #WorkerId = new WeakMap<Worker, number>();
+  static #getWorkerId(worker: Worker) {
+    let id = ProxyManager.#WorkerId.get(worker);
+    if (!id) {
+      id = this.#WorkerIdAcc++;
+      ProxyManager.#WorkerId.set(worker, id);
+    }
+    return id;
+  }
   private worker: Worker | null = null;
   private readonly instanceName: string;
   private readonly port: number;
@@ -132,16 +134,13 @@ export class ProxyManager {
     const argv = ["-p", String(this.port), "-i", this.instanceName];
     if (configPath) argv.push("-c", configPath);
 
-    // 直接使用导入的 Worker 路径
-    // - 开发模式：proxyServerPath 指向 TS 文件
-    // - 打包模式：proxyServerPath 指向预编译的 JS 文件（由 build 脚本临时修改）
-    this.worker = new Worker(proxyServerPath, { argv });
+    this.worker = new Worker(new URL("./proxy-server.js", import.meta.url).href);
 
     this.configPath = configPath;
     this.startTime = Date.now();
 
-    this.worker.on("message", (payload: unknown) => {
-      const msg = payload as WorkerResponse;
+    this.worker.addEventListener("message", (event) => {
+      const msg = event.data as WorkerResponse;
 
       // 处理 pong 响应，更新心跳时间
       if (msg?.type === "pong") {
@@ -187,33 +186,35 @@ export class ProxyManager {
       }
     });
 
-    this.worker.on("error", (error) => {
+    this.worker.addEventListener("error", (error) => {
       console.error(`[ProxyManager] Worker error (${this.instanceName}):`, error);
       this.handleWorkerDeath();
     });
 
-    this.worker.on("exit", (code) => {
-      if (code !== 0) {
-        this.log.warn(`[ProxyManager] Worker for ${this.instanceName} exited with code ${code}`);
-      }
+    this.worker.addEventListener("close", (event) => {
+      this.log.warn(`[ProxyManager] Worker for ${this.instanceName} exited`, event);
       this.handleWorkerDeath();
     });
+    await this.waitForResponse("env-ready", RESPONSE_TIMEOUT_MS);
+
+    this.worker.postMessage({ type: "pre-init", argv });
 
     // 启动阶段快速捕获端口占用等致命错误
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(resolve, 2500);
-      const handler = (msg: WorkerResponse) => {
+      const handler = (event: MessageEvent) => {
+        const msg = event.data as WorkerResponse;
         if (msg?.type === "server-error") {
           clearTimeout(timer);
-          this.worker?.off("message", handler);
-          this.worker?.terminate().catch(() => {});
+          this.worker?.removeEventListener("message", handler);
+          this.worker?.terminate();
           this.worker = null;
           reject(
             new Error(`Worker failed to listen on port ${msg.port ?? this.port}: ${msg.error}`),
           );
         }
       };
-      this.worker?.on("message", handler);
+      this.worker?.addEventListener("message", handler);
     });
 
     // 发送 init 消息初始化 Worker 中的数据库
@@ -221,7 +222,9 @@ export class ProxyManager {
     this.worker!.postMessage(initMessage);
     const initResponse = await this.waitForResponse("init-result", RESPONSE_TIMEOUT_MS);
     if (initResponse.type === "init-result" && !initResponse.success) {
-      throw new Error(`Worker database init failed: ${(initResponse as any).error || "Unknown error"}`);
+      throw new Error(
+        `Worker database init failed: ${(initResponse as any).error || "Unknown error"}`,
+      );
     }
 
     // 启动健康检查
@@ -265,12 +268,14 @@ export class ProxyManager {
   private waitForWorkerExit(workerRef: Worker): Promise<void> {
     return new Promise<void>((resolve) => {
       const timeoutId = setTimeout(() => {
-        this.log.warn(`[ProxyManager] Worker exit timeout after ${WORKER_STOP_TIMEOUT_MS}ms, force terminating...`);
-        workerRef.terminate().catch(() => {});
+        this.log.warn(
+          `[ProxyManager] Worker exit timeout after ${WORKER_STOP_TIMEOUT_MS}ms, force terminating...`,
+        );
+        workerRef.terminate();
         resolve();
       }, WORKER_STOP_TIMEOUT_MS);
 
-      workerRef.once("exit", () => {
+      workerRef.addEventListener("close", () => {
         clearTimeout(timeoutId);
         resolve();
       });
@@ -427,19 +432,20 @@ export class ProxyManager {
   private waitForResponse(expectedType: string, timeoutMs: number): Promise<WorkerResponse> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.worker?.removeListener("message", handler);
+        this.worker?.removeEventListener("message", handler);
         reject(new Error(`Timeout waiting for ${expectedType}`));
       }, timeoutMs);
 
-      const handler = (msg: WorkerResponse) => {
+      const handler = (event: MessageEvent) => {
+        const msg = event.data as WorkerResponse;
         if (msg?.type === expectedType) {
           clearTimeout(timeout);
-          this.worker?.removeListener("message", handler);
+          this.worker?.removeEventListener("message", handler);
           resolve(msg);
         }
       };
 
-      this.worker?.on("message", handler);
+      this.worker?.addEventListener("message", handler);
     });
   }
 
@@ -449,19 +455,20 @@ export class ProxyManager {
   ): Promise<Extract<WorkerResponse, { type: "abort-result" }>> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.worker?.removeListener("message", handler);
+        this.worker?.removeEventListener("message", handler);
         reject(new Error(`Timeout waiting for abort-result for ${dbRecordId}`));
       }, timeoutMs);
 
-      const handler = (msg: WorkerResponse) => {
+      const handler = (event: MessageEvent) => {
+        const msg = event.data as WorkerResponse;
         if (msg?.type === "abort-result" && msg.dbRecordId === dbRecordId) {
           clearTimeout(timeout);
-          this.worker?.removeListener("message", handler);
+          this.worker?.removeEventListener("message", handler);
           resolve(msg);
         }
       };
 
-      this.worker?.on("message", handler);
+      this.worker?.addEventListener("message", handler);
     });
   }
 
@@ -469,7 +476,7 @@ export class ProxyManager {
     const running = this.isRunning();
     return {
       running,
-      pid: this.worker?.threadId,
+      pid: this.worker ? ProxyManager.#getWorkerId(this.worker) : undefined,
       port: this.port,
       listeningPort: running ? this.port : undefined,
       uptime: this.startTime ? Date.now() - this.startTime : undefined,
@@ -507,7 +514,7 @@ export class ProxyManager {
     const configDir = getTempConfigDir();
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = getInstanceConfigPath(this.instanceName);
-    
+
     // 写入 InstanceRuntimeConfig 格式，不是 ProxyConfigFile 格式
     const instanceConfig: InstanceRuntimeConfig = {
       name: this.instanceName,
@@ -515,12 +522,12 @@ export class ProxyManager {
       hooks: this.instanceHooks,
       forwards,
     };
-    
+
     fs.writeFileSync(configPath, JSON.stringify(instanceConfig, null, 2), "utf-8");
     this.log.debug(`[ProxyManager] Instance config written to ${configPath}`);
     return configPath;
   }
-  
+
   /** 获取 instance 配置文件路径 */
   getConfigPath(): string {
     return getInstanceConfigPath(this.instanceName);
@@ -552,7 +559,9 @@ export class ProxyManager {
       const now = Date.now();
       // 检查上次 pong 是否超过阈值（允许一次失败）
       if (this.lastPongTime > 0 && now - this.lastPongTime > HEALTH_CHECK_FAILURE_THRESHOLD_MS) {
-        this.log.warn(`Health check failed for ${this.instanceName}, no pong in ${HEALTH_CHECK_FAILURE_THRESHOLD_MS}ms`);
+        this.log.warn(
+          `Health check failed for ${this.instanceName}, no pong in ${HEALTH_CHECK_FAILURE_THRESHOLD_MS}ms`,
+        );
         this.handleWorkerDeath();
         return;
       }

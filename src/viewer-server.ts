@@ -7,10 +7,11 @@ import { codeToHtml } from "shiki";
 import type { HighlightRequest, HighlightResponse } from "./services/highlight.protocol";
 import { formatCode, type FormatRequest, type FormatResponse } from "./lib/biome-formatter";
 import { decompressData, type DecompressRequest, type DecompressResponse } from "./lib/decompress";
-import type { ProxyLogMessage } from "./lib/proxy-manager";
+import type { ProxyLogMessage } from "./proxy-manager";
 import type { ProxyInstancesManager } from "./proxy-instances-manager";
 import { db } from "./lib/db";
 import type { ProxyForwardConfig } from "./types/proxy";
+import viewerHtml from "./viewer.html";
 import {
   getAllInstances,
   getInstanceByName,
@@ -34,37 +35,12 @@ import { extractContentTypeFromHeaders, isTextLikeMime } from "./lib/http-utils"
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
 import { forwardStatsManager } from "./lib/forward-stats-manager";
 import { reorderForwardsByIndexes as reorderForwardsByIndexesDirect } from "./lib/config-store";
-import { getProxyStaticDir, getStandalonePaths, isStandaloneBinary, getDataDir } from "./lib/runtime-paths";
-
-// ========== HTML 资源加载 ==========
-// 根据运行模式选择 HTML 内容：
-// - 打包模式（standalone binary）：使用预编译的内联 HTML
-// - 开发模式：使用 Bun 的 HTMLBundle（由 Bun.serve 自动处理编译）
-
-/** 打包模式下的预编译 HTML 内容 */
-let viewerHtmlContent: string | null = null;
-
-/** 开发模式下的 HTMLBundle（用于 Bun.serve 的 routes 配置） */
-let viewerHtmlBundle: any = null;
-
-if (isStandaloneBinary()) {
-  // 打包模式：从预编译模块导入内联 HTML
-  // 注意：这个导入路径在打包时会被 build.ts 生成的模块替换
-  const { BUNDLED_VIEWER_HTML } = await import("../.build-frontend/bundled-viewer");
-  viewerHtmlContent = BUNDLED_VIEWER_HTML;
-} else {
-  // 开发模式：导入 HTMLBundle
-  // Bun 会自动处理 HTML 文件中引用的 script/link 标签的编译
-  // 参考文档: https://bun.sh/docs/bundler/fullstack
-  viewerHtmlBundle = (await import("./viewer.html")).default;
-}
-
-/** 获取打包模式下的 viewer HTML 响应 */
-function getViewerHtmlResponse(): Response {
-  return new Response(viewerHtmlContent, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
-}
+import {
+  getProxyStaticDir,
+  getStandalonePaths,
+  isStandaloneBinary,
+  getDataDir,
+} from "./lib/runtime-paths";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -113,7 +89,9 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
       isWebSocket: req.is_websocket,
       websocketDirection: req.websocket_direction,
       errorMessage: req.error_message,
-      targetUrl: hasHookedRequest ? req.hookedRequest!.url : (req.request.targetUrl ?? req.request.url),
+      targetUrl: hasHookedRequest
+        ? req.hookedRequest!.url
+        : (req.request.targetUrl ?? req.request.url),
       originUrl: req.request.url,
       forwardedHeaders: req.request.forwardedHeaders,
       request: {
@@ -468,7 +446,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           try {
             const body = await req.json();
             saveConfig(body);
-            
+
             // 同步 autoSortSameNameForwards 状态到 forwardStatsManager
             const config = loadConfig();
             for (const instance of config.instances) {
@@ -477,7 +455,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
                 instance.settings?.autoSortSameNameForwards ?? false,
               );
             }
-            
+
             const message = JSON.stringify({ type: "config-changed" });
             for (const client of wsClients) {
               try {
@@ -717,7 +695,10 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           try {
             const id = parseInt(req.params.id);
             if (isNaN(id)) {
-              return Response.json({ success: false, error: "Invalid request ID" }, { status: 400 });
+              return Response.json(
+                { success: false, error: "Invalid request ID" },
+                { status: 400 },
+              );
             }
             const success = dbDeleteProxyRequest(id);
             if (success) {
@@ -736,7 +717,10 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           try {
             const id = parseInt(req.params.id);
             if (isNaN(id)) {
-              return Response.json({ success: false, error: "Invalid request ID" }, { status: 400 });
+              return Response.json(
+                { success: false, error: "Invalid request ID" },
+                { status: 400 },
+              );
             }
 
             // 获取请求信息以确定所属实例
@@ -748,7 +732,10 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             // 检查请求是否可以中断（只有 pending 和 streaming 状态可以中断）
             if (request.status !== "pending" && request.status !== "streaming") {
               return Response.json(
-                { success: false, error: "Request cannot be aborted (already completed or errored)" },
+                {
+                  success: false,
+                  error: "Request cannot be aborted (already completed or errored)",
+                },
                 { status: 400 },
               );
             }
@@ -805,7 +792,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             if (isStandaloneBinary()) {
               return Response.json(
                 { error: "Standalone build is not supported in compiled binary" },
-                { status: 501 }
+                { status: 501 },
               );
             }
 
@@ -927,17 +914,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       },
 
       // ========== HTML 页面路由 ==========
-      // 开发模式：使用 HTMLBundle，Bun 会自动处理 script/link 的编译和 HMR
-      // 打包模式：使用预编译的内联 HTML
-      ...(viewerHtmlBundle
-        ? { "/*": viewerHtmlBundle }
-        : {
-            "/*": {
-              GET() {
-                return getViewerHtmlResponse();
-              },
-            },
-          }),
+      "/*": viewerHtml,
     },
 
     async fetch(req, server) {

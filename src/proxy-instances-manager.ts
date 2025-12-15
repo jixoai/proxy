@@ -3,7 +3,7 @@ import {
   type ProxyStatus,
   type ProxyLogMessage,
   type ForwardConfig,
-} from "./lib/proxy-manager";
+} from "./proxy-manager";
 import { getAllInstances, getNormalizedForwards } from "./lib/config-store";
 import { killPort } from "./lib/kill-port";
 import { createLogger, type Logger } from "./lib/logger";

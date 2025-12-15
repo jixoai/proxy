@@ -22,6 +22,7 @@ export interface InstanceRuntimeConfig {
 
 /** Worker 消息类型 */
 export type WorkerMessage =
+  | { type: "pre-init"; argv: string[] }
   | { type: "init"; dataDir: string }
   | { type: "reload"; config: InstanceRuntimeConfig }
   | { type: "get-config" }
