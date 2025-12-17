@@ -2,7 +2,10 @@ import { spawn, type Subprocess } from "bun";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import { Buffer } from "node:buffer";
+import createDebug from "debug";
 import type { HookConfig, HooksConfig } from "../types/proxy";
+
+const debug = createDebug("proxy:hooks");
 
 export interface RequestHookParams {
   method: string;
@@ -194,7 +197,7 @@ class HookProcess {
         ]);
         this.listenUrl = listenUrl;
         await callback.close().catch(() => undefined);
-        console.log(`[HookPool:${this.hashId}] Started: ${args.join(" ")} -> ${listenUrl}`);
+        debug(`[HookPool:${this.hashId}] Started: ${args.join(" ")} -> ${listenUrl}`);
       } catch (err) {
         await callback.close().catch(() => undefined);
         this.process?.kill();
@@ -307,24 +310,45 @@ class HookProcess {
       this.process = null;
       this.listenUrl = null;
       this.readyPromise = null;
-      console.log(`[HookPool:${this.hashId}] Stopped`);
+      debug(`[HookPool:${this.hashId}] Stopped`);
     }
   }
 }
 
 class HooksPool {
   private pool = new Map<string, HookProcess>();
+  private pending = new Map<string, Promise<HookProcess>>();
 
   async acquire(config: HookConfig): Promise<HookProcess> {
     const hashId = computeConfigHash(config);
-    let hook = this.pool.get(hashId);
 
-    if (!hook) {
-      hook = new HookProcess(config, hashId);
-      await hook.start();
-      this.pool.set(hashId, hook);
+    // 已存在，直接返回
+    const existing = this.pool.get(hashId);
+    if (existing) {
+      existing.addRef();
+      return existing;
     }
 
+    // 正在启动中，等待完成后返回
+    const pendingPromise = this.pending.get(hashId);
+    if (pendingPromise) {
+      const hook = await pendingPromise;
+      hook.addRef();
+      return hook;
+    }
+
+    // 创建启动 promise 并记录，防止重入
+    const startPromise = (async () => {
+      const hook = new HookProcess(config, hashId);
+      await hook.start();
+      this.pool.set(hashId, hook);
+      this.pending.delete(hashId);
+      return hook;
+    })();
+
+    this.pending.set(hashId, startPromise);
+
+    const hook = await startPromise;
     hook.addRef();
     return hook;
   }
@@ -405,7 +429,7 @@ export class HooksExecutor {
     }
 
     if (requestConfigs.length > 0 || responseConfigs.length > 0) {
-      console.log(
+      debug(
         `[HooksExecutor:${this.instanceName}] Started with ${requestConfigs.length} request hooks, ${responseConfigs.length} response hooks`,
       );
     }
@@ -426,26 +450,37 @@ export class HooksExecutor {
   }
 
   async setForwardHooks(forwardName: string, hooks: HooksConfig | null | undefined): Promise<void> {
-    await Promise.all(this.forwardRequestHooks.map((h) => globalHooksPool.release(h)));
-    await Promise.all(this.forwardResponseHooks.map((h) => globalHooksPool.release(h)));
-    this.forwardRequestHooks = [];
-    this.forwardResponseHooks = [];
+    // 保存旧的 hooks 引用，稍后释放
+    const oldRequestHooks = this.forwardRequestHooks;
+    const oldResponseHooks = this.forwardResponseHooks;
 
+    // 先 acquire 新的 hooks（这样如果配置相同，引用计数会先+1）
     const requestConfigs = this.normalizeHooks(hooks?.request);
     const responseConfigs = this.normalizeHooks(hooks?.response);
 
+    const newRequestHooks: HookProcess[] = [];
+    const newResponseHooks: HookProcess[] = [];
+
     for (const config of requestConfigs) {
       const hook = await globalHooksPool.acquire(config);
-      this.forwardRequestHooks.push(hook);
+      newRequestHooks.push(hook);
     }
 
     for (const config of responseConfigs) {
       const hook = await globalHooksPool.acquire(config);
-      this.forwardResponseHooks.push(hook);
+      newResponseHooks.push(hook);
     }
 
+    // 更新实例引用
+    this.forwardRequestHooks = newRequestHooks;
+    this.forwardResponseHooks = newResponseHooks;
+
+    // 最后释放旧的 hooks（如果配置相同，引用计数-1后仍>0，不会销毁）
+    await Promise.all(oldRequestHooks.map((h) => globalHooksPool.release(h)));
+    await Promise.all(oldResponseHooks.map((h) => globalHooksPool.release(h)));
+
     if (requestConfigs.length > 0 || responseConfigs.length > 0) {
-      console.log(
+      debug(
         `[HooksExecutor:${this.instanceName}/${forwardName}] Set forward hooks: ${requestConfigs.length} request, ${responseConfigs.length} response`,
       );
     }
