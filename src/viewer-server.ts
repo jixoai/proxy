@@ -198,22 +198,25 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     for (const instance of getAllInstances()) {
       if (!instance.settings?.autoSortSameNameForwards) continue;
 
-      // 按 forward name 分组
-      const forwardGroups = new Map<string, ForwardMatcher[]>();
-      instance.forwards.forEach((f, idx) => {
-        // 只处理与变更 forwardId 相关的 forward
-        if (!f.id || !changedIdSet.has(f.id)) {
-          return;
+      // 只评估“包含变更 forwardId”的同名组（但评估时需要带上组内所有 forwards）
+      const changedForwardNames = new Set<string>();
+      for (const forward of instance.forwards) {
+        if (forward.id && changedIdSet.has(forward.id)) {
+          changedForwardNames.add(forward.name);
         }
-        const group = forwardGroups.get(f.name) ?? [];
-        group.push({ id: f.id, index: idx });
-        forwardGroups.set(f.name, group);
-      });
+      }
+      if (changedForwardNames.size === 0) continue;
 
       let hasReorder = false;
       const nextOrder = instance.forwards.map((_, idx) => idx);
 
-      for (const [forwardName, forwards] of forwardGroups) {
+      for (const forwardName of changedForwardNames) {
+        const forwards: ForwardMatcher[] = [];
+        instance.forwards.forEach((f, idx) => {
+          if (f.name !== forwardName) return;
+          if (!f.id) return;
+          forwards.push({ id: f.id, index: idx });
+        });
         if (forwards.length < 2) continue;
 
         const result = evaluateForwards(forwards, samplesMap);

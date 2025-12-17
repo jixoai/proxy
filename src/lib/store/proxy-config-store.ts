@@ -80,10 +80,11 @@ export class ProxyConfigStore extends BaseStore<ProxyConfigFile> {
     if (fs.existsSync(resolvedPath)) {
       const content = fs.readFileSync(resolvedPath, "utf-8");
       const parsed = parseConfigFile(content);
+      const beforeEnsureIds = JSON.stringify(parsed);
       // 确保所有 forwards 都有 id
       initialData = ensureForwardIds(parsed);
       // 检查是否有变更（生成了新 id）
-      needsSave = JSON.stringify(parsed) !== JSON.stringify(initialData);
+      needsSave = beforeEnsureIds !== JSON.stringify(initialData);
     } else if (createIfMissing) {
       initialData = ensureForwardIds(ProxyConfigStore.createDefaultConfig());
       needsSave = true;

@@ -37,7 +37,7 @@ const STATS_CHANNEL_NAME = "proxy-forward-stats";
 export interface RequestSample {
   /** 请求时间戳（用于时间窗口过滤） */
   timestamp: number;
-  /** response headers 到达的时间戳 */
+  /** TTFB (ms): 从请求发出到收到响应头的耗时 */
   ttfbMs: number;
   /** res.ok() */
   success: boolean;
@@ -69,6 +69,7 @@ export interface StatsReportMessage {
   /** forward 唯一标识 */
   forwardId: string;
   timestamp: number;
+  /** TTFB (ms): 从请求发出到收到响应头的耗时 */
   ttfbMs: number;
   success: boolean;
 }

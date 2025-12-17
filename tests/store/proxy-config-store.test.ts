@@ -78,6 +78,29 @@ describe("ProxyConfigStore", () => {
       expect(instances[0]!.port).toBe(8000);
     });
 
+    test("should persist generated forward ids on init", () => {
+      const existingConfig = {
+        instances: [
+          {
+            ...createTestInstance("existing", 8000),
+            forwards: [createTestForward("f1", "https://example.com")],
+          },
+        ],
+      };
+      fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify(existingConfig));
+
+      store = new ProxyConfigStore({ filePath: TEST_CONFIG_PATH });
+
+      const savedRaw = fs.readFileSync(TEST_CONFIG_PATH, "utf-8");
+      const saved = JSON.parse(savedRaw) as {
+        instances: Array<{ forwards: Array<{ id?: string }> }>;
+      };
+      const id = saved.instances[0]?.forwards[0]?.id;
+      expect(typeof id).toBe("string");
+      if (typeof id !== "string") throw new Error("id should be generated");
+      expect(id.length).toBeGreaterThan(0);
+    });
+
     test("should throw if file missing and createIfMissing is false", () => {
       expect(() => {
         new ProxyConfigStore({

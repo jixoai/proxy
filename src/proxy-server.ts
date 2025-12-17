@@ -821,9 +821,7 @@ async function main(argv: string[]) {
       const success = !attemptResult.errorMessage && !isFailureStatus;
 
       if (!wasAborted) {
-        // timestamp: 请求时间戳, ttfbMs: 收到响应头的时间戳
-        const ttfbTimestamp = startTime + attemptResult.ttfbMs;
-        forwardStatsStore.sendReport(forwardRule.id, startTime, ttfbTimestamp, success);
+        forwardStatsStore.sendReport(forwardRule.id, startTime, attemptResult.ttfbMs, success);
       }
 
       finalResult = {
