@@ -7,7 +7,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { BroadcastChannel, threadId, isMainThread } from "node:worker_threads";
+import { threadId, isMainThread } from "node:worker_threads";
 import createDebug from "debug";
 import { createLogger } from "./logger";
 
@@ -121,13 +121,20 @@ export class DbListener extends EventEmitter {
 
         const notification = event.data as DbChangeNotification | undefined;
         if (!notification) {
-          this.log.warn("[DbListener] Received message but no data:", { event, eventData: event.data });
+          this.log.warn("[DbListener] Received message but no data:", {
+            event,
+            eventData: event.data,
+          });
           return;
         }
 
         debugNotifier("received message: %o", notification);
-        debugNotifier("my processId: %s, sender: %s, same: %s",
-          this.processId, notification.sender, notification.sender === this.processId);
+        debugNotifier(
+          "my processId: %s, sender: %s, same: %s",
+          this.processId,
+          notification.sender,
+          notification.sender === this.processId,
+        );
 
         if (notification.sender === this.processId) return;
 

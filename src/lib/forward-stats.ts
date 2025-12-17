@@ -241,8 +241,28 @@ export class ForwardStatsStore extends EventEmitter {
   private autoSortDebounceTimer: NodeJS.Timeout | null = null;
   private pendingAutoSortForwardIds = new Set<string>();
 
-  /** 初始化 */
+  /**
+   * 初始化（仅用于发送端，如 proxy-server Worker）
+   * 只创建 channel 用于发送，不监听消息
+   */
   init(): void {
+    if (this.channel) return;
+
+    try {
+      this.channel = new BroadcastChannel(STATS_CHANNEL_NAME);
+      // 发送端不设置 onmessage，避免接收自己发送的消息
+    } catch (error) {
+      console.error("[ForwardStats] Failed to init BroadcastChannel:", error);
+    }
+
+    this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
+  }
+
+  /**
+   * 启动监听（仅用于接收端，如 viewer-server 主进程）
+   * 创建 channel 并监听消息
+   */
+  startListening(): void {
     if (this.channel) return;
 
     try {
@@ -258,7 +278,7 @@ export class ForwardStatsStore extends EventEmitter {
         }
       };
     } catch (error) {
-      console.error("[ForwardStats] Failed to init BroadcastChannel:", error);
+      console.error("[ForwardStats] Failed to start listening:", error);
     }
 
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);

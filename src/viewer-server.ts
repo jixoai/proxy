@@ -157,7 +157,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
   const logClients = new Set<ServerWebSocket<unknown>>();
   const statsClients = new Set<ServerWebSocket<unknown>>();
 
-  forwardStatsStore.init();
+  forwardStatsStore.startListening();
 
   const broadcastConfigChanged = () => {
     const message = JSON.stringify({ type: "config-changed" });

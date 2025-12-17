@@ -969,7 +969,6 @@ BUG：我发现终端一直在报告这个日志 `[droid-to-claude] Listening on
 
 ---
 
-
 还有，我发现cli的description是中文，请改成英文。
 
 ---
@@ -979,6 +978,7 @@ BUG：我发现终端一直在报告这个日志 `[droid-to-claude] Listening on
 
 关于open的解决方案，
 这是我调查的结果：
+
 ```
 **`react-dev-utils/openBrowser`** (最推荐)
     *   这是 Create React App 内部使用的模块，逻辑非常完善。
@@ -989,6 +989,7 @@ BUG：我发现终端一直在报告这个日志 `[droid-to-claude] Listening on
 ---
 
 修复这个报错
+
 ```
 [proxy-server:llm-lab] UnhandledRejection: Error: Database not initialized. Call initDatabase() first after setting data directory.
     at getDb (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/lib/db.ts:16:15)
@@ -1016,3 +1017,81 @@ BUG：我发现终端一直在报告这个日志 `[droid-to-claude] Listening on
 
 不是啊,我还是没搞明白你的方案,我觉得你被当下的的代码带偏了,你最好再看看我给你的commit。我的
 意思是,使用符合直觉的方案:`new Worker(import.meta.resolve("./proxy-server.ts"))`,然后用bun-build-plugin去解析这里的代码,让最终编译出来的代码是`import.meta.resolve(import.meta.resolve("../<bundle-assets>/<worker-entry>/index.js"))`。
+
+---
+
+关于 ProxyInstanceConfig 的同步问题,没那么复杂,我来跟你解释一下如何实现.
+
+1. 首先前端只是辅助视觉展示,系统功能不能依靠前端来实现核心功能,更不会因为多个前端实例而导致冲突
+2. 配置文件是唯一可信来源,核心逻辑是“配置文件是程序内存的一部分”,这意味着两件事情:
+   1. 用户可以不使用前端,直接修改配置文件,也可以做到“完全一样的”效果,有些一些配置是给前端用的,比如autoWatchConfig是用来控制是否要把最新配置推送给前端,但是像autoSortSameNameForwards、autoPushConfig都是给后端用的. 这里补充说明一下autoWatchConfig=false的意义:不再订阅配置文件的变更,在当下这个配置文件的基础上我做了一些修改,然后点击保存,就把我视觉上看到的这个配置直接硬写入配置文件了.
+   2. proxy-config.json 是我们管理器的“单一可信数据来源”, 而dbPath中,会生成 ProxyInstanceConfig 配置文件,这个文件其实就是 ProxyInstance 在监听读取的文件,这是它的唯一可信来源:
+3. 如果理解了以上的逻辑,我来举例某个场景让你更加清晰地理解核心的意义和作用:
+   1. 我同时打开了两个页面,默认把autoWatchConfig都打开了,也就是说二者都能收到实时的 proxy-config.json推送
+   2. 这时候我在A页面上修改了配置,底层逻辑是,A页面首先做乐观更新,同时发起修改请求,然后由通过接口,到达底层 proxyConfigStore(这里用`*Store`的命名方式来代表:“配置文件是程序内存的一部分”,Store的作用是将磁盘和内存做了统一:通过内存修改会落地磁盘,同时会触发文件变更再次推送到内存;或者也可以直接修改磁盘从而直接推送到内存;内存再提供订阅功能对外广播变更.)
+   3. 同理ProxyInstance(运行在Worker中)自身有一个 proxyInstanceConfigStore,通过worker通讯收到变更指令,让 proxyInstanceConfigStore 进行set操作; 反过来说,通过修改 `instance-*-config.json`,也会被 proxyInstanceConfigStore 监听到,然后触发更新.有了更新就会引发天推送
+   4. 总结一下: A页面 -(发起配置修改)-> proxyConfigStore.set -(落地磁盘,通过watch事件,再次触发proxyConfigStore.set,如果有变更,那么就 emit-change-event)-> autoPushConfig对应的逻辑收到change-event,执行推送代码, -(通过worker通讯发去修改消息)-> proxyInstanceConfigStore.set -(落地磁盘,通过watch事件,再次触发proxyInstanceConfigStore.set,如果有变更,那么就 emit-change-event)-> 后台收到worker的proxyInstanceConfigStore的事件 -(推送配置变更到前端)-> AB两个页面都收到推送并更新了界面上的proxyInstanceConfig
+
+---
+
+开始Store内核的开发,这次我们要引入单元测试(可以基于vitest@4或者bun内置的test),确保Store的可靠性
+并通过合理优化架构,围绕Store实现我们的内核,实现一系列的单元测试.
+完成Store为基础的内核后,再进行 http-api、websocket 的测试.
+
+---
+
+```
+[proxy-viewer] UnhandledRejection: TypeError: undefined is not an object (evaluating 'f.name')
+    at <anonymous> (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/viewer-server.ts:187:13)
+    at forEach (native:1:11)
+    at <anonymous> (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/viewer-server.ts:186:25)
+    at <anonymous> (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/viewer-server.ts:176:14)
+    at emit (node:events:95:22)
+    at <anonymous> (/Users/kzf/Dev/GitHub/jixoai-labs/proxy/src/lib/forward-stats-manager.ts:352:16)
+```
+
+---
+
+不行,RequestSample中还是得记录 forward 的信息,因为有些forwards可能用了完全一样的targetUrl+method配置.
+
+对此要完成这个改动,我们需要更加彻底地进行重构.
+
+1. 我们为forward新增一个 id 的字段,如果为空,那么默认填生成一个uuid, 前端在新增规则的时候,这uuid也是自动生成的,修改的时候,这个uuid也是只读的.但它本质上只是一个字符串,不用一定要基于uuid的规则去限制用户仍然可以使用直接修改配置文件的方式去修改这个forward.id. 但是我们再ConfigStore内会做冲突校验,如果存在同样的forward.id, 那么后续重复项的自动通过新生成uuid进行覆盖
+2. 有了id,我们的很多使用forwardName去记录的数据,现在都可以用 forwardId 来替代了
+3. 包括RequestSample也可以补充forwardId字段,同时samplesMap的key可以直接用forwardId来存储
+
+4. 不要使用any类型。
+
+---
+
+我发现hookPool中的hookProcess会一直被释放重启:
+
+```
+...
+[HookPool:d392bdc311ee144f] Started: bun droid-to-claude-rewrite.ts -> http://127.0.0.1:51993/
+[HooksExecutor:llm-lab/droid] Set forward hooks: 1 request, 0 response
+[HookPool:d392bdc311ee144f] Stopped
+[HookPool:d392bdc311ee144f] Started: bun droid-to-claude-rewrite.ts -> http://127.0.0.1:58315/
+[HooksExecutor:llm-lab/droid] Set forward hooks: 1 request, 0 response
+[HookPool:d392bdc311ee144f] Stopped
+...
+```
+
+这说明违反了我的设计:
+
+```md
+1. hooksPool 使用引用计数（使用`Set<string/*reasonId*/>`）来实现 hookProcess 的管理
+2. 每一个 hookProcess 对应的是配置文件中的一个hook配置，基于hook配置计算出一个hash作为hookId，一个hookId只会有一个hookProcess
+3. 配置会对 hookProcess 做一次引用，所以如果配置变更了（来自线程通讯对配置做热更新），新配置会向hooksPool注册hookId，也就是引用+1，旧配置会被释放，也就是引用-1。
+4. 每一个请求转发的处理，用到相关的hookProcess，也会引用+1，请求处理完成后，则是引用-1
+5. 总结：基于以上的逻辑，如果旧配置被更新成新配置，然后所有的相关的请求也都处理完成了，hookProcess的引用计数=0了，才会释放hookProcess。
+6. 总结：基于以上的逻辑，如果配置没有更新，即便没有任何请求转发，那么hookProcess也不会释放，因为配置对它有引用+1
+```
+
+---
+
+dbPath 默认值为:"~/.jixo/.proxy/${VERSION}",这里用抽象的字段定义. 意味着前端显示和实际完整路径都需要展示出来,还需要有一个“i”,hover可以看到tooltip介绍语法:比如`${VERSION}`这种特殊标记
+
+---
+
+在我 hover 到某个“路径”的时候,我希望能在 tooltip 看到对应的 forward的信息,包括 name+description
