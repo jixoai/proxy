@@ -8,6 +8,7 @@ import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import * as path from "node:path";
 import { initDatabase, DatabaseSchemaError } from "./lib/db";
+import { cleanupOrphanStreamingRequests } from "./lib/db-requests";
 import { initConfigStore, loadConfig, saveConfig, getConfigFilePath, setConfigFilePath } from "./lib/config-store";
 import { ProxyInstancesManager } from "./proxy-instances-manager";
 import { startViewerServer } from "./viewer-server";
@@ -134,6 +135,9 @@ async function main() {
   // 初始化数据库
   console.log("[Init] Initializing database...");
   initDatabase();
+
+  // 清理孤儿 streaming/pending 请求（程序重启后这些请求已无法继续）
+  cleanupOrphanStreamingRequests();
 
   // 创建代理实例管理器
   console.log("[Init] Creating ProxyInstancesManager...");

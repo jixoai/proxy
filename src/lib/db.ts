@@ -4,7 +4,8 @@ import * as path from "node:path";
 import { getDbPath, ensureDataDir } from "./runtime-paths";
 
 // Schema 版本号 - 每次数据库结构变更时递增
-const SCHEMA_VERSION = 1;
+// v2: 添加虚拟列索引优化 + streaming 专用列
+const SCHEMA_VERSION = 2;
 
 // 延迟初始化数据库实例
 // 必须在 setDataDir() 调用之后才能访问
@@ -83,7 +84,7 @@ export function initDatabase() {
   const dbVersion = versionRow ? parseInt(versionRow.value, 10) : 0;
 
   if (dbVersion === 0) {
-    // 新数据库，初始化 schema
+    // 新数据库，初始化 schema v2
     _db.run(`
       CREATE TABLE IF NOT EXISTS proxy_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,12 +92,32 @@ export function initDatabase() {
         instance_name TEXT,
         forward_name TEXT,
         group_name TEXT,
-        data TEXT NOT NULL
+        -- 实体列：用于快速更新 streaming 进度
+        status TEXT NOT NULL DEFAULT 'pending',
+        response_body_size INTEGER NOT NULL DEFAULT 0,
+        -- JSON 数据
+        data TEXT NOT NULL,
+        -- 虚拟列：从 JSON 提取，用于索引加速查询
+        method TEXT GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.request.method')) STORED,
+        status_code INTEGER GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.response.statusCode')) STORED,
+        request_url TEXT GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.request.url')) STORED
       )
     `);
 
+    // 索引：时间倒序（主要查询模式）
     _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_time ON proxy_requests(timestamp DESC)");
+    // 索引：分组过滤
     _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_group ON proxy_requests(group_name)");
+    // 索引：实例过滤
+    _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_instance ON proxy_requests(instance_name)");
+    // 索引：转发规则过滤
+    _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_forward ON proxy_requests(forward_name)");
+    // 索引：方法过滤
+    _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_method ON proxy_requests(method)");
+    // 索引：状态码过滤
+    _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_status_code ON proxy_requests(status_code)");
+    // 索引：请求状态（用于清理孤儿 streaming）
+    _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_status ON proxy_requests(status)");
 
     // 记录版本号
     _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [

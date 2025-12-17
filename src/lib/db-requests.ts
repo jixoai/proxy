@@ -89,13 +89,15 @@ export function createProxyRequest(request: Omit<LoggedRequest, "id">): number {
     group_name: request.group_name ?? coerceGroupName(request.instance_name, request.forward_name),
   });
   const stmt = db.query(
-    "INSERT INTO proxy_requests (timestamp, instance_name, forward_name, group_name, data) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO proxy_requests (timestamp, instance_name, forward_name, group_name, status, response_body_size, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
   );
   const result = stmt.run(
     request.timestamp,
     request.instance_name,
     request.forward_name,
     request.group_name ?? coerceGroupName(request.instance_name, request.forward_name),
+    request.status,
+    request.response?.bodySize ?? 0,
     data,
   );
   const id = Number(result.lastInsertRowid);
@@ -140,15 +142,15 @@ export function getAllRequests(
     }
   }
   if (filters?.method) {
-    where.push("JSON_EXTRACT(data, '$.request.method') = ?");
+    where.push("method = ?");
     params.push(filters.method);
   }
   if (filters?.status_code) {
-    where.push("JSON_EXTRACT(data, '$.response.statusCode') = ?");
+    where.push("status_code = ?");
     params.push(filters.status_code);
   }
   if (filters?.url_pattern) {
-    where.push("JSON_EXTRACT(data, '$.request.url') LIKE ?");
+    where.push("request_url LIKE ?");
     params.push(`%${filters.url_pattern}%`);
   }
 
@@ -202,9 +204,18 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
   const data = serializeRequest(merged);
   const result = db
     .query(
-      "UPDATE proxy_requests SET timestamp = ?, instance_name = ?, forward_name = ?, group_name = ?, data = ? WHERE id = ?",
+      "UPDATE proxy_requests SET timestamp = ?, instance_name = ?, forward_name = ?, group_name = ?, status = ?, response_body_size = ?, data = ? WHERE id = ?",
     )
-    .run(merged.timestamp, merged.instance_name, merged.forward_name, merged.group_name, data, id);
+    .run(
+      merged.timestamp,
+      merged.instance_name,
+      merged.forward_name,
+      merged.group_name,
+      merged.status,
+      merged.response?.bodySize ?? 0,
+      data,
+      id,
+    );
 
   if (result.changes > 0) {
     const updated = getProxyRequestById(id);
@@ -251,8 +262,51 @@ export function appendResponseBody(
 }
 
 /**
- * 轻量更新：只更新响应的 bodySize 和 status（用于流式进度显示）
- * 不存储实际 body 内容，避免频繁写入大量数据
+ * 初始化 streaming 响应：首次收到响应头时调用，更新完整 JSON
+ */
+export function initStreamingResponse(
+  id: number,
+  ttfbMs: number,
+  statusCode: number,
+  statusMessage: string,
+  headers: Record<string, string | string[]>,
+): boolean {
+  const existing = getProxyRequestById(id);
+  if (!existing) return false;
+
+  return updateProxyRequest(id, {
+    status: "streaming",
+    response: {
+      statusCode,
+      statusMessage,
+      headers,
+      bodyDataUrl: null,
+      bodySize: 0,
+      ttfbMs,
+    },
+  });
+}
+
+/**
+ * 轻量更新：只更新 response_body_size 列（用于流式进度显示）
+ * 不读取/修改 JSON，性能极高
+ */
+export function updateStreamingBodySize(id: number, bodySize: number): boolean {
+  const result = db
+    .query("UPDATE proxy_requests SET response_body_size = ? WHERE id = ?")
+    .run(bodySize, id);
+
+  if (result.changes > 0) {
+    // 发送轻量更新通知（只包含 bodySize 变化）
+    requestEvents.emit("body-size-updated", { id, bodySize });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 兼容旧接口：updateStreamingProgress
+ * @deprecated 请使用 initStreamingResponse + updateStreamingBodySize
  */
 export function updateStreamingProgress(
   id: number,
@@ -332,4 +386,57 @@ export function createWebSocketMessage(params: {
           }
         : undefined,
   });
+}
+
+/**
+ * 清理孤儿 streaming/pending 记录
+ * 程序重启后，之前的 streaming/pending 请求已无法继续，应标记为 aborted
+ */
+export function cleanupOrphanStreamingRequests(): number {
+  const result = db.query(`
+    UPDATE proxy_requests
+    SET status = 'aborted',
+        data = JSON_SET(data, '$.status', 'aborted', '$.abort_reason', 'server_restart')
+    WHERE status IN ('streaming', 'pending')
+  `).run();
+
+  if (result.changes > 0) {
+    console.log(`[Database] Cleaned up ${result.changes} orphan streaming/pending requests`);
+  }
+
+  return result.changes;
+}
+
+/**
+ * 获取请求总数（用于分页）
+ */
+export function getRequestsCount(filters?: ProxyRequestFilters): number {
+  const where: string[] = [];
+  const params: any[] = [];
+
+  if (filters?.forward_name !== undefined) {
+    if (filters.forward_name === null) {
+      where.push("forward_name IS NULL");
+    } else {
+      where.push("forward_name = ?");
+      params.push(filters.forward_name);
+    }
+  }
+  if (filters?.method) {
+    where.push("method = ?");
+    params.push(filters.method);
+  }
+  if (filters?.status_code) {
+    where.push("status_code = ?");
+    params.push(filters.status_code);
+  }
+  if (filters?.url_pattern) {
+    where.push("request_url LIKE ?");
+    params.push(`%${filters.url_pattern}%`);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  const row = db.query(`SELECT COUNT(*) as count FROM proxy_requests ${whereSql}`).get(...params) as { count: number };
+  return row.count;
 }

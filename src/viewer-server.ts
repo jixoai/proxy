@@ -26,6 +26,7 @@ import {
   getAllRequests as dbGetAllRequests,
   getProxyRequestById,
   getRequestsAfterId,
+  getRequestsCount,
   clearAllRequests as dbClearAllRequests,
   deleteProxyRequest as dbDeleteProxyRequest,
   updateProxyRequest,
@@ -136,13 +137,16 @@ function getAllRequests(): RequestData[] {
   return requests.map(formatProxyRequest);
 }
 
-function getAllRequestsFiltered(filters?: {
-  forward_name?: string | null;
-  method?: string;
-  status_code?: number;
-  url_pattern?: string;
-}): RequestData[] {
-  const requests = dbGetAllRequests(filters);
+function getAllRequestsFiltered(
+  filters?: {
+    forward_name?: string | null;
+    method?: string;
+    status_code?: number;
+    url_pattern?: string;
+  },
+  pagination?: { page: number; limit: number },
+): RequestData[] {
+  const requests = dbGetAllRequests(filters, pagination);
   return requests.map(formatProxyRequest);
 }
 
@@ -686,6 +690,8 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           const method = url.searchParams.get("method");
           const statusCodeParam = url.searchParams.get("status_code");
           const urlPattern = url.searchParams.get("url_pattern");
+          const pageParam = url.searchParams.get("page");
+          const limitParam = url.searchParams.get("limit");
 
           const filters: {
             forward_name?: string | null;
@@ -710,6 +716,29 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             filters.url_pattern = urlPattern;
           }
 
+          // 支持分页参数
+          const page = pageParam ? parseInt(pageParam) : undefined;
+          const limit = limitParam ? parseInt(limitParam) : undefined;
+
+          if (page !== undefined && limit !== undefined && page > 0 && limit > 0) {
+            // 分页模式：返回 { items, total, page, limit }
+            const pagination = { page, limit };
+            const hasFilters = Object.keys(filters).length > 0;
+            const requests = hasFilters
+              ? getAllRequestsFiltered(filters, pagination)
+              : getAllRequestsFiltered({}, pagination);
+            const total = getRequestsCount(hasFilters ? filters : undefined);
+
+            return Response.json({
+              items: requests,
+              total,
+              page,
+              limit,
+              totalPages: Math.ceil(total / limit),
+            });
+          }
+
+          // 兼容模式：返回全部数据（数组）
           const requests =
             Object.keys(filters).length > 0 ? getAllRequestsFiltered(filters) : getAllRequests();
           return Response.json(requests);
