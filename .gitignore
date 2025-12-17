@@ -52,3 +52,6 @@ yarn.lock
 assets/icon.ico
 .build-frontend/
 .build-worker/
+
+# local files
+proxy-config.json
