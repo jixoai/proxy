@@ -7,7 +7,6 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import * as path from "node:path";
-import * as net from "node:net";
 import { initDatabase, DatabaseSchemaError } from "./lib/db";
 import { initConfigStore, loadConfig, saveConfig, getConfigFilePath } from "./lib/config-store";
 import { ProxyInstancesManager } from "./proxy-instances-manager";
@@ -27,41 +26,30 @@ const DEFAULT_PORT = 33000;
 /** 端口递增最大尝试次数 */
 const PORT_INCREMENT_MAX = 10;
 
-/** 检查端口是否可用 */
-function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once("error", () => resolve(false));
-    server.once("listening", () => {
-      server.close();
-      resolve(true);
+function isWebUiPortAvailable(port: number): boolean {
+  try {
+    const server = Bun.serve({
+      port,
+      fetch() {
+        return new Response("ok");
+      },
     });
-    server.listen(port, "127.0.0.1");
-  });
+    server.stop();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/** 查找可用端口 */
-async function findAvailablePort(startPort: number, maxIncrement: number): Promise<number> {
-  // 先尝试递增端口
+function pickWebUiPort(startPort: number, maxIncrement: number): number {
   for (let i = 0; i <= maxIncrement; i++) {
-    const port = startPort + i;
-    if (await isPortAvailable(port)) {
-      return port;
+    const candidate = startPort + i;
+    if (isWebUiPortAvailable(candidate)) {
+      return candidate;
     }
   }
-
-  // 所有递增端口都不可用，使用随机端口
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.once("listening", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      server.close();
-      resolve(port);
-    });
-    server.listen(0, "127.0.0.1");
-  });
+  // 返回 0 交给 Bun 随机分配端口（server.port 可读到最终端口）
+  return 0;
 }
 
 async function main() {
@@ -114,7 +102,7 @@ async function main() {
   if (!config.settings?.dbPath) {
     const defaultDbPath = getDefaultDataDir();
     if (!config.settings) {
-      config.settings = { autoWatchConfig: false, dbPath: defaultDbPath };
+      config.settings = { frontendAutoPullConfig: false, dbPath: defaultDbPath };
     } else {
       config.settings.dbPath = defaultDbPath;
     }
@@ -154,26 +142,29 @@ async function main() {
 
   // 查找可用端口
   let port = argv.port;
-  const availablePort = await findAvailablePort(port, PORT_INCREMENT_MAX);
-
-  if (availablePort !== port) {
-    if (availablePort === 0) {
-      console.log(`[Init] Ports ${port}-${port + PORT_INCREMENT_MAX} are all in use, using random port...`);
-    } else if (availablePort > port + PORT_INCREMENT_MAX) {
-      console.log(`[Init] Ports ${port}-${port + PORT_INCREMENT_MAX} are all in use, using random port ${availablePort}`);
-    } else {
-      console.log(`[Init] Port ${port} is in use, using port ${availablePort} instead`);
-    }
-    port = availablePort;
+  const selectedPort = pickWebUiPort(port, PORT_INCREMENT_MAX);
+  if (selectedPort === 0) {
+    console.log(
+      `[Init] Ports ${port}-${port + PORT_INCREMENT_MAX} are all in use, using random port...`,
+    );
+  } else if (selectedPort !== port) {
+    console.log(`[Init] Port ${port} is in use, using port ${selectedPort} instead`);
+    port = selectedPort;
   }
 
   // 启动 Viewer Server
-  console.log(`[Init] Starting Viewer Server on port ${port}...`);
-  const server = startViewerServer(manager, port);
+  console.log(
+    `[Init] Starting Viewer Server on ${selectedPort === 0 ? "random port" : `port ${port}`}...`,
+  );
+  const server = startViewerServer(manager, selectedPort);
+  const actualPort = server.port;
+  if (selectedPort === 0) {
+    console.log(`[Init] Using random port ${actualPort}`);
+  }
 
   // 打开浏览器
   if (argv.open) {
-    const url = `http://localhost:${port}`;
+    const url = `http://localhost:${actualPort}`;
     openBrowser(url);
   }
 
