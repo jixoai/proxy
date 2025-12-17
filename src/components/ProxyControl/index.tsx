@@ -41,12 +41,12 @@ export function ProxyControl() {
     reloadInstances,
     controlFocusInstanceName,
     controlFocusForwardName,
-    autoWatchConfig,
-    setAutoWatchConfig,
+    frontendAutoPullConfig,
+    setFrontendAutoPullConfig,
   } = useProxyViewer();
 
   const [reloadLoading, setReloadLoading] = useState(false);
-  const [watchLoading, setWatchLoading] = useState(false);
+  const [autoPullLoading, setAutoPullLoading] = useState(false);
   const [lastReloadMessage, setLastReloadMessage] = useState<string | null>(null);
 
   // dbPath 相关状态
@@ -138,12 +138,12 @@ export function ProxyControl() {
     }
   };
 
-  const handleWatchToggle = async (next: boolean) => {
-    setWatchLoading(true);
+  const handleAutoPullToggle = async (next: boolean) => {
+    setAutoPullLoading(true);
     try {
-      await setAutoWatchConfig(next);
+      await setFrontendAutoPullConfig(next);
     } finally {
-      setWatchLoading(false);
+      setAutoPullLoading(false);
     }
   };
 
@@ -168,18 +168,16 @@ export function ProxyControl() {
               <TooltipTrigger asChild>
                 <div className="text-muted-foreground flex items-center gap-2 text-sm">
                   <Switch
-                    checked={autoWatchConfig}
-                    disabled={watchLoading}
-                    onCheckedChange={handleWatchToggle}
+                    checked={frontendAutoPullConfig}
+                    disabled={autoPullLoading}
+                    onCheckedChange={handleAutoPullToggle}
                   />
-                  <span>监听文件变更</span>
+                  <span>前端自动拉取配置</span>
                 </div>
               </TooltipTrigger>
               <TooltipContent side="bottom">
                 <p className="max-w-xs text-xs">
-                  开启后，当 proxy-config.json 文件变更时自动检测。
-                  <br />
-                  配合实例的「自动推送」可实现配置热更新。
+                  开启后，收到配置变更通知（config-changed）时自动重新拉取 /api/config 刷新界面。
                 </p>
               </TooltipContent>
             </Tooltip>

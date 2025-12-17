@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Accordion,
   AccordionContent,
@@ -18,41 +18,16 @@ interface InstanceListProps {
   focusedForwardName?: string | null;
 }
 
-interface InstanceStatus {
-  running: boolean;
-  pid?: number;
-  port: number;
-  listeningPort?: number;
-  uptime?: number;
-}
-
 export function InstanceList({
   instances,
   onUpdate,
   focusedInstanceName,
   focusedForwardName,
 }: InstanceListProps) {
-  const [statuses, setStatuses] = useState<Record<string, InstanceStatus>>({});
   const [openItems, setOpenItems] = useState<string[]>([]);
   const hasInitialized = useRef(false);
   const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const { clearControlFocus } = useProxyViewer();
-
-  const loadStatuses = async () => {
-    try {
-      const response = await fetch("/api/runtime/statuses");
-      const data: Record<string, InstanceStatus> = await response.json();
-      setStatuses(data);
-    } catch (error) {
-      console.error("Failed to load instance statuses:", error);
-    }
-  };
-
-  useEffect(() => {
-    loadStatuses();
-    const timer = setInterval(loadStatuses, 2000);
-    return () => clearInterval(timer);
-  }, []);
+  const { clearControlFocus, instanceStatuses } = useProxyViewer();
 
   // 初始化或更新打開的面板
   useEffect(() => {
@@ -91,7 +66,7 @@ export function InstanceList({
       onValueChange={(values) => setOpenItems(Array.isArray(values) ? values : [])}
     >
       {instances.map((instance) => {
-        const status = statuses[instance.name];
+        const status = instanceStatuses[instance.name];
 
         return (
           <div

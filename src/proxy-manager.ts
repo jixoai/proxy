@@ -54,6 +54,7 @@ type LogCallback = (log: ProxyLogMessage) => void;
 
 /** 转发规则配置 */
 export interface ForwardConfig {
+  id: string;
   name: string;
   enabled: boolean;
   target: string;
@@ -197,10 +198,11 @@ export class ProxyManager {
     });
     await this.waitForResponse("env-ready", RESPONSE_TIMEOUT_MS);
 
-    this.worker.postMessage({ type: "pre-init", argv });
+    const preInitRes = this.waitForResponse("pre-init-done", RESPONSE_TIMEOUT_MS);
+    this.worker.postMessage({ type: "pre-init", argv } satisfies WorkerMessage);
 
     // 启动阶段快速捕获端口占用等致命错误
-    await new Promise<void>((resolve, reject) => {
+    const cachePo = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(resolve, 2500);
       const handler = (event: MessageEvent) => {
         const msg = event.data as WorkerResponse;
@@ -218,8 +220,9 @@ export class ProxyManager {
     });
 
     // 发送 init 消息初始化 Worker 中的数据库
-    const initMessage: WorkerMessage = { type: "init", dataDir: getDataDir() };
-    this.worker!.postMessage(initMessage);
+    await preInitRes;
+    this.worker.postMessage({ type: "init", dataDir: getDataDir() } satisfies WorkerMessage);
+
     const initResponse = await this.waitForResponse("init-result", RESPONSE_TIMEOUT_MS);
     if (initResponse.type === "init-result" && !initResponse.success) {
       throw new Error(
@@ -229,6 +232,7 @@ export class ProxyManager {
 
     // 启动健康检查
     this.startHealthCheck();
+    await cachePo;
 
     console.log(`[ProxyManager] Started proxy instance ${this.instanceName} on port ${this.port}`);
   }
@@ -386,6 +390,7 @@ export class ProxyManager {
       headers: instance.headers,
       hooks: instance.hooks ?? null,
       forwards: instance.forwards.map((f) => ({
+        id: f.id!,
         name: f.name,
         target: f.target,
         enabled: f.enabled,

@@ -27,12 +27,15 @@ import type {
 } from "./types/worker-messages";
 import { normalizeForwardGroups, normalizePathname } from "./lib/forward-utils";
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
-import { forwardStatsManager } from "./lib/forward-stats-manager";
+import { forwardStatsStore } from "./lib/forward-stats";
 
 const debugNotifier = createDebug("plugins:db-notifier");
 
 declare var self: Worker;
 const parentPort = typeof self.postMessage === "function" ? self : null;
+declare global {
+  var __proxyServer: http.Server;
+}
 
 parentPort
   ? new Promise<string[]>((resolve) => {
@@ -45,10 +48,14 @@ parentPort
         }
       };
       parentPort.addEventListener("message", handler);
-    }).then(main)
+    })
+      .then(main)
+      .then(() => {
+        parentPort.postMessage({ type: "pre-init-done" });
+      })
   : main(process.argv.slice(2));
 
-function main(argv: string[]) {
+async function main(argv: string[]) {
   const args = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -106,6 +113,7 @@ function main(argv: string[]) {
   }
 
   interface ForwardRule {
+    id: string;
     name: string;
     target: string;
     enabled: boolean;
@@ -166,6 +174,7 @@ function main(argv: string[]) {
       headers: instanceHeaders,
       hooks: instanceHooks,
       forwards: forwards.map((f) => ({
+        id: f.id,
         name: f.name,
         target: f.target,
         enabled: f.enabled,
@@ -215,6 +224,7 @@ function main(argv: string[]) {
             // 初始化数据目录和数据库
             setDataDir(message.dataDir);
             initDatabase();
+
             const response: WorkerResponse = {
               type: "init-result",
               success: true,
@@ -263,7 +273,7 @@ function main(argv: string[]) {
           case "shutdown": {
             log.info(`[Shutdown] Received shutdown message, closing server...`);
             // server 会在后面定义，这里用 globalThis 延迟访问
-            const srv = (globalThis as any).__proxyServer;
+            const srv = globalThis.__proxyServer;
             if (srv) {
               srv.close(() => {
                 log.info(`[Shutdown] Server closed`);
@@ -806,21 +816,14 @@ function main(argv: string[]) {
 
       const wasAborted = attemptResult.abortReason !== undefined;
 
-      // 上报统计数据（使用 TTFB 作为延迟指标，因为 SSE/event-stream 响应的 bodyMs 可能很长）
+      // 上报统计数据
       const isFailureStatus = attemptResult.statusCode >= 400 && attemptResult.statusCode <= 599;
       const success = !attemptResult.errorMessage && !isFailureStatus;
 
-      // 计算 endpointIndex: 在同名规则组中的位置
-      const endpointIndex = candidateIndexes.indexOf(ruleIndex as number);
       if (!wasAborted) {
-        forwardStatsManager.sendReport(
-          INSTANCE_NAME,
-          forwardRule.name,
-          endpointIndex,
-          hookedTargetUrl.href,
-          attemptResult.ttfbMs, // 使用 TTFB 而非总耗时，避免流式响应造成延迟统计偏高
-          success,
-        );
+        // timestamp: 请求时间戳, ttfbMs: 收到响应头的时间戳
+        const ttfbTimestamp = startTime + attemptResult.ttfbMs;
+        forwardStatsStore.sendReport(forwardRule.id, startTime, ttfbTimestamp, success);
       }
 
       finalResult = {
@@ -914,10 +917,10 @@ function main(argv: string[]) {
   });
 
   dbNotifier.init();
-  forwardStatsManager.init();
+  forwardStatsStore.init();
 
   // 注册 server 到 globalThis，以便 shutdown 消息处理可以访问
-  (globalThis as any).__proxyServer = server;
+  globalThis.__proxyServer = server;
 
   server.listen(PROXY_PORT, () => {
     console.log(`Proxy running on http://localhost:${PROXY_PORT} (instance: ${INSTANCE_NAME})`);

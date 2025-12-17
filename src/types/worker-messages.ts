@@ -2,6 +2,7 @@ import type { HooksConfig } from "./proxy";
 
 /** 转发规则配置（运行时使用） */
 export interface ForwardRuleConfig {
+  id: string;
   name: string;
   target: string;
   enabled: boolean;

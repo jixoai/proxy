@@ -32,14 +32,7 @@ import {
 import type { ProxyInstanceConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditInstanceDialog } from "./EditInstanceDialog";
 import { ForwardRulesList } from "./ForwardRulesList";
-
-interface ProxyStatus {
-  running: boolean;
-  pid?: number;
-  port: number;
-  listeningPort?: number;
-  uptime?: number;
-}
+import { useProxyViewer, type InstanceStatus } from "@/components/ProxyViewerContext";
 
 interface InstanceControlsProps {
   instance: ProxyInstanceConfig;
@@ -54,7 +47,8 @@ interface ConfigSyncInfo {
 }
 
 export function InstanceControls({ instance, onUpdate, focusedForwardName }: InstanceControlsProps) {
-  const [status, setStatus] = useState<ProxyStatus | null>(null);
+  const { instanceStatuses, instanceConfigSyncStatus } = useProxyViewer();
+  const status: InstanceStatus | undefined = instanceStatuses[instance.name];
   const [loading, setLoading] = useState(false);
   const [configSynced, setConfigSynced] = useState<boolean | null>(null);
   const [configSyncInfo, setConfigSyncInfo] = useState<ConfigSyncInfo | null>(null);
@@ -97,15 +91,7 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
     }
   };
 
-  const fetchStatus = async () => {
-    try {
-      const response = await fetch(`/api/runtime/instances/${encodeURIComponent(instance.name)}/status`);
-      const data = await response.json();
-      setStatus(data);
-    } catch (error) {
-      console.error("Failed to fetch status:", error);
-    }
-  };
+
 
   const checkConfigSync = useCallback(async () => {
     if (!status?.running) {
@@ -145,12 +131,17 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
     }
   }, [instance.name, checkConfigSync]);
 
-  useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 2000);
-    return () => clearInterval(interval);
-  }, [instance.name]);
 
+
+  // 从 WebSocket 推送的状态同步
+  useEffect(() => {
+    const wsStatus = instanceConfigSyncStatus[instance.name];
+    if (wsStatus !== undefined) {
+      setConfigSynced(wsStatus);
+    }
+  }, [instanceConfigSyncStatus, instance.name]);
+
+  // 初始加载时获取一次配置同步状态
   useEffect(() => {
     if (!status?.running) {
       setConfigSynced(null);
@@ -158,15 +149,9 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
       return;
     }
     checkConfigSync();
-    const interval = setInterval(checkConfigSync, 3000);
-    return () => clearInterval(interval);
   }, [status?.running, checkConfigSync]);
 
-  useEffect(() => {
-    if (autoPushConfig && configSynced === false && status?.running && !pushingConfig) {
-      handlePushConfig();
-    }
-  }, [autoPushConfig, configSynced, status?.running, pushingConfig, handlePushConfig]);
+  // autoPushConfig 逻辑已移至后端 (viewer-server.ts reloadInstancesFromConfig)
 
   const handleStart = async () => {
     setLoading(true);
@@ -176,7 +161,6 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
       });
       const data = await response.json();
       if (data.success) {
-        setStatus(data.status);
         onUpdate();
       } else {
         alert(`启动失败：${data.error}`);
@@ -197,7 +181,6 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
       });
       const data = await response.json();
       if (data.success) {
-        setStatus(data.status);
         onUpdate();
       } else {
         alert(`停止失败：${data.error}`);
@@ -229,7 +212,6 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
       });
       const startData = await startResponse.json();
       if (startData.success) {
-        setStatus(startData.status);
         onUpdate();
       } else {
         alert(`重启失败（启动阶段）：${startData.error}`);

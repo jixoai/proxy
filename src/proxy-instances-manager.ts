@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import {
   ProxyManager,
   type ProxyStatus,
@@ -11,6 +12,12 @@ import type { InstanceRuntimeConfig } from "./types/worker-messages";
 
 /** 端口清理后等待时间（毫秒） */
 const PORT_CLEANUP_DELAY_MS = 500;
+
+/** 实例状态变更事件 */
+export interface InstanceStatusEvent {
+  instanceName: string;
+  status: ProxyStatus;
+}
 
 /** 端口占用错误的关键词列表 */
 const PORT_IN_USE_KEYWORDS = [
@@ -36,6 +43,7 @@ function isPortInUseError(error: unknown): boolean {
  */
 function toForwardConfigs(instanceName: string): ForwardConfig[] {
   return getNormalizedForwards(instanceName).map((f) => ({
+    id: f.id!,
     name: f.name,
     target: f.target,
     enabled: f.enabled,
@@ -51,10 +59,36 @@ function toForwardConfigs(instanceName: string): ForwardConfig[] {
  * 代理实例管理器
  * 管理所有代理实例的生命周期，包括启动、停止、重载等操作
  */
-export class ProxyInstancesManager {
+export class ProxyInstancesManager extends EventEmitter {
   private managers = new Map<string, ProxyManager>();
   private logCallbacks = new Set<LogCallback>();
   private readonly log: Logger = createLogger("proxy:instances");
+
+  constructor() {
+    super();
+  }
+
+  /** 广播实例状态变更 */
+  private emitStatusChange(instanceName: string): void {
+    const status = this.getInstanceStatus(instanceName);
+    this.emit("instance-state-changed", { instanceName, status } as InstanceStatusEvent);
+  }
+
+  /** 广播实例配置同步状态变更 */
+  private async emitConfigChange(instanceName: string): Promise<void> {
+    const synced = await this.checkInstanceConfigSync(instanceName);
+    this.emit("instance-config-change", { instanceName, synced });
+  }
+
+  /** 广播所有实例状态 */
+  emitAllStatuses(): void {
+    const instances = getAllInstances();
+    const statuses: Record<string, ProxyStatus> = {};
+    for (const instance of instances) {
+      statuses[instance.name] = this.getInstanceStatus(instance.name);
+    }
+    this.emit("all-statuses", statuses);
+  }
 
   /**
    * 启动指定实例
@@ -91,6 +125,7 @@ export class ProxyInstancesManager {
       console.log(
         `[ProxyInstancesManager] Instance ${instance.name} started successfully on port ${instance.port}`,
       );
+      this.emitStatusChange(instanceName);
     } catch (error) {
       if (isPortInUseError(error)) {
         await this.retryStartAfterPortCleanup(manager, instance, forwards);
@@ -119,6 +154,7 @@ export class ProxyInstancesManager {
       console.log(
         `[ProxyInstancesManager] Instance ${instance.name} started successfully on port ${instance.port} (after cleanup)`,
       );
+      this.emitStatusChange(instance.name);
     } catch (retryError) {
       console.error(
         `[ProxyInstancesManager] Failed to start instance ${instance.name} after cleanup:`,
@@ -134,6 +170,7 @@ export class ProxyInstancesManager {
     await manager.stop();
     this.managers.delete(instanceName);
     console.log(`[ProxyInstancesManager] Instance ${instanceName} stopped successfully`);
+    this.emitStatusChange(instanceName);
   }
 
   /**
@@ -152,6 +189,9 @@ export class ProxyInstancesManager {
 
     const forwards = toForwardConfigs(instanceName);
     await manager.reload(forwards, instance.headers ?? null, instance.hooks ?? null);
+
+    // 配置重载后广播同步状态
+    await this.emitConfigChange(instanceName);
   }
 
   /** 中断指定实例中的请求 */

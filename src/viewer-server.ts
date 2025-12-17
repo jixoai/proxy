@@ -8,9 +8,10 @@ import type { HighlightRequest, HighlightResponse } from "./services/highlight.p
 import { formatCode, type FormatRequest, type FormatResponse } from "./lib/biome-formatter";
 import { decompressData, type DecompressRequest, type DecompressResponse } from "./lib/decompress";
 import type { ProxyLogMessage } from "./proxy-manager";
-import type { ProxyInstancesManager } from "./proxy-instances-manager";
+import type { ProxyStatus } from "./proxy-manager";
+import type { ProxyInstancesManager, InstanceStatusEvent } from "./proxy-instances-manager";
 import { db } from "./lib/db";
-import type { ProxyForwardConfig } from "./types/proxy";
+import type { ProxyConfigFile, ProxyForwardConfig } from "./types/proxy";
 import viewerHtml from "./viewer.html";
 import {
   getAllInstances,
@@ -18,6 +19,8 @@ import {
   getConfigFilePath,
   loadConfig,
   saveConfig,
+  enableConfigWatch as storeEnableConfigWatch,
+  getProxyConfigStore,
 } from "./lib/config-store";
 import {
   getAllRequests as dbGetAllRequests,
@@ -33,7 +36,11 @@ import { dbListener, dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, isDataUrl } from "./lib/data-url";
 import { extractContentTypeFromHeaders, isTextLikeMime } from "./lib/http-utils";
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
-import { forwardStatsManager } from "./lib/forward-stats-manager";
+import {
+  forwardStatsStore,
+  evaluateForwards,
+  type ForwardMatcher,
+} from "./lib/forward-stats";
 import { reorderForwardsByIndexes as reorderForwardsByIndexesDirect } from "./lib/config-store";
 import {
   getProxyStaticDir,
@@ -41,11 +48,14 @@ import {
   isStandaloneBinary,
   getDataDir,
 } from "./lib/runtime-paths";
+import type { StoreChangeEvent } from "./lib/store/base-store";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const log = createLogger("proxy:viewer");
-const debugAutoSort = createDebug("plugins:auto-sort");
+const debugAutoSortSameNameForwards = createDebug("plugins:auto-sort-same-name-forwards");
+const debugAutoPushConfig = createDebug("plugins:auto-push-config");
+const debugDbListener = createDebug("plugins:db-listener");
 installGlobalErrorLogger("proxy-viewer");
 
 interface RequestData {
@@ -146,15 +156,24 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
   const wsClients = new Set<ServerWebSocket<unknown>>();
   const logClients = new Set<ServerWebSocket<unknown>>();
   const statsClients = new Set<ServerWebSocket<unknown>>();
-  let configWatcher: fs.FSWatcher | null = null;
-  let watchDebounce: NodeJS.Timeout | null = null;
-  let watchEnabled = false;
 
-  forwardStatsManager.init();
+  forwardStatsStore.init();
+
+  const broadcastConfigChanged = () => {
+    const message = JSON.stringify({ type: "config-changed" });
+    for (const client of wsClients) {
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error("Failed to send config-changed to client:", error);
+        wsClients.delete(client);
+      }
+    }
+  };
 
   const broadcastStats = () => {
     if (statsClients.size === 0) return;
-    const stats = forwardStatsManager.getAllStats();
+    const stats = forwardStatsStore.getDisplayStats();
     const message = JSON.stringify({ type: "stats-update", stats });
     for (const client of statsClients) {
       try {
@@ -166,81 +185,74 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     }
   };
 
-  forwardStatsManager.on("stats-updated", () => {
+  forwardStatsStore.on("samples-changed", () => {
     broadcastStats();
   });
 
-  forwardStatsManager.on(
-    "auto-sort-needed",
-    async ({ instanceName, forwardName }: { instanceName: string; forwardName: string }) => {
-      log.info(`[AutoSort] Auto-sort triggered for ${instanceName}/${forwardName}`);
+  // 自动排序：统计变更时评估并应用
+  const performAutoSortSameNameForwards = async (changedForwardIds: string[]) => {
+    const samplesMap = forwardStatsStore.getSamplesMap();
+    const changedIdSet = new Set(changedForwardIds);
 
-      const instance = getInstanceByName(instanceName);
-      if (!instance) {
-        log.warn(`[AutoSort] Instance not found: ${instanceName}`);
-        return;
-      }
+    // 遍历所有实例，检查是否有开启自动排序的
+    for (const instance of getAllInstances()) {
+      if (!instance.settings?.autoSortSameNameForwards) continue;
 
-      const currentIndexes: number[] = [];
+      // 按 forward name 分组
+      const forwardGroups = new Map<string, ForwardMatcher[]>();
       instance.forwards.forEach((f, idx) => {
-        if (f.name === forwardName) {
-          currentIndexes.push(idx);
+        // 只处理与变更 forwardId 相关的 forward
+        if (!f.id || !changedIdSet.has(f.id)) {
+          return;
         }
+        const group = forwardGroups.get(f.name) ?? [];
+        group.push({ id: f.id, index: idx });
+        forwardGroups.set(f.name, group);
       });
 
-      if (currentIndexes.length < 2) {
-        log.info(`[AutoSort] Only ${currentIndexes.length} endpoints for ${forwardName}, skipping`);
-        return;
+      let hasReorder = false;
+      const nextOrder = instance.forwards.map((_, idx) => idx);
+
+      for (const [forwardName, forwards] of forwardGroups) {
+        if (forwards.length < 2) continue;
+
+        const result = evaluateForwards(forwards, samplesMap);
+        debugAutoSortSameNameForwards(
+          "[%s/%s] Evaluation: %s",
+          instance.name,
+          forwardName,
+          result.reason,
+        );
+
+        if (!result.suggestedOrder) continue;
+        const suggestedOrder = result.suggestedOrder;
+
+        log.info(
+          `[AutoSortSameNameForwards] ${instance.name}/${forwardName}: ${result.reason}`,
+        );
+
+        const currentIndexes = forwards.map((f) => f.index);
+        currentIndexes.forEach((position, i) => {
+          nextOrder[position] = suggestedOrder[i]!;
+        });
+        hasReorder = true;
       }
 
-      const newOrder = forwardStatsManager.computeOptimalOrder(
-        instanceName,
-        forwardName,
-        currentIndexes,
-      );
-
-      if (!newOrder) {
-        log.info(`[AutoSort] No reordering needed for ${instanceName}/${forwardName}`);
-        return;
-      }
-
-      log.info(
-        `[AutoSort] Reordering ${instanceName}/${forwardName}: [${currentIndexes.join(",")}] -> [${newOrder.join(",")}]`,
-      );
-
-      const fullNewOrder = instance.forwards.map((_, idx) => {
-        const groupIdx = currentIndexes.indexOf(idx);
-        if (groupIdx >= 0) {
-          return newOrder[groupIdx]!;
-        }
-        return idx;
-      });
+      if (!hasReorder) continue;
 
       try {
-        reorderForwardsByIndexesDirect(instanceName, fullNewOrder as number[]);
+        reorderForwardsByIndexesDirect(instance.name, nextOrder);
       } catch (error) {
-        debugAutoSort("Failed to reorder: %s", error);
-        return;
+        debugAutoSortSameNameForwards("Failed to reorder: %s", error);
       }
+    }
+  };
 
-      try {
-        await manager.reloadInstance(instanceName);
-        log.info(`[AutoSort] Instance ${instanceName} reloaded successfully`);
-      } catch (error) {
-        debugAutoSort("Failed to reload instance: %s", error);
-        return;
-      }
-
-      const message = JSON.stringify({ type: "config-changed" });
-      for (const client of wsClients) {
-        try {
-          client.send(message);
-        } catch (error) {
-          wsClients.delete(client);
-        }
-      }
-    },
-  );
+  forwardStatsStore.on("evaluation-needed", ({ forwardIds }: { forwardIds: string[] }) => {
+    performAutoSortSameNameForwards(forwardIds).catch((error) => {
+      console.error("[AutoSortSameNameForwards] Error:", error);
+    });
+  });
 
   manager.onLog((logMsg: ProxyLogMessage) => {
     const message = JSON.stringify(logMsg);
@@ -250,6 +262,56 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       } catch (error) {
         console.error("Failed to send log to client:", error);
         logClients.delete(client);
+      }
+    }
+  });
+
+  // 监听实例状态变更事件，推送给 WebSocket 客户端
+  manager.on("instance-state-changed", (event: InstanceStatusEvent) => {
+    const message = JSON.stringify({
+      type: "instance-state-changed",
+      instanceName: event.instanceName,
+      status: event.status,
+    });
+    for (const client of wsClients) {
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error("Failed to send instance status to client:", error);
+        wsClients.delete(client);
+      }
+    }
+  });
+
+  // 监听所有实例状态广播
+  manager.on("all-statuses", (statuses: Record<string, ProxyStatus>) => {
+    const message = JSON.stringify({
+      type: "all-instance-states",
+      statuses,
+    });
+    for (const client of wsClients) {
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error("Failed to send all statuses to client:", error);
+        wsClients.delete(client);
+      }
+    }
+  });
+
+  // 监听实例配置同步状态变更
+  manager.on("instance-config-change", (event: { instanceName: string; synced: boolean }) => {
+    const message = JSON.stringify({
+      type: "instance-config-change",
+      instanceName: event.instanceName,
+      synced: event.synced,
+    });
+    for (const client of wsClients) {
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error("Failed to send config change to client:", error);
+        wsClients.delete(client);
       }
     }
   });
@@ -268,11 +330,21 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
   const reloadInstancesFromConfig = async () => {
     const result = {
       reloaded: [] as string[],
+      skipped: [] as string[],
       failed: [] as Array<{ name: string; error: string }>,
     };
     loadConfig();
     const running = manager.getRunningInstanceNames();
     for (const name of running) {
+      // 检查实例的 autoPushConfig 设置，默认为 true
+      const instance = getInstanceByName(name);
+      const autoPushConfig = instance?.settings?.autoPushConfig ?? true;
+      if (!autoPushConfig) {
+        result.skipped.push(name);
+        // 广播配置不同步状态
+        manager.emit("instance-config-change", { instanceName: name, synced: false });
+        continue;
+      }
       try {
         await manager.reloadInstance(name);
         result.reloaded.push(name);
@@ -281,61 +353,66 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       }
     }
 
-    const message = JSON.stringify({ type: "config-changed" });
-    for (const client of wsClients) {
-      try {
-        client.send(message);
-      } catch (error) {
-        console.error("Failed to send config-changed to client:", error);
-        wsClients.delete(client);
-      }
-    }
-
     return result;
   };
 
-  const enableConfigWatch = () => {
-    if (configWatcher) return;
-    const configFile = getConfigFilePath();
-    configWatcher = fs.watch(configFile, () => {
-      if (watchDebounce) {
-        clearTimeout(watchDebounce);
+  storeEnableConfigWatch();
+  log.info(`[ConfigWatch] Watching config file: ${getConfigFilePath()}`);
+
+  let configChangeDebounceTimer: NodeJS.Timeout | null = null;
+  let configChangeReloadInProgress = false;
+  let configChangeReloadPending = false;
+  let lastConfigChangeEventType: string | null = null;
+
+  const scheduleReloadOnConfigChange = (eventType: string) => {
+    lastConfigChangeEventType = eventType;
+    if (configChangeDebounceTimer) {
+      clearTimeout(configChangeDebounceTimer);
+    }
+    configChangeDebounceTimer = setTimeout(() => {
+      configChangeDebounceTimer = null;
+      void applyReloadOnConfigChange();
+    }, 50);
+  };
+
+  const applyReloadOnConfigChange = async () => {
+    if (configChangeReloadInProgress) {
+      configChangeReloadPending = true;
+      return;
+    }
+
+    configChangeReloadInProgress = true;
+    const eventType = lastConfigChangeEventType ?? "unknown";
+    lastConfigChangeEventType = null;
+
+    try {
+      debugAutoPushConfig("Detected config change (%s), applying autoPushConfig", eventType);
+      await reloadInstancesFromConfig();
+    } catch (error) {
+      console.error("[AutoPushConfig] Failed to apply config change:", error);
+    } finally {
+      configChangeReloadInProgress = false;
+
+      if (configChangeReloadPending) {
+        configChangeReloadPending = false;
+        scheduleReloadOnConfigChange("pending");
       }
-      watchDebounce = setTimeout(async () => {
-        log.info("[Reload] Detected config change, applying reload...");
-        try {
-          await reloadInstancesFromConfig();
-        } catch (error) {
-          console.error("[Reload] Failed to apply config reload:", error);
-        }
-      }, 300);
-    });
-    watchEnabled = true;
-    log.info(`[Reload] Watching config file: ${configFile}`);
+    }
   };
 
-  const disableConfigWatch = () => {
-    if (configWatcher) {
-      configWatcher.close();
-      configWatcher = null;
-    }
-    if (watchDebounce) {
-      clearTimeout(watchDebounce);
-      watchDebounce = null;
-    }
-    watchEnabled = false;
-    log.info("[Reload] Stopped watching config file");
-  };
+  // 监听 Store 的 change 事件（包含 update/create/delete/reload）
+  getProxyConfigStore().on("change", (event: StoreChangeEvent<ProxyConfigFile>) => {
+    // 任意变更都通知前端；是否触发 autoPushConfig 由“实例配置是否变化”决定
+    broadcastConfigChanged();
 
-  const initialConfig = loadConfig();
-  if (initialConfig.settings?.autoWatchConfig) {
-    enableConfigWatch();
-  }
-  for (const instance of initialConfig.instances) {
-    if (instance.settings?.autoSortSameNameForwards) {
-      forwardStatsManager.setAutoSortSameNameForwardsEnabled(instance.name, true);
+    const prevInstances = event.previousData?.instances;
+    const nextInstances = event.data.instances;
+    if (prevInstances && JSON.stringify(prevInstances) === JSON.stringify(nextInstances)) {
+      return;
     }
-  }
+
+    scheduleReloadOnConfigChange(event.type);
+  });
 
   function getRequestDetail(id: number): RequestData | null {
     const req = getProxyRequestById(id);
@@ -446,24 +523,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           try {
             const body = await req.json();
             saveConfig(body);
-
-            // 同步 autoSortSameNameForwards 状态到 forwardStatsManager
-            const config = loadConfig();
-            for (const instance of config.instances) {
-              forwardStatsManager.setAutoSortSameNameForwardsEnabled(
-                instance.name,
-                instance.settings?.autoSortSameNameForwards ?? false,
-              );
-            }
-
-            const message = JSON.stringify({ type: "config-changed" });
-            for (const client of wsClients) {
-              try {
-                client.send(message);
-              } catch (error) {
-                wsClients.delete(client);
-              }
-            }
             return Response.json({ success: true });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });
@@ -477,34 +536,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           try {
             const result = await reloadInstancesFromConfig();
             return Response.json({ success: true, ...result });
-          } catch (error) {
-            return Response.json({ success: false, error: String(error) }, { status: 500 });
-          }
-        },
-      },
-      "/api/reload/status": {
-        async GET() {
-          return Response.json({ watching: watchEnabled });
-        },
-      },
-      "/api/reload/watch": {
-        async POST(req) {
-          try {
-            const body = await req.json();
-            const enabled = Boolean(body?.enabled);
-            if (enabled) {
-              enableConfigWatch();
-            } else {
-              disableConfigWatch();
-            }
-            const config = loadConfig();
-            if (!config.settings) {
-              config.settings = { autoWatchConfig: enabled };
-            } else {
-              config.settings.autoWatchConfig = enabled;
-            }
-            saveConfig(config);
-            return Response.json({ success: true, watching: watchEnabled });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });
           }
@@ -593,7 +624,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       // ========== 统计数据 API ==========
       "/api/stats": {
         async GET() {
-          const stats = forwardStatsManager.getAllStats();
+          const stats = forwardStatsStore.getDisplayStats();
           return Response.json(stats);
         },
       },
@@ -625,7 +656,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
             const config = loadConfig();
             if (!config.settings) {
-              config.settings = { autoWatchConfig: false, dbPath: newDbPath };
+              config.settings = { frontendAutoPullConfig: false, dbPath: newDbPath };
             } else {
               config.settings.dbPath = newDbPath;
             }
@@ -961,11 +992,18 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         } else if (type === "stats") {
           statsClients.add(ws);
           log.info(`Stats client connected (total: ${statsClients.size})`);
-          const stats = forwardStatsManager.getAllStats();
+          const stats = forwardStatsStore.getDisplayStats();
           ws.send(JSON.stringify({ type: "stats-update", stats }));
         } else {
           wsClients.add(ws);
           log.info(`Request client connected (total: ${wsClients.size})`);
+          // 发送当前所有实例状态
+          const instances = getAllInstances();
+          const statuses: Record<string, any> = {};
+          for (const instance of instances) {
+            statuses[instance.name] = manager.getInstanceStatus(instance.name);
+          }
+          ws.send(JSON.stringify({ type: "all-instance-states", statuses }));
         }
       },
       message(ws, message) {
@@ -1025,7 +1063,10 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
     dbListener.start();
 
     dbListener.on("proxy_requests:insert", (notification) => {
-      debugAutoSort("dbListener event 'proxy_requests:insert' triggered, id: %d", notification.id);
+      debugDbListener(
+        "dbListener event 'proxy_requests:insert' triggered, id: %d",
+        notification.id,
+      );
       log.debug(`[DbListener] Received insert notification for request #${notification.id}`);
 
       const newRequests = getRequestsAfterId(lastRequestId);

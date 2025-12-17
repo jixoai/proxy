@@ -15,6 +15,14 @@ export type RequestStatus = "pending" | "streaming" | "completed" | "error" | "a
 export type AbortReason = "client_disconnect" | "user_abort";
 export type WebSocketDirection = "send" | "receive" | null;
 
+export interface InstanceStatus {
+  running: boolean;
+  pid?: number;
+  port: number;
+  listeningPort?: number;
+  uptime?: number;
+}
+
 export interface RequestMetadata {
   method: string;
   url: string;
@@ -91,6 +99,9 @@ interface ProxyViewerContextValue {
   instances: ProxyInstanceConfig[];
   instancesLoading: boolean;
   reloadInstances: () => Promise<void>;
+  instanceStatuses: Record<string, InstanceStatus>;
+  /** 实例配置同步状态：true=已同步, false=未同步, undefined=未知 */
+  instanceConfigSyncStatus: Record<string, boolean | undefined>;
   activeInstanceName: string | null;
   setActiveInstanceName: (name: string | null) => void;
   activeRuleName: string | null;
@@ -102,9 +113,9 @@ interface ProxyViewerContextValue {
 
   /** 配置版本号，每次配置重载时递增，子组件可监听此值触发刷新 */
   configVersion: number;
-  /** 是否启用自动监听配置文件 */
-  autoWatchConfig: boolean;
-  setAutoWatchConfig: (enabled: boolean) => void;
+  /** 前端是否启用自动拉取配置（收到 config-changed 时自动刷新 UI） */
+  frontendAutoPullConfig: boolean;
+  setFrontendAutoPullConfig: (enabled: boolean) => Promise<void>;
 
   selectedId: string | null;
   selectedDetail: RequestData | null;
@@ -174,12 +185,18 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
 
   const [instances, setInstances] = useState<ProxyInstanceConfig[]>([]);
   const [instancesLoading, setInstancesLoading] = useState(true);
+  const [instanceStatuses, setInstanceStatuses] = useState<Record<string, InstanceStatus>>({});
+  const [instanceConfigSyncStatus, setInstanceConfigSyncStatus] = useState<Record<string, boolean | undefined>>({});
   const [activeInstanceName, setActiveInstanceName] = useState<string | null>(null);
   const [activeRuleName, setActiveRuleNameState] = useState<string | null>(null);
   const [controlFocusInstanceName, setControlFocusInstanceName] = useState<string | null>(null);
   const [controlFocusForwardName, setControlFocusForwardName] = useState<string | null>(null);
   const [configVersion, setConfigVersion] = useState(0);
-  const [autoWatchConfig, setAutoWatchConfigState] = useState(false);
+  const [frontendAutoPullConfig, setFrontendAutoPullConfigState] = useState(false);
+  const frontendAutoPullConfigRef = useRef(false);
+  useEffect(() => {
+    frontendAutoPullConfigRef.current = frontendAutoPullConfig;
+  }, [frontendAutoPullConfig]);
 
   const [jsonDialogOpen, setJsonDialogOpenState] = useState(false);
   const [dialogJSONSnapshot, setDialogJSONSnapshot] = useState<string[]>([]);
@@ -295,10 +312,14 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     [updateSearch],
   );
 
+  const fetchConfig = useCallback(async (): Promise<ProxyConfigFile> => {
+    const response = await fetch("/api/config");
+    return response.json();
+  }, []);
+
   const loadRules = useCallback(async () => {
     try {
-      const response = await fetch("/api/config");
-      const config: ProxyConfigFile = await response.json();
+      const config = await fetchConfig();
       const rules: Array<{ name: string; instanceName: string }> = [];
       for (const instance of config.instances) {
         for (const forward of instance.forwards) {
@@ -311,20 +332,20 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error("Failed to load rules:", error);
     }
-  }, []);
+  }, [fetchConfig]);
 
   const reloadInstances = useCallback(async () => {
     setInstancesLoading(true);
     try {
-      const response = await fetch("/api/config");
-      const config: ProxyConfigFile = await response.json();
+      const config = await fetchConfig();
       setInstances(config.instances);
+      setFrontendAutoPullConfigState(Boolean(config.settings?.frontendAutoPullConfig));
     } catch (error) {
       console.error("Failed to load instances:", error);
     } finally {
       setInstancesLoading(false);
     }
-  }, []);
+  }, [fetchConfig]);
 
   const jumpToForwardRule = useCallback(
     (instanceName: string, forwardName: string) => {
@@ -461,37 +482,59 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     [selectRequest],
   );
 
-  // 加载 autoWatchConfig 状态
-  const loadWatchStatus = useCallback(async () => {
-    try {
-      const response = await fetch("/api/reload/status");
-      const data = await response.json();
-      setAutoWatchConfigState(Boolean(data.watching));
-    } catch (error) {
-      console.error("Failed to load watch status:", error);
-    }
-  }, []);
+  const setFrontendAutoPullConfig = useCallback(
+    async (enabled: boolean) => {
+      setFrontendAutoPullConfigState(enabled);
+      try {
+        const config = await fetchConfig();
+        const currentEnabled = config.settings?.frontendAutoPullConfig;
+        if (typeof currentEnabled === "boolean" && currentEnabled === enabled) {
+          if (enabled) {
+            reloadInstances();
+            loadRules();
+            setConfigVersion((v) => v + 1);
+          }
+          return;
+        }
 
-  const setAutoWatchConfig = useCallback(async (enabled: boolean) => {
-    try {
-      const response = await fetch("/api/reload/watch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      });
-      const data = await response.json();
-      setAutoWatchConfigState(Boolean(data.watching));
-    } catch (error) {
-      console.error("Failed to update watch state:", error);
-    }
-  }, []);
+        const nextConfig: ProxyConfigFile = {
+          ...config,
+          settings: {
+            ...config.settings,
+            frontendAutoPullConfig: enabled,
+          },
+        };
+
+        const response = await fetch("/api/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextConfig),
+        });
+        if (!response.ok) {
+          setFrontendAutoPullConfigState(!enabled);
+          console.error("Failed to update frontendAutoPullConfig:", await response.text());
+          return;
+        }
+
+        // 开启后立即同步一次数据
+        if (enabled) {
+          reloadInstances();
+          loadRules();
+          setConfigVersion((v) => v + 1);
+        }
+      } catch (error) {
+        console.error("Failed to update frontendAutoPullConfig:", error);
+        setFrontendAutoPullConfigState(!enabled);
+      }
+    },
+    [fetchConfig, reloadInstances, loadRules],
+  );
 
   useEffect(() => {
     loadRequests();
     loadRules();
     reloadInstances();
-    loadWatchStatus();
-  }, [loadRequests, loadRules, reloadInstances, loadWatchStatus]);
+  }, [loadRequests, loadRules, reloadInstances]);
 
   // WebSocket 连接
   useEffect(() => {
@@ -559,10 +602,27 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
             setSelectedDetail(null);
             setCurrentPage(1);
           } else if (message.type === "config-changed") {
-            // 配置文件更新，刷新实例列表并递增版本号
+            // 全局开关语义：只有当前页面开着 autoPull，才会响应 config-changed 并拉取最新配置。
+            // 如果当前页面已关闭 autoPull，则忽略任何配置变更（包含别人把 autoPull 再打开）。
+            if (!frontendAutoPullConfigRef.current) return;
             reloadInstances();
             loadRules();
             setConfigVersion((v) => v + 1);
+          } else if (message.type === "all-instance-states" && message.statuses) {
+            // 收到所有实例状态（连接时或批量更新）
+            setInstanceStatuses(message.statuses);
+          } else if (message.type === "instance-state-changed" && message.instanceName) {
+            // 单个实例状态变更
+            setInstanceStatuses((prev) => ({
+              ...prev,
+              [message.instanceName]: message.status,
+            }));
+          } else if (message.type === "instance-config-change" && message.instanceName) {
+            // 实例配置同步状态变更
+            setInstanceConfigSyncStatus((prev) => ({
+              ...prev,
+              [message.instanceName]: message.synced,
+            }));
           }
         } catch (error) {
           console.error("Failed to parse WebSocket message:", error);
@@ -601,7 +661,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
         }
       }
     };
-  }, [livePush, reloadInstances, loadRules]);
+  }, [livePush, reloadInstances, loadRules, fetchConfig]);
 
   const value: ProxyViewerContextValue = {
     requests,
@@ -623,6 +683,8 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     instances,
     instancesLoading,
     reloadInstances,
+    instanceStatuses,
+    instanceConfigSyncStatus,
     activeInstanceName,
     setActiveInstanceName,
     activeRuleName,
@@ -632,8 +694,8 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     jumpToForwardRule,
     clearControlFocus,
     configVersion,
-    autoWatchConfig,
-    setAutoWatchConfig,
+    frontendAutoPullConfig,
+    setFrontendAutoPullConfig,
     selectedId,
     selectedDetail,
     detailLoading,
