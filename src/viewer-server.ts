@@ -637,8 +637,12 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         async GET() {
           try {
             const config = loadConfig();
+            const { DEFAULT_DB_PATH_TEMPLATE, resolveDbPathTemplate } = await import("./lib/runtime-paths");
+            const templatePath = config.settings?.dbPath ?? DEFAULT_DB_PATH_TEMPLATE;
+            const resolvedPath = resolveDbPathTemplate(templatePath);
             return Response.json({
-              dbPath: config.settings?.dbPath ?? null,
+              dbPath: templatePath,
+              resolvedPath,
               currentDataDir: getDataDir(),
             });
           } catch (error) {
@@ -648,14 +652,10 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         async PUT(req) {
           try {
             const body = await req.json();
-            const newDbPath = body.dbPath;
-
-            if (typeof newDbPath !== "string" || newDbPath.trim().length === 0) {
-              return Response.json(
-                { success: false, error: "dbPath must be a non-empty string" },
-                { status: 400 },
-              );
-            }
+            // 允许清空，configStore 会自动补全默认值
+            const newDbPath = typeof body.dbPath === "string" && body.dbPath.trim().length > 0
+              ? body.dbPath.trim()
+              : undefined;
 
             const config = loadConfig();
             if (!config.settings) {
@@ -665,10 +665,12 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             }
             saveConfig(config);
 
+            // 重新加载以获取 configStore 补全后的值
+            const savedConfig = loadConfig();
             return Response.json({
               success: true,
               message: "dbPath updated. Restart required to take effect.",
-              dbPath: newDbPath,
+              dbPath: savedConfig.settings?.dbPath,
             });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });

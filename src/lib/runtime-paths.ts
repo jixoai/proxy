@@ -27,6 +27,31 @@ export function getVersion(): string {
   return getPackageVersion();
 }
 
+/** 默认 dbPath 模板 */
+export const DEFAULT_DB_PATH_TEMPLATE = "~/.jixo/.proxy/${VERSION}";
+
+/**
+ * 解析 dbPath 模板
+ * 支持的变量:
+ * - ~ : 用户主目录
+ * - ${VERSION} : 当前版本号
+ */
+export function resolveDbPathTemplate(template: string): string {
+  let resolved = template;
+
+  // 替换 ~ 为用户主目录
+  if (resolved.startsWith("~/")) {
+    resolved = path.join(os.homedir(), resolved.slice(2));
+  } else if (resolved === "~") {
+    resolved = os.homedir();
+  }
+
+  // 替换 ${VERSION}
+  resolved = resolved.replace(/\$\{VERSION\}/g, getVersion());
+
+  return path.resolve(resolved);
+}
+
 /** 检查是否在单文件打包模式下运行 */
 export function isStandaloneBinary(): boolean {
   return __dirname.startsWith("/$bunfs");
@@ -35,9 +60,9 @@ export function isStandaloneBinary(): boolean {
 /** 运行时设置的数据目录（可通过 CLI 或配置文件设置） */
 let customDataDir: string | null = null;
 
-/** 设置数据目录 */
+/** 设置数据目录（支持模板语法） */
 export function setDataDir(dir: string): void {
-  customDataDir = path.resolve(dir);
+  customDataDir = resolveDbPathTemplate(dir);
 }
 
 /**

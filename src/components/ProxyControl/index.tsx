@@ -8,7 +8,7 @@ import {
   EmptyDescription,
   EmptyContent,
 } from "@/components/ui/empty";
-import { Server, Database, Pencil, FolderOpen } from "lucide-react";
+import { Server, Database, Pencil, FolderOpen, Info } from "lucide-react";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
 import { InstanceList } from "./InstanceList";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
@@ -51,6 +51,7 @@ export function ProxyControl() {
 
   // dbPath 相关状态
   const [dbPath, setDbPath] = useState<string | null>(null);
+  const [resolvedPath, setResolvedPath] = useState<string | null>(null);
   const [currentDataDir, setCurrentDataDir] = useState<string | null>(null);
   const [dbPathLoading, setDbPathLoading] = useState(true);
   const [editDbPathDialogOpen, setEditDbPathDialogOpen] = useState(false);
@@ -65,6 +66,7 @@ export function ProxyControl() {
         const response = await fetch("/api/settings/db-path");
         const data = await response.json();
         setDbPath(data.dbPath);
+        setResolvedPath(data.resolvedPath);
         setCurrentDataDir(data.currentDataDir);
       } catch (error) {
         console.error("Failed to fetch dbPath:", error);
@@ -196,39 +198,53 @@ export function ProxyControl() {
             <div className="bg-primary/10 rounded-lg p-2">
               <Database className="h-5 w-5 text-primary" />
             </div>
-            <div>
-              <div className="text-sm font-medium">数据目录</div>
-              <div className="text-muted-foreground text-xs">
-                {dbPathLoading ? (
-                  "加载中..."
-                ) : (
-                  <code className="bg-muted/50 rounded px-1 py-0.5 font-mono text-xs">
-                    {currentDataDir || dbPath || "未设置"}
-                  </code>
-                )}
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-medium">数据目录</span>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-xs">
+                      <div className="space-y-1 text-xs">
+                        <div className="font-medium">支持的模板变量:</div>
+                        <div><code className="bg-white/20 px-1 rounded">~</code> - 用户主目录</div>
+                        <div><code className="bg-white/20 px-1 rounded">{"${VERSION}"}</code> - 当前版本号</div>
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </div>
+              {dbPathLoading ? (
+                <div className="text-muted-foreground text-xs">加载中...</div>
+              ) : (
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground text-xs">模板:</span>
+                    <code className="bg-muted/50 rounded px-1 py-0.5 font-mono text-xs">
+                      {dbPath || "未设置"}
+                    </code>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground text-xs">实际:</span>
+                    <code className="bg-muted/50 rounded px-1 py-0.5 font-mono text-xs text-muted-foreground">
+                      {resolvedPath || currentDataDir || "-"}
+                    </code>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleEditDbPath}
-                  disabled={dbPathLoading}
-                >
-                  <Pencil className="mr-1 h-4 w-4" />
-                  修改
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                <p className="max-w-xs text-xs">
-                  修改数据存储目录路径，用于存放数据库和临时配置文件。
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleEditDbPath}
+            disabled={dbPathLoading}
+          >
+            <Pencil className="mr-1 h-4 w-4" />
+            修改
+          </Button>
         </div>
       </div>
 
@@ -241,22 +257,38 @@ export function ProxyControl() {
               修改数据目录
             </DialogTitle>
             <DialogDescription>
-              设置数据存储目录路径，用于存放数据库文件和临时配置。支持绝对路径或相对于用户主目录的路径。
+              设置数据存储目录路径，用于存放数据库文件和临时配置。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">数据目录路径</label>
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium">数据目录路径</label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-xs">
+                      <div className="space-y-1 text-xs">
+                        <div className="font-medium">支持的模板变量:</div>
+                        <div><code className="bg-white/20 px-1 rounded">~</code> - 用户主目录</div>
+                        <div><code className="bg-white/20 px-1 rounded">{"${VERSION}"}</code> - 当前版本号</div>
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
               <Input
                 value={editDbPathValue}
                 onChange={(e) => setEditDbPathValue(e.target.value)}
-                placeholder="例如: ~/.jixo/.proxy 或 /var/data/proxy"
+                placeholder="~/.jixo/.proxy/${VERSION}"
               />
             </div>
-            {currentDataDir && currentDataDir !== editDbPathValue && (
-              <div className="bg-muted/50 rounded-lg p-3 text-xs">
-                <div className="text-muted-foreground">当前实际使用的目录:</div>
-                <code className="text-foreground">{currentDataDir}</code>
+            {resolvedPath && resolvedPath !== editDbPathValue && (
+              <div className="bg-muted/50 rounded-lg p-3 text-xs space-y-1">
+                <div className="text-muted-foreground">当前使用路径:</div>
+                <code className="text-foreground break-all">{resolvedPath}</code>
               </div>
             )}
           </div>

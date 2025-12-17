@@ -7,6 +7,7 @@ import type {
   ProxyInstanceSettings,
   HooksConfig,
 } from "../types/proxy";
+import { DEFAULT_DB_PATH_TEMPLATE } from "./runtime-paths";
 
 const httpHookSchema = z.object({
   type: z.literal("http"),
@@ -109,9 +110,9 @@ export const proxyGlobalSettingsSchema = z
     z
       .object({
         frontendAutoPullConfig: z.boolean().default(true),
-        dbPath: z.string().optional(),
+        dbPath: z.string().default(DEFAULT_DB_PATH_TEMPLATE),
       })
-      .default({ frontendAutoPullConfig: true }),
+      .default({ frontendAutoPullConfig: true, dbPath: DEFAULT_DB_PATH_TEMPLATE }),
   );
 
 export const proxyConfigSchema = z

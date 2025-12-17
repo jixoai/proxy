@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Trash2, ExternalLink, Edit, GripVertical } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ProxyForwardConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditForwardDialog } from "./EditForwardDialog";
 import { EndpointStatusIndicator } from "@/components/EndpointStatusIndicator";
@@ -91,11 +93,15 @@ export function ForwardRuleItem({
   const routeLabel =
     forward.path && forward.path.length > 0 ? forward.path : "默认（匹配所有路径）";
 
+  const isDisabled = !forward.enabled;
+
   return (
     <div
       className={`bg-card flex items-center justify-between gap-4 rounded-lg border p-3 transition-all ${
         highlighted ? "border-primary/60 bg-primary/5 shadow-sm" : ""
-      } ${unreachable ? "opacity-60 grayscale" : ""}`}
+      } ${unreachable ? "opacity-60 grayscale" : ""} ${
+        isDisabled ? "opacity-50 bg-muted/30 border-dashed" : ""
+      }`}
     >
       <div className="flex min-w-0 flex-1 items-start gap-3">
         {showDragHandle && (
@@ -109,12 +115,11 @@ export function ForwardRuleItem({
         <EndpointStatusIndicator stats={stats} size="md" />
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="font-medium">{forward.name}</span>
+            <span className={`font-medium ${isDisabled ? "text-muted-foreground" : ""}`}>
+              {forward.name}
+            </span>
             <Badge variant="outline" className="px-1.5 py-0.5 font-mono text-[10px]">
               {methodLabel}
-            </Badge>
-            <Badge variant={forward.enabled ? "default" : "secondary"} className="text-xs">
-              {forward.enabled ? "已启用" : "已禁用"}
             </Badge>
             {unreachable && (
               <Badge variant="outline" className="text-[10px]">
@@ -141,7 +146,7 @@ export function ForwardRuleItem({
               href={forward.target}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-primary flex items-center gap-1 hover:underline"
+              className={`flex items-center gap-1 hover:underline ${isDisabled ? "text-muted-foreground" : "text-primary"}`}
             >
               {forward.target}
               <ExternalLink className="h-3 w-3 flex-shrink-0" />
@@ -155,10 +160,23 @@ export function ForwardRuleItem({
         </div>
       </div>
 
-      <div className="ml-4 flex items-center gap-2">
-        <Button size="sm" variant="ghost" onClick={handleToggle}>
-          {forward.enabled ? "禁用" : "启用"}
-        </Button>
+      <div className="ml-4 flex items-center gap-3">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="inline-flex">
+                <Switch
+                  checked={forward.enabled}
+                  onCheckedChange={handleToggle}
+                  aria-label={forward.enabled ? "禁用规则" : "启用规则"}
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {forward.enabled ? "已启用，点击禁用" : "已禁用，点击启用"}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
         <EditForwardDialog
           forward={forward}
           forwardIndex={forwardIndex}
