@@ -179,7 +179,20 @@ export function RequestList() {
     deleteRequest,
     abortRequest,
     jumpToForwardRule,
+    instances,
   } = useProxyViewer();
+
+  // 跟踪当前右键菜单打开的行
+  const [contextMenuOpenId, setContextMenuOpenId] = useState<string | null>(null);
+
+  // 根据 instanceName 和 forwardName 查找 forward 信息
+  const getForwardInfo = (instanceName?: string, forwardName?: string) => {
+    if (!instanceName || !forwardName) return null;
+    const instance = instances.find((i) => i.name === instanceName);
+    if (!instance) return null;
+    const forward = instance.forwards.find((f) => f.name === forwardName);
+    return forward ? { name: forward.name, description: forward.description } : null;
+  };
 
   // 过滤后的请求
   const filteredRequests = useMemo(() => {
@@ -266,12 +279,15 @@ export function RequestList() {
             </TableHeader>
             <TableBody>
               {paginatedRequests.map((req) => (
-                <ContextMenu key={req.id}>
+                <ContextMenu
+                  key={req.id}
+                  onOpenChange={(open) => setContextMenuOpenId(open ? req.id : null)}
+                >
                   <ContextMenuTrigger asChild>
                     <TableRow
                       data-state={selectedId === req.id ? "selected" : undefined}
                       onClick={() => selectRequest(req.id)}
-                      className="cursor-pointer"
+                      className={`cursor-pointer ${contextMenuOpenId === req.id ? "bg-accent ring-2 ring-primary/50" : ""}`}
                     >
                       <TableCell className="font-mono text-xs">
                         {formatTimestamp(req.metadata.timestamp)}
@@ -318,7 +334,29 @@ export function RequestList() {
                           <TooltipTrigger>
                             {new URL(req.metadata.request.url).pathname}
                           </TooltipTrigger>
-                          <TooltipContent>{req.metadata.request.url}</TooltipContent>
+                          <TooltipContent className="max-w-md">
+                            {(() => {
+                              const forwardInfo = getForwardInfo(
+                                req.metadata.instanceName,
+                                req.metadata.forwardName,
+                              );
+                              return forwardInfo ? (
+                                <div className="space-y-1">
+                                  <div className="font-medium">{forwardInfo.name}</div>
+                                  {forwardInfo.description && (
+                                    <div className="text-muted-foreground text-xs">
+                                      {forwardInfo.description}
+                                    </div>
+                                  )}
+                                  <div className="text-muted-foreground mt-1 border-t pt-1 font-mono text-xs">
+                                    {req.metadata.request.url}
+                                  </div>
+                                </div>
+                              ) : (
+                                req.metadata.request.url
+                              );
+                            })()}
+                          </TooltipContent>
                         </Tooltip>
                       </TableCell>
                       <TableCell className="max-w-[200px] truncate font-mono text-xs text-muted-foreground">
