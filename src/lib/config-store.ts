@@ -25,6 +25,15 @@ function resolveConfigFilePath(): string {
   return DEFAULT_CONFIG_PATH;
 }
 
+export function setConfigFilePath(filePath: string): void {
+  configFilePathOverride = path.resolve(filePath);
+  // Reset store to use new path
+  if (store) {
+    store.destroy();
+    store = null;
+  }
+}
+
 function getStore(): ProxyConfigStore {
   if (!store) {
     store = new ProxyConfigStore({ filePath: resolveConfigFilePath(), createIfMissing: true });
@@ -33,12 +42,7 @@ function getStore(): ProxyConfigStore {
 }
 
 export function overrideConfigFilePathForTests(filePath: string): void {
-  configFilePathOverride = path.resolve(filePath);
-  // Reset store to use new path
-  if (store) {
-    store.destroy();
-    store = null;
-  }
+  setConfigFilePath(filePath);
 }
 
 export function getConfigFilePath(): string {

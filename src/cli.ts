@@ -8,7 +8,7 @@ import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import * as path from "node:path";
 import { initDatabase, DatabaseSchemaError } from "./lib/db";
-import { initConfigStore, loadConfig, saveConfig, getConfigFilePath } from "./lib/config-store";
+import { initConfigStore, loadConfig, saveConfig, getConfigFilePath, setConfigFilePath } from "./lib/config-store";
 import { ProxyInstancesManager } from "./proxy-instances-manager";
 import { startViewerServer } from "./viewer-server";
 import {
@@ -88,7 +88,9 @@ async function main() {
 
   // 设置配置文件路径
   if (argv.config) {
-    process.env.PROXY_CONFIG_PATH = path.resolve(argv.config);
+    const resolved = path.resolve(argv.config);
+    process.env.PROXY_CONFIG_PATH = resolved;
+    setConfigFilePath(resolved);
   }
 
   // 初始化配置
