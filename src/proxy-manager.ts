@@ -226,7 +226,7 @@ export class ProxyManager {
     const initResponse = await this.waitForResponse("init-result", RESPONSE_TIMEOUT_MS);
     if (initResponse.type === "init-result" && !initResponse.success) {
       throw new Error(
-        `Worker database init failed: ${(initResponse as any).error || "Unknown error"}`,
+        `Worker database init failed: ${initResponse.error ?? "Unknown error"}`,
       );
     }
 
