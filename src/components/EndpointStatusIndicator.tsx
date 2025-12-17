@@ -1,9 +1,9 @@
 import { useMemo } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import type { ForwardEndpointStats } from "@/hooks/useForwardStats";
+import type { ForwardStats } from "@/hooks/useForwardStats";
 
 interface EndpointStatusIndicatorProps {
-  stats: ForwardEndpointStats | null;
+  stats: ForwardStats | null;
   size?: "sm" | "md" | "lg";
 }
 

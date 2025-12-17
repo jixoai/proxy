@@ -181,7 +181,7 @@ export function ForwardRulesList({ instanceName, focusedForwardName }: ForwardRu
   const groupRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const itemRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const { clearControlFocus, configVersion } = useProxyViewer();
-  const { getForwardGroupStats } = useForwardStats();
+  const { getStats } = useForwardStats();
 
   // 计算 focusedForwardIndex：根据 focusedForwardName 找到第一个匹配的 forward 的 originalIndex
   const focusedForwardIndex = useMemo(() => {
@@ -530,7 +530,7 @@ export function ForwardRulesList({ instanceName, focusedForwardName }: ForwardRu
                                 highlighted={focusedForwardIndex === forward.originalIndex}
                                 unreachable={unreachableFlags.get(forward.originalIndex) ?? false}
                                 showDragHandle={isMultiItemGroup}
-                                stats={getForwardGroupStats(instanceName, forward.name)[itemIndex] ?? null}
+                                stats={forward.id ? getStats(forward.id) : null}
                                 focusedForwardIndex={focusedForwardIndex ?? null}
                                 clearControlFocus={clearControlFocus}
                                 itemRefs={itemRefs}

@@ -47,12 +47,16 @@ export interface RequestSample {
 export interface ComputedHealth {
   /** 失败率 0-1 */
   failureRate: number;
+  /** 平均延迟 (ms) */
+  avgLatency: number;
   /** 总请求数 */
   totalRequests: number;
   /** 失败请求数 */
   failedRequests: number;
   /** 健康度评分 0-100 */
   healthScore: number;
+  /** 休眠因子 0-1（越大越“灰”，表示最近无请求） */
+  dormancyFactor: number;
 }
 
 /** Forward 配置（用于评估） */
@@ -111,20 +115,25 @@ export function computeHealthFromSamples(samples: RequestSample[]): ComputedHeal
   if (total === 0) {
     return {
       failureRate: 0,
+      avgLatency: 0,
       totalRequests: 0,
       failedRequests: 0,
       healthScore: 50, // 无数据时中等评分
+      dormancyFactor: 1,
     };
   }
 
   const failed = samples.filter((s) => !s.success).length;
   const failureRate = failed / total;
+  const avgLatency = Math.round(samples.reduce((sum, s) => sum + s.ttfbMs, 0) / total);
 
   return {
     failureRate,
+    avgLatency,
     totalRequests: total,
     failedRequests: failed,
     healthScore: Math.round(100 * (1 - failureRate)),
+    dormancyFactor: 0,
   };
 }
 
@@ -140,7 +149,14 @@ export function computeForwardHealth(
 ): ComputedHealth {
   const samples = samplesMap.get(forwardId) ?? [];
   const filtered = filterSamples(samples, windowMs, maxCount, now);
-  return computeHealthFromSamples(filtered);
+  const health = computeHealthFromSamples(filtered);
+  const lastCallTime = samples.length > 0 ? samples[samples.length - 1]!.timestamp : 0;
+  if (lastCallTime > 0) {
+    const age = Math.max(0, now - lastCallTime);
+    const dormancyFactor = Math.min(1, age / windowMs);
+    return { ...health, dormancyFactor };
+  }
+  return health;
 }
 
 /**
@@ -339,15 +355,16 @@ export class ForwardStatsStore extends EventEmitter {
    */
   getDisplayStats(): Array<{
     forwardId: string;
-    health: ComputedHealth;
+    lastCallTime: number;
+    computed: ComputedHealth;
   }> {
-    const result: Array<{ forwardId: string; health: ComputedHealth }> = [];
+    const result: Array<{ forwardId: string; lastCallTime: number; computed: ComputedHealth }> = [];
     const now = Date.now();
 
     for (const [forwardId, samples] of this.samplesMap) {
-      const filtered = filterSamples(samples, FILTER_WINDOW_MS, FILTER_MAX_COUNT, now);
-      const health = computeHealthFromSamples(filtered);
-      result.push({ forwardId, health });
+      const computed = computeForwardHealth(forwardId, this.samplesMap, FILTER_WINDOW_MS, FILTER_MAX_COUNT, now);
+      const lastCallTime = samples.length > 0 ? samples[samples.length - 1]!.timestamp : 0;
+      result.push({ forwardId, lastCallTime, computed });
     }
 
     return result;

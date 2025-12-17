@@ -5,7 +5,7 @@ import { Trash2, ExternalLink, Edit, GripVertical } from "lucide-react";
 import type { ProxyForwardConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditForwardDialog } from "./EditForwardDialog";
 import { EndpointStatusIndicator } from "@/components/EndpointStatusIndicator";
-import type { ForwardEndpointStats } from "@/hooks/useForwardStats";
+import type { ForwardStats } from "@/hooks/useForwardStats";
 
 interface ForwardRuleItemProps {
   forward: ProxyForwardConfig;
@@ -18,7 +18,7 @@ interface ForwardRuleItemProps {
   showName?: boolean;
   showDragHandle?: boolean;
   dragHandleProps?: Record<string, unknown>;
-  stats?: ForwardEndpointStats | null;
+  stats?: ForwardStats | null;
 }
 
 export function ForwardRuleItem({
