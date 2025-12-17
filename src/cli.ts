@@ -104,7 +104,7 @@ async function main() {
   if (!config.settings?.dbPath) {
     const defaultDbPath = getDefaultDataDir();
     if (!config.settings) {
-      config.settings = { frontendAutoPullConfig: false, dbPath: defaultDbPath };
+      config.settings = { frontendAutoPullConfig: true, dbPath: defaultDbPath };
     } else {
       config.settings.dbPath = defaultDbPath;
     }

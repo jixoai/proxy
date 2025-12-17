@@ -659,7 +659,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
             const config = loadConfig();
             if (!config.settings) {
-              config.settings = { frontendAutoPullConfig: false, dbPath: newDbPath };
+              config.settings = { frontendAutoPullConfig: true, dbPath: newDbPath };
             } else {
               config.settings.dbPath = newDbPath;
             }

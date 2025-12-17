@@ -104,11 +104,15 @@ export const proxyInstanceSchema = z
   }));
 
 export const proxyGlobalSettingsSchema = z
-  .object({
-    frontendAutoPullConfig: z.boolean().default(false),
-    dbPath: z.string().optional(),
-  })
-  .optional();
+  .preprocess(
+    (value) => (value == null ? undefined : value),
+    z
+      .object({
+        frontendAutoPullConfig: z.boolean().default(true),
+        dbPath: z.string().optional(),
+      })
+      .default({ frontendAutoPullConfig: true }),
+  );
 
 export const proxyConfigSchema = z
   .object({
