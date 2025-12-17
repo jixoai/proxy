@@ -8,84 +8,128 @@ interface EndpointStatusIndicatorProps {
 }
 
 /**
- * 计算延迟颜色
- * 200ms 以下: 绿色
- * 200-1000ms: 黄色渐变
- * 1000ms 以上: 红色
+ * OKLCH 颜色插值
+ * 关键点: 600ms 绿色, 4.5s 橙色, 10s 红色, 30s 深红色, 60s 黑色
  */
+interface OklchColor {
+  l: number; // 亮度 0-1
+  c: number; // 色度 0-0.4
+  h: number; // 色相 0-360
+}
+
+const latencyColorStops: Array<{ ms: number; color: OklchColor }> = [
+  { ms: 0, color: { l: 0.72, c: 0.19, h: 145 } },      // 绿色
+  { ms: 600, color: { l: 0.72, c: 0.19, h: 145 } },    // 绿色
+  { ms: 4500, color: { l: 0.75, c: 0.18, h: 55 } },    // 橙色
+  { ms: 10000, color: { l: 0.63, c: 0.26, h: 27 } },   // 红色
+  { ms: 30000, color: { l: 0.45, c: 0.22, h: 25 } },   // 深红色
+  { ms: 60000, color: { l: 0, c: 0, h: 0 } },          // 黑色
+];
+
+function lerpOklch(a: OklchColor, b: OklchColor, t: number): OklchColor {
+  // 色相插值需要考虑环形特性
+  let hDiff = b.h - a.h;
+  if (Math.abs(hDiff) > 180) {
+    hDiff = hDiff > 0 ? hDiff - 360 : hDiff + 360;
+  }
+  return {
+    l: a.l + (b.l - a.l) * t,
+    c: a.c + (b.c - a.c) * t,
+    h: (a.h + hDiff * t + 360) % 360,
+  };
+}
+
+function oklchToString(color: OklchColor): string {
+  return `oklch(${color.l} ${color.c} ${color.h})`;
+}
+
 function getLatencyColor(avgLatency: number, dormancyFactor: number): string {
-  let h: number, s: number, l: number;
+  // 找到插值区间
+  let lower = latencyColorStops[0]!;
+  let upper = latencyColorStops[latencyColorStops.length - 1]!;
 
-  if (avgLatency <= 200) {
-    // 绿色 hsl(142, 76%, 36%)
-    h = 142;
-    s = 76;
-    l = 36;
-  } else if (avgLatency <= 1000) {
-    // 绿到黄到橙渐变
-    const t = (avgLatency - 200) / 800;
-    // 绿(142) -> 黄(45) -> 橙(25)
-    if (t < 0.5) {
-      h = 142 - (142 - 45) * (t * 2);
-    } else {
-      h = 45 - (45 - 25) * ((t - 0.5) * 2);
+  for (let i = 0; i < latencyColorStops.length - 1; i++) {
+    if (avgLatency >= latencyColorStops[i]!.ms && avgLatency <= latencyColorStops[i + 1]!.ms) {
+      lower = latencyColorStops[i]!;
+      upper = latencyColorStops[i + 1]!;
+      break;
     }
-    s = 76 + (90 - 76) * t;
-    l = 36 + (50 - 36) * t;
-  } else {
-    // 红色 hsl(0, 84%, 60%)
-    h = 0;
-    s = 84;
-    l = 60;
   }
 
-  // 应用休眠因子 - 逐渐变灰
-  s = s * (1 - dormancyFactor * 0.9);
-  l = l + (50 - l) * dormancyFactor * 0.5;
+  // 超出范围时使用边界值
+  if (avgLatency >= upper.ms) {
+    lower = upper;
+  }
 
-  return `hsl(${h}, ${s}%, ${l}%)`;
+  // 计算插值参数
+  const range = upper.ms - lower.ms;
+  const t = range > 0 ? (avgLatency - lower.ms) / range : 0;
+
+  // OKLCH 插值
+  const interpolated = lerpOklch(lower.color, upper.color, t);
+
+  // 应用休眠因子 - 降低色度使颜色变灰
+  const finalColor: OklchColor = {
+    l: interpolated.l + (0.5 - interpolated.l) * dormancyFactor * 0.5,
+    c: interpolated.c * (1 - dormancyFactor * 0.9),
+    h: interpolated.h,
+  };
+
+  return oklchToString(finalColor);
 }
 
 /**
- * 计算失败率颜色
- * 0%: 绿色
- * 50%: 黄色
- * 100%: 红色
+ * 计算失败率颜色 (OKLCH)
+ * 关键点: 0% 绿色, 10% 绿色, 30% 橙色, 60% 红色, 100% 深红色
  */
-function getFailureRateColor(failureRate: number, dormancyFactor: number): string {
-  let h: number, s: number, l: number;
+const failureRateColorStops: Array<{ rate: number; color: OklchColor }> = [
+  { rate: 0, color: { l: 0.72, c: 0.19, h: 145 } },    // 绿色
+  { rate: 0.1, color: { l: 0.72, c: 0.19, h: 145 } },  // 绿色
+  { rate: 0.3, color: { l: 0.75, c: 0.18, h: 55 } },   // 橙色
+  { rate: 0.6, color: { l: 0.63, c: 0.26, h: 27 } },   // 红色
+  { rate: 1, color: { l: 0.45, c: 0.22, h: 25 } },     // 深红色
+];
 
-  if (failureRate <= 0.1) {
-    // 绿色
-    h = 142;
-    s = 76;
-    l = 36;
-  } else if (failureRate <= 0.5) {
-    // 绿到黄渐变
-    const t = (failureRate - 0.1) / 0.4;
-    h = 142 - (142 - 45) * t;
-    s = 76;
-    l = 36 + 14 * t;
-  } else {
-    // 黄到红渐变
-    const t = (failureRate - 0.5) / 0.5;
-    h = 45 - 45 * t;
-    s = 76 + 8 * t;
-    l = 50 + 10 * t;
+function getFailureRateColor(failureRate: number, dormancyFactor: number): string {
+  // 找到插值区间
+  let lower = failureRateColorStops[0]!;
+  let upper = failureRateColorStops[failureRateColorStops.length - 1]!;
+
+  for (let i = 0; i < failureRateColorStops.length - 1; i++) {
+    if (failureRate >= failureRateColorStops[i]!.rate && failureRate <= failureRateColorStops[i + 1]!.rate) {
+      lower = failureRateColorStops[i]!;
+      upper = failureRateColorStops[i + 1]!;
+      break;
+    }
   }
 
-  // 应用休眠因子
-  s = s * (1 - dormancyFactor * 0.9);
-  l = l + (50 - l) * dormancyFactor * 0.5;
+  // 超出范围时使用边界值
+  if (failureRate >= upper.rate) {
+    lower = upper;
+  }
 
-  return `hsl(${h}, ${s}%, ${l}%)`;
+  // 计算插值参数
+  const range = upper.rate - lower.rate;
+  const t = range > 0 ? (failureRate - lower.rate) / range : 0;
+
+  // OKLCH 插值
+  const interpolated = lerpOklch(lower.color, upper.color, t);
+
+  // 应用休眠因子 - 降低色度使颜色变灰
+  const finalColor: OklchColor = {
+    l: interpolated.l + (0.5 - interpolated.l) * dormancyFactor * 0.5,
+    c: interpolated.c * (1 - dormancyFactor * 0.9),
+    h: interpolated.h,
+  };
+
+  return oklchToString(finalColor);
 }
 
 /**
- * 获取休眠状态的灰色
+ * 获取休眠状态的灰色 (OKLCH)
  */
 function getDormantColor(): string {
-  return "hsl(0, 0%, 70%)";
+  return "oklch(0.7 0 0)";
 }
 
 const sizeMap = {
