@@ -19,6 +19,8 @@ export interface HooksConfig {
 }
 
 export interface ProxyForwardConfig {
+  /** 唯一标识符，为空时自动生成 UUID */
+  id?: string;
   name: string;
   enabled: boolean;
   target: string;
@@ -51,8 +53,8 @@ export interface ProxyInstanceConfig {
 
 /** 全局设置 */
 export interface ProxyGlobalSettings {
-  /** 是否自动监听配置文件变更 */
-  autoWatchConfig: boolean;
+  /** 前端是否自动拉取配置（收到 config-changed 时自动刷新 UI） */
+  frontendAutoPullConfig: boolean;
   /** 数据存储目录路径 (相对于用户主目录或绝对路径) */
   dbPath?: string;
 }
@@ -62,5 +64,4 @@ export interface ProxyConfigFile {
   settings?: ProxyGlobalSettings;
   instances: ProxyInstanceConfig[];
 }
-
 

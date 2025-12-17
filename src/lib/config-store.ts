@@ -1,135 +1,113 @@
+/**
+ * 配置存储模块 - 向后兼容的适配器
+ * 内部使用 ProxyConfigStore 实现，对外保持原有接口
+ */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-import { proxyConfigSchema, parseConfigFile, serializeConfigFile } from "./config-schema";
+import { ProxyConfigStore } from "./store/proxy-config-store";
 import type { ProxyConfigFile, ProxyForwardConfig, ProxyInstanceConfig } from "../types/proxy";
-import { getConfigExample } from "./config-template.macro" with { type: "macro" };
 import { normalizeForwardGroups } from "./forward-utils";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const DEFAULT_CONFIG_PATH = path.resolve(process.cwd(), "proxy-config.json");
 
-let configFilePath = process.env.PROXY_CONFIG_PATH?.length
-  ? path.resolve(process.env.PROXY_CONFIG_PATH)
-  : DEFAULT_CONFIG_PATH;
+let configFilePathOverride: string | null = null;
 
-export function overrideConfigFilePathForTests(filePath: string) {
-  configFilePath = path.resolve(filePath);
+let store: ProxyConfigStore | null = null;
+
+function resolveConfigFilePath(): string {
+  if (configFilePathOverride) return configFilePathOverride;
+
+  const envPath = process.env.PROXY_CONFIG_PATH;
+  if (typeof envPath === "string" && envPath.trim().length > 0) {
+    return path.resolve(envPath);
+  }
+
+  return DEFAULT_CONFIG_PATH;
 }
 
-function ensureConfigDir(): void {
-  const dir = path.dirname(configFilePath);
-  fs.mkdirSync(dir, { recursive: true });
+function getStore(): ProxyConfigStore {
+  if (!store) {
+    store = new ProxyConfigStore({ filePath: resolveConfigFilePath(), createIfMissing: true });
+  }
+  return store;
+}
+
+export function overrideConfigFilePathForTests(filePath: string): void {
+  configFilePathOverride = path.resolve(filePath);
+  // Reset store to use new path
+  if (store) {
+    store.destroy();
+    store = null;
+  }
 }
 
 export function getConfigFilePath(): string {
-  ensureConfigDir();
-  return configFilePath;
+  return getStore().getFilePath();
 }
 
 export function loadConfig(): ProxyConfigFile {
-  ensureConfigDir();
-  if (!fs.existsSync(configFilePath)) {
-    fs.writeFileSync(configFilePath, getConfigExample());
-    // throw new Error(`[ConfigStore] Config file missing at ${configFilePath}`);
-  }
-  const content = fs.readFileSync(configFilePath, "utf-8");
-  return parseConfigFile(content);
+  return getStore().getData();
 }
 
 export function saveConfig(config: ProxyConfigFile): void {
-  ensureConfigDir();
-  const content = serializeConfigFile(proxyConfigSchema.parse(config));
-  fs.writeFileSync(configFilePath, content, "utf-8");
-}
+  // For backward compatibility, we need to update the store's data and save
+  const currentStore = getStore();
 
-function writeDefaultConfig(): ProxyConfigFile {
-  const defaultConfig: ProxyConfigFile = {
-    instances: [
-      {
-        name: "AI",
-        port: 27890,
-        enabled: true,
-        description: "默认创建的代理实例，可根据需要修改或删除",
-        headers: null,
-        forwards: [
-          {
-            name: "example",
-            enabled: true,
-            target: "https://httpbin.org",
-            description: "示例转发规则，可作为配置参考",
-            path: null,
-            methods: ["*"],
-            headers: {
-              "X-Proxy-By": "Claude Code Proxy",
-            },
-          },
-        ],
-      },
-    ],
-  };
-  saveConfig(defaultConfig);
-  return defaultConfig;
+  // Update settings if provided
+  if (config.settings !== undefined) {
+    currentStore.updateSettings(config.settings);
+  }
+
+  // Update each instance
+  const currentInstances = new Set(currentStore.getAllInstances().map((i) => i.name));
+  const newInstances = new Set(config.instances.map((i) => i.name));
+
+  // Delete removed instances
+  for (const name of currentInstances) {
+    if (!newInstances.has(name)) {
+      currentStore.deleteInstance(name);
+    }
+  }
+
+  // Upsert all new/updated instances
+  for (const instance of config.instances) {
+    currentStore.upsertInstance(instance);
+  }
 }
 
 export function initConfigStore(): void {
-  ensureConfigDir();
-  if (!fs.existsSync(configFilePath)) {
-    writeDefaultConfig();
-    console.log(`[ConfigStore] Created configuration file at ${configFilePath}`);
-    return;
-  }
-  // Validate existing file
-  loadConfig();
+  // Just ensure the store is initialized
+  getStore();
+  console.log(`[ConfigStore] Configuration loaded from ${getConfigFilePath()}`);
 }
 
 // ---------- Query helpers ----------
 
 export function getAllInstances(): ProxyInstanceConfig[] {
-  return loadConfig().instances;
+  return getStore().getAllInstances();
 }
 
 export function getInstanceByName(name: string): ProxyInstanceConfig | null {
-  return loadConfig().instances.find((inst) => inst.name === name) ?? null;
+  return getStore().getInstanceByName(name);
 }
 
 export function upsertInstance(instance: ProxyInstanceConfig): void {
-  const config = loadConfig();
-  const idx = config.instances.findIndex((i) => i.name === instance.name);
-  if (idx >= 0) {
-    config.instances[idx] = instance;
-  } else {
-    config.instances.push(instance);
-  }
-  saveConfig(config);
+  getStore().upsertInstance(instance);
 }
 
 export function deleteInstance(name: string): boolean {
-  const config = loadConfig();
-  const before = config.instances.length;
-  config.instances = config.instances.filter((i) => i.name !== name);
-  if (config.instances.length === before) return false;
-  saveConfig(config);
-  return true;
+  return getStore().deleteInstance(name);
 }
 
 export function getForwardsByInstanceName(instanceName: string): ProxyForwardConfig[] {
-  return getInstanceByName(instanceName)?.forwards ?? [];
+  return getStore().getForwardsByInstanceName(instanceName);
 }
 
 /**
  * 追加一条转发规则（允许同名）。
  */
 export function addForward(instanceName: string, forward: ProxyForwardConfig): void {
-  const config = loadConfig();
-  const instance = config.instances.find((i) => i.name === instanceName);
-  if (!instance) {
-    throw new Error(`Instance not found: ${instanceName}`);
-  }
-  instance.forwards.push(forward);
-  saveConfig(config);
+  getStore().addForward(instanceName, forward);
 }
 
 /**
@@ -140,94 +118,45 @@ export function updateForwardByIndex(
   forwardIndex: number,
   forward: ProxyForwardConfig,
 ): void {
-  const config = loadConfig();
-  const instance = config.instances.find((i) => i.name === instanceName);
-  if (!instance) {
-    throw new Error(`Instance not found: ${instanceName}`);
-  }
-  if (forwardIndex < 0 || forwardIndex >= instance.forwards.length) {
-    throw new Error(`Forward index out of range: ${forwardIndex}`);
-  }
-  instance.forwards[forwardIndex] = forward;
-  saveConfig(config);
+  getStore().updateForwardByIndex(instanceName, forwardIndex, forward);
 }
 
 /**
  * 根据索引删除转发规则。
  */
 export function deleteForwardByIndex(instanceName: string, forwardIndex: number): boolean {
-  const config = loadConfig();
-  const instance = config.instances.find((i) => i.name === instanceName);
-  if (!instance) return false;
-  if (forwardIndex < 0 || forwardIndex >= instance.forwards.length) return false;
-  instance.forwards.splice(forwardIndex, 1);
-  saveConfig(config);
-  return true;
+  return getStore().deleteForwardByIndex(instanceName, forwardIndex);
 }
 
 /**
  * 保留旧行为：按 name upsert，但不用于允许同名的场景。
  */
 export function upsertForward(instanceName: string, forward: ProxyForwardConfig): void {
-  const config = loadConfig();
-  const idx = config.instances.findIndex((i) => i.name === instanceName);
-  if (idx === -1) {
-    throw new Error(`Instance not found: ${instanceName}`);
-  }
-  const instance = config.instances[idx];
+  const instance = getStore().getInstanceByName(instanceName);
   if (!instance) {
     throw new Error(`Instance not found: ${instanceName}`);
   }
   const forwards = instance.forwards;
   const fIdx = forwards.findIndex((f) => f.name === forward.name);
   if (fIdx >= 0) {
-    forwards[fIdx] = forward;
+    getStore().updateForwardByIndex(instanceName, fIdx, forward);
   } else {
-    forwards.push(forward);
+    getStore().addForward(instanceName, forward);
   }
-  instance.forwards = forwards;
-  saveConfig(config);
 }
 
 export function deleteForward(instanceName: string, forwardName: string): boolean {
-  const config = loadConfig();
-  const idx = config.instances.findIndex((i) => i.name === instanceName);
+  const forwards = getStore().getForwardsByInstanceName(instanceName);
+  const idx = forwards.findIndex((f) => f.name === forwardName);
   if (idx === -1) return false;
-  const instance = config.instances[idx];
-  if (!instance) return false;
-  const forwards = instance.forwards;
-  const before = forwards.length;
-  instance.forwards = forwards.filter((f) => f.name !== forwardName);
-  if (instance.forwards.length === before) return false;
-  saveConfig(config);
-  return true;
+  return getStore().deleteForwardByIndex(instanceName, idx);
 }
 
 /**
  * 按索引顺序重排转发规则。索引基于当前顺序，调用方需确保无重复且覆盖全部。
  */
 export function reorderForwardsByIndexes(instanceName: string, orderedIndexes: number[]): void {
-  const config = loadConfig();
-  const instIdx = config.instances.findIndex((i) => i.name === instanceName);
-  if (instIdx === -1) throw new Error(`Instance not found: ${instanceName}`);
-  const instance = config.instances[instIdx];
-  if (!instance) throw new Error(`Instance not found: ${instanceName}`);
-
-  const forwards = instance.forwards;
-  if (orderedIndexes.length !== forwards.length) {
-    throw new Error("Order must include all forwards of the instance");
-  }
-
-  const unique = new Set(orderedIndexes);
-  if (unique.size !== orderedIndexes.length) {
-    throw new Error("Order contains duplicate indexes");
-  }
-  if ([...unique].some((idx) => idx < 0 || idx >= forwards.length)) {
-    throw new Error("Order contains invalid forward indexes");
-  }
-
-  instance.forwards = orderedIndexes.map((idx) => forwards[idx]!);
-  saveConfig(config);
+  getStore().reorderForwardsByIndexes(instanceName, orderedIndexes);
 }
 
 /**
@@ -269,4 +198,78 @@ export function reorderForwards(instanceName: string, orderedNames: string[]): v
 export function getNormalizedForwards(instanceName: string): ProxyForwardConfig[] {
   const forwards = getForwardsByInstanceName(instanceName);
   return normalizeForwardGroups(forwards);
+}
+
+// ---------- 文件监听控制 ----------
+
+/**
+ * 启用配置文件监听
+ */
+export function enableConfigWatch(): void {
+  getStore().startWatch();
+}
+
+/**
+ * 禁用配置文件监听
+ */
+export function disableConfigWatch(): void {
+  getStore().stopWatch();
+}
+
+/**
+ * 检查配置文件监听是否启用
+ */
+export function isConfigWatchEnabled(): boolean {
+  return getStore().isWatching();
+}
+
+// ---------- Store 事件订阅 ----------
+
+/**
+ * 获取底层 Store 实例，用于订阅事件
+ */
+export function getProxyConfigStore(): ProxyConfigStore {
+  return getStore();
+}
+
+/**
+ * 订阅配置变更事件
+ */
+export function onConfigChange(
+  callback: (event: { type: string; data: ProxyConfigFile }) => void,
+): () => void {
+  const store = getStore();
+  store.on("change", callback);
+  return () => store.off("change", callback);
+}
+
+/**
+ * 订阅实例变更事件
+ */
+export function onInstanceChange(
+  callback: (event: {
+    type: "create" | "update" | "delete";
+    instanceName: string;
+    instance?: ProxyInstanceConfig;
+  }) => void,
+): () => void {
+  const store = getStore();
+  store.on("instance-change", callback);
+  return () => store.off("instance-change", callback);
+}
+
+/**
+ * 订阅转发规则变更事件
+ */
+export function onForwardChange(
+  callback: (event: {
+    type: "create" | "update" | "delete" | "reorder";
+    instanceName: string;
+    forwardIndex?: number;
+    forward?: ProxyForwardConfig;
+  }) => void,
+): () => void {
+  const store = getStore();
+  store.on("forward-change", callback);
+  return () => store.off("forward-change", callback);
 }

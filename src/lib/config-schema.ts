@@ -53,6 +53,7 @@ const headersSchema = z
 
 export const proxyForwardSchema = z
   .object({
+    id: z.string().trim().min(1).optional(),
     name: z.string().min(1).trim(),
     enabled: z.boolean().default(true),
     target: z.string().url(),
@@ -104,7 +105,7 @@ export const proxyInstanceSchema = z
 
 export const proxyGlobalSettingsSchema = z
   .object({
-    autoWatchConfig: z.boolean().default(false),
+    frontendAutoPullConfig: z.boolean().default(false),
     dbPath: z.string().optional(),
   })
   .optional();
@@ -119,8 +120,24 @@ export const proxyConfigSchema = z
     instances: config.instances,
   }));
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function parseConfigFile(content: string): ProxyConfigFile {
-  const parsed = JSON.parse(content);
+  const parsed: unknown = JSON.parse(content);
+
+  // 兼容一次性迁移：autoWatchConfig -> frontendAutoPullConfig
+  if (isRecord(parsed) && isRecord(parsed.settings)) {
+    const settings = parsed.settings;
+    if (
+      typeof settings.frontendAutoPullConfig !== "boolean" &&
+      typeof settings.autoWatchConfig === "boolean"
+    ) {
+      settings.frontendAutoPullConfig = settings.autoWatchConfig;
+    }
+    delete settings.autoWatchConfig;
+  }
   return proxyConfigSchema.parse(parsed);
 }
 
