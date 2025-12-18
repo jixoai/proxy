@@ -743,6 +743,30 @@ async function main(argv: string[]) {
                 bodyMs,
               });
             });
+
+            // 响应流传输过程中出错（如上游中途断开），error 和 end 互斥，必须处理
+            proxyRes.on("error", (error) => {
+              const errorTtfb = Date.now() - attemptStart;
+              const errorBody = Buffer.from(
+                JSON.stringify({
+                  error: "上游响应流错误",
+                  message: error.message,
+                }),
+              );
+              resolve({
+                statusCode: 502,
+                statusMessage: "Bad Gateway",
+                headers: {
+                  "content-type": "application/json",
+                  "content-length": errorBody.length,
+                },
+                bodyBuffer: errorBody,
+                contentType: "application/json",
+                errorMessage: error.message,
+                ttfbMs: errorTtfb,
+                bodyMs: 0,
+              });
+            });
           },
         );
 

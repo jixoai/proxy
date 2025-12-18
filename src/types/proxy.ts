@@ -16,6 +16,8 @@ export type HookConfig = HttpHookConfig;
 export interface HooksConfig {
   request?: HookConfig | HookConfig[] | null;
   response?: HookConfig | HookConfig[] | null;
+  /** 同时作为 request 和 response hook */
+  reqres?: HookConfig | HookConfig[] | null;
 }
 
 export interface ProxyForwardConfig {

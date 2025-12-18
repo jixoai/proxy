@@ -415,8 +415,9 @@ export class HooksExecutor {
   }
 
   async start(): Promise<void> {
-    const requestConfigs = this.normalizeHooks(this.instanceHooks?.request);
-    const responseConfigs = this.normalizeHooks(this.instanceHooks?.response);
+    const reqresConfigs = this.normalizeHooks(this.instanceHooks?.reqres);
+    const requestConfigs = [...reqresConfigs, ...this.normalizeHooks(this.instanceHooks?.request)];
+    const responseConfigs = [...reqresConfigs, ...this.normalizeHooks(this.instanceHooks?.response)];
 
     for (const config of requestConfigs) {
       const hook = await globalHooksPool.acquire(config);
@@ -455,8 +456,9 @@ export class HooksExecutor {
     const oldResponseHooks = this.forwardResponseHooks;
 
     // 先 acquire 新的 hooks（这样如果配置相同，引用计数会先+1）
-    const requestConfigs = this.normalizeHooks(hooks?.request);
-    const responseConfigs = this.normalizeHooks(hooks?.response);
+    const reqresConfigs = this.normalizeHooks(hooks?.reqres);
+    const requestConfigs = [...reqresConfigs, ...this.normalizeHooks(hooks?.request)];
+    const responseConfigs = [...reqresConfigs, ...this.normalizeHooks(hooks?.response)];
 
     const newRequestHooks: HookProcess[] = [];
     const newResponseHooks: HookProcess[] = [];

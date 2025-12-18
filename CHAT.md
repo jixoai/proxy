@@ -1095,3 +1095,14 @@ dbPath 默认值为:"~/.jixo/.proxy/${VERSION}",这里用抽象的字段定义. 
 ---
 
 在我 hover 到某个“路径”的时候,我希望能在 tooltip 看到对应的 forward的信息,包括 name+description
+
+---
+
+我偶尔会看到一个请求卡了非常非常久,我不确定是否是上游的问题,还是我们自己的问题.
+我的意思并不是要你做超时关闭,毕竟我们只是中间代理器,是要尊重客观的请求返回行为的.
+我要你调查的是,我们这边的代码是不是有什么bug可能引发我提到的这种现象.
+
+---
+
+接下来我需要你开一个packages文件夹,将我们的plugins复制到这些packages中,现有的plugins不要动
+在packages中,我需要你开发一个子包:`@jixo/proxy-plugin`,目的是封装目前插件开发的一些抽象接口,让插件开发更加容易,然后另外开一个`@jixo/proxy-plugin-droid`,来基于`@jixo/proxy-plugin`重新实现,并提供健全的单元测试(bun test)

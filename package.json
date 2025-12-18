@@ -3,6 +3,9 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "ui": "bunx shadcn@latest",
     "kill-port": "bun ./src/lib/kill-port.ts",
@@ -11,6 +14,7 @@
     "start": "NODE_ENV=production bun src/cli.ts",
     "build": "bun run build.ts binary",
     "build:all": "bun run build.ts binary --all",
+    "pub": "bun scripts/pub.ts",
     "proxy": "bun src/proxy-server.ts",
     "viewer": "bun src/viewer-server.ts",
     "release": "bun scripts/release.ts"

@@ -28,12 +28,13 @@ const hooksSchema = z
   .object({
     request: hookFieldSchema,
     response: hookFieldSchema,
+    reqres: hookFieldSchema,
   })
   .optional()
   .nullable()
   .transform<HooksConfig | null>((value) => {
     if (!value) return null;
-    if (!value.request && !value.response) return null;
+    if (!value.request && !value.response && !value.reqres) return null;
     return value;
   });
 

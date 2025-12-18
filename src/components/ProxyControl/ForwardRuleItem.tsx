@@ -16,7 +16,8 @@ interface ForwardRuleItemProps {
   onUpdate: () => void;
   highlighted?: boolean;
   instanceHeaders?: Record<string, string> | null;
-  unreachable?: boolean;
+  /** 如果有值，表示会先尝试该规则名 */
+  priorRuleName?: string | null;
   showName?: boolean;
   showDragHandle?: boolean;
   dragHandleProps?: Record<string, unknown>;
@@ -30,7 +31,7 @@ export function ForwardRuleItem({
   onUpdate,
   highlighted,
   instanceHeaders,
-  unreachable = false,
+  priorRuleName = null,
   showName = true,
   showDragHandle = false,
   dragHandleProps,
@@ -99,7 +100,7 @@ export function ForwardRuleItem({
     <div
       className={`bg-card flex items-center justify-between gap-4 rounded-lg border p-3 transition-all ${
         highlighted ? "border-primary/60 bg-primary/5 shadow-sm" : ""
-      } ${unreachable ? "opacity-60 grayscale" : ""} ${
+      } ${priorRuleName ? "opacity-75" : ""} ${
         isDisabled ? "opacity-50 bg-muted/30 border-dashed" : ""
       }`}
     >
@@ -121,9 +122,9 @@ export function ForwardRuleItem({
             <Badge variant="outline" className="px-1.5 py-0.5 font-mono text-[10px]">
               {methodLabel}
             </Badge>
-            {unreachable && (
-              <Badge variant="outline" className="text-[10px]">
-                当前顺序不可命中
+            {priorRuleName && (
+              <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300">
+                会先尝试 {priorRuleName}
               </Badge>
             )}
             {customHeadersCount > 0 && (
@@ -151,9 +152,9 @@ export function ForwardRuleItem({
               {forward.target}
               <ExternalLink className="h-3 w-3 flex-shrink-0" />
             </a>
-            {unreachable && (
+            {priorRuleName && (
               <span className="text-[11px] text-amber-600">
-                同路径已被上方不同名称规则覆盖，拖动调整顺序后生效
+                若 {priorRuleName} 失败会回落到此规则
               </span>
             )}
           </div>

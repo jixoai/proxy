@@ -108,7 +108,7 @@ function SortableItem({
   instanceHeaders,
   onUpdate,
   highlighted,
-  unreachable,
+  priorRuleName,
   showDragHandle,
   stats,
   focusedForwardIndex,
@@ -122,7 +122,7 @@ function SortableItem({
   instanceHeaders: Record<string, string> | null;
   onUpdate: () => void;
   highlighted: boolean;
-  unreachable: boolean;
+  priorRuleName: string | null;
   showDragHandle: boolean;
   stats: any;
   focusedForwardIndex: number | null;
@@ -158,7 +158,7 @@ function SortableItem({
         onUpdate={onUpdate}
         highlighted={highlighted}
         instanceHeaders={instanceHeaders}
-        unreachable={unreachable}
+        priorRuleName={priorRuleName}
         showName={false}
         showDragHandle={showDragHandle}
         dragHandleProps={showDragHandle ? { ...attributes, ...listeners } : undefined}
@@ -414,14 +414,15 @@ export function ForwardRulesList({ instanceName, focusedForwardName }: ForwardRu
     if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [focusedForwardIndex]);
 
-  const unreachableFlags = useMemo(() => {
+  /** 返回被哪个规则优先匹配（返回上方规则名称，null 表示不会被其他规则优先） */
+  const priorRuleNames = useMemo(() => {
     const seen = new Map<string, string>();
-    const flags = new Map<number, boolean>();
+    const flags = new Map<number, string | null>();
     forwards.forEach((forward) => {
       const pathKey = normalizePathname(forward.path ?? "/");
       const ownerName = seen.get(pathKey);
-      const unreachable = ownerName !== undefined && ownerName !== forward.name;
-      flags.set(forward.originalIndex, unreachable);
+      const priorName = ownerName !== undefined && ownerName !== forward.name ? ownerName : null;
+      flags.set(forward.originalIndex, priorName);
       if (!ownerName) seen.set(pathKey, forward.name);
     });
     return flags;
@@ -528,7 +529,7 @@ export function ForwardRulesList({ instanceName, focusedForwardName }: ForwardRu
                                 instanceHeaders={instanceHeaders}
                                 onUpdate={loadForwards}
                                 highlighted={focusedForwardIndex === forward.originalIndex}
-                                unreachable={unreachableFlags.get(forward.originalIndex) ?? false}
+                                priorRuleName={priorRuleNames.get(forward.originalIndex) ?? null}
                                 showDragHandle={isMultiItemGroup}
                                 stats={forward.id ? getStats(forward.id) : null}
                                 focusedForwardIndex={focusedForwardIndex ?? null}
@@ -556,7 +557,7 @@ export function ForwardRulesList({ instanceName, focusedForwardName }: ForwardRu
                     onUpdate={() => {}}
                     highlighted={false}
                     instanceHeaders={instanceHeaders}
-                    unreachable={false}
+                    priorRuleName={null}
                     showName={false}
                     showDragHandle={true}
                     stats={null}
