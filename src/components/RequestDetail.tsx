@@ -64,7 +64,14 @@ export function RequestDetail() {
       : {};
   }, [selectedDetail]);
 
+  const hookedResponseHeaders = useMemo(() => {
+    return selectedDetail?.hookedResponseContent
+      ? parseMarkdownHeaders(selectedDetail.hookedResponseContent)
+      : {};
+  }, [selectedDetail]);
+
   const hasHookedRequest = selectedDetail?.metadata?.hasHookedRequest ?? false;
+  const hasHookedResponse = selectedDetail?.metadata?.hasHookedResponse ?? false;
 
   // 复制为 fetch 代码
   const handleCopyAsFetch = async (mode: "via-proxy" | "to-target") => {
@@ -234,8 +241,32 @@ export function RequestDetail() {
               <RequestBodyViewer body={selectedDetail.requestBody} headers={requestHeaders} />
             ))}
 
-          {/* Response Body - 使用 ResponseBodyViewer 支持自动解压 */}
-          <ResponseBodyViewer body={selectedDetail.responseBody || ""} headers={responseHeaders} />
+          {/* Response Body - 如果有 hooked 数据，使用 tabs */}
+          {hasHookedResponse ? (
+            <Tabs defaultValue="hooked" className="w-full">
+              <TabsList>
+                <TabsTrigger value="hooked" className="gap-1">
+                  <Zap className="h-3 w-3" />
+                  Hooked
+                </TabsTrigger>
+                <TabsTrigger value="original">Original</TabsTrigger>
+              </TabsList>
+              <TabsContent value="hooked">
+                <ResponseBodyViewer
+                  body={selectedDetail.hookedResponseBody || ""}
+                  headers={hookedResponseHeaders}
+                />
+              </TabsContent>
+              <TabsContent value="original">
+                <ResponseBodyViewer
+                  body={selectedDetail.responseBody || ""}
+                  headers={responseHeaders}
+                />
+              </TabsContent>
+            </Tabs>
+          ) : (
+            <ResponseBodyViewer body={selectedDetail.responseBody || ""} headers={responseHeaders} />
+          )}
         </div>
       </div>
     </div>

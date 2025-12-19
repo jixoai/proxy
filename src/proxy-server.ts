@@ -533,6 +533,12 @@ async function main(argv: string[]) {
       errorMessage?: string;
       abortReason?: AbortReason;
       forwardRule: ForwardRule;
+      hasResponseHookChanges?: boolean;
+      originalStatusCode?: number;
+      originalStatusMessage?: string;
+      originalHeaders?: http.IncomingHttpHeaders;
+      originalBodyBuffer?: Buffer;
+      originalContentType?: string | null;
     } | null = null;
 
     for (let i = 0; i < candidateIndexes.length; i++) {
@@ -663,6 +669,12 @@ async function main(argv: string[]) {
         abortReason?: AbortReason;
         ttfbMs: number;
         bodyMs: number;
+        hasResponseHookChanges?: boolean;
+        originalStatusCode?: number;
+        originalStatusMessage?: string;
+        originalHeaders?: http.IncomingHttpHeaders;
+        originalBodyBuffer?: Buffer;
+        originalContentType?: string | null;
       }>((resolve, reject) => {
         // 检查是否已经被中断
         if (abortSignal.aborted) {
@@ -719,6 +731,14 @@ async function main(argv: string[]) {
               let bodyBuffer = Buffer.concat(responseChunks);
               let contentType = (responseHeaders["content-type"] as string) ?? null;
 
+              // 保存原始响应数据（用于与 hooked 对比）
+              const originalStatusCode = statusCode;
+              const originalStatusMessage = statusMessage;
+              const originalHeaders = { ...responseHeaders };
+              const originalBodyBuffer = bodyBuffer;
+              const originalContentType = contentType;
+              let hasResponseHookChanges = false;
+
               if (hooksExecutor?.hasResponseHooks) {
                 try {
                   const hookResult = await hooksExecutor.executeResponseHooks({
@@ -728,12 +748,25 @@ async function main(argv: string[]) {
                     body: bodyBuffer,
                     signal: abortSignal,
                   });
-                  if (hookResult.statusCode !== undefined) statusCode = hookResult.statusCode;
-                  if (hookResult.statusMessage !== undefined)
+                  if (hookResult.statusCode !== undefined && hookResult.statusCode !== statusCode) {
+                    statusCode = hookResult.statusCode;
+                    hasResponseHookChanges = true;
+                  }
+                  if (hookResult.statusMessage !== undefined && hookResult.statusMessage !== statusMessage) {
                     statusMessage = hookResult.statusMessage;
-                  if (hookResult.headers)
+                    hasResponseHookChanges = true;
+                  }
+                  if (hookResult.headers) {
                     responseHeaders = hookResult.headers as http.IncomingHttpHeaders;
-                  if (hookResult.body !== undefined) bodyBuffer = Buffer.from(hookResult.body);
+                    hasResponseHookChanges = true;
+                  }
+                  if (hookResult.body !== undefined) {
+                    const nextBody = Buffer.from(hookResult.body);
+                    if (!nextBody.equals(bodyBuffer)) {
+                      hasResponseHookChanges = true;
+                    }
+                    bodyBuffer = nextBody;
+                  }
                   contentType = (responseHeaders["content-type"] as string) ?? contentType;
                 } catch (err) {
                   console.error("[Hooks] Response hook error:", err);
@@ -750,6 +783,13 @@ async function main(argv: string[]) {
                 contentType,
                 ttfbMs,
                 bodyMs,
+                // 原始响应数据（如果有 hook 变更）
+                hasResponseHookChanges,
+                originalStatusCode: hasResponseHookChanges ? originalStatusCode : undefined,
+                originalStatusMessage: hasResponseHookChanges ? originalStatusMessage : undefined,
+                originalHeaders: hasResponseHookChanges ? originalHeaders : undefined,
+                originalBodyBuffer: hasResponseHookChanges ? originalBodyBuffer : undefined,
+                originalContentType: hasResponseHookChanges ? originalContentType : undefined,
               });
             });
 
@@ -880,9 +920,18 @@ async function main(argv: string[]) {
       return;
     }
 
+    // 构建响应体 data URL
     const responseBodyDataUrl =
       finalResult.bodyBuffer.length > 0
         ? bufferToDataUrl(finalResult.bodyBuffer, finalResult.contentType ?? undefined)
+        : null;
+
+    // 如果有 response hook 变更，保存原始响应和 hooked 响应
+    const originalResponseBodyDataUrl =
+      finalResult.hasResponseHookChanges && finalResult.originalBodyBuffer
+        ? finalResult.originalBodyBuffer.length > 0
+          ? bufferToDataUrl(finalResult.originalBodyBuffer, finalResult.originalContentType ?? undefined)
+          : null
         : null;
 
     const isRequestAborted = finalResult.abortReason !== undefined;
@@ -891,16 +940,41 @@ async function main(argv: string[]) {
       abort_reason: isRequestAborted ? finalResult.abortReason! : null,
       error_message: finalResult.errorMessage ?? null,
       forward_name: finalResult.forwardRule.name,
-      response: {
-        statusCode: finalResult.statusCode,
-        statusMessage: finalResult.statusMessage,
-        headers: finalResult.headers as Record<string, string | string[]>,
-        bodyDataUrl: responseBodyDataUrl,
-        bodySize: finalResult.bodyBuffer.length,
-        ttfbMs: finalResult.ttfbMs,
-        bodyMs: finalResult.bodyMs,
-        contentType: finalResult.contentType ?? null,
-      },
+      // 原始响应（如果有 hook 则是原始数据，否则就是最终数据）
+      response: finalResult.hasResponseHookChanges
+        ? {
+            statusCode: finalResult.originalStatusCode!,
+            statusMessage: finalResult.originalStatusMessage!,
+            headers: finalResult.originalHeaders as Record<string, string | string[]>,
+            bodyDataUrl: originalResponseBodyDataUrl,
+            bodySize: finalResult.originalBodyBuffer?.length ?? 0,
+            ttfbMs: finalResult.ttfbMs,
+            bodyMs: finalResult.bodyMs,
+            contentType: finalResult.originalContentType ?? null,
+          }
+        : {
+            statusCode: finalResult.statusCode,
+            statusMessage: finalResult.statusMessage,
+            headers: finalResult.headers as Record<string, string | string[]>,
+            bodyDataUrl: responseBodyDataUrl,
+            bodySize: finalResult.bodyBuffer.length,
+            ttfbMs: finalResult.ttfbMs,
+            bodyMs: finalResult.bodyMs,
+            contentType: finalResult.contentType ?? null,
+          },
+      // Hooked 响应（仅当有变更时）
+      hookedResponse: finalResult.hasResponseHookChanges
+        ? {
+            statusCode: finalResult.statusCode,
+            statusMessage: finalResult.statusMessage,
+            headers: finalResult.headers as Record<string, string | string[]>,
+            bodyDataUrl: responseBodyDataUrl,
+            bodySize: finalResult.bodyBuffer.length,
+            ttfbMs: finalResult.ttfbMs,
+            bodyMs: finalResult.bodyMs,
+            contentType: finalResult.contentType ?? null,
+          }
+        : undefined,
     });
     dbNotifier.notify("update", "proxy_requests", dbRecordId);
 

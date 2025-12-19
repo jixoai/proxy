@@ -196,6 +196,7 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
     ...updates,
     request: { ...existing.request, ...(updates as LoggedRequest).request },
     response: updates.response ? { ...existing.response, ...updates.response } : existing.response,
+    hookedResponse: updates.hookedResponse !== undefined ? updates.hookedResponse : existing.hookedResponse,
     group_name:
       updates.group_name ??
       coerceGroupName(

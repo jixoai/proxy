@@ -69,6 +69,8 @@ interface RequestData {
   responseBody?: string;
   hookedRequestContent?: string;
   hookedRequestBody?: string;
+  hookedResponseContent?: string;
+  hookedResponseBody?: string;
 }
 
 function coerceBodyDataUrl(
@@ -85,6 +87,7 @@ function coerceBodyDataUrl(
 
 function formatProxyRequest(req: LoggedRequest): RequestData {
   const hasHookedRequest = !!req.hookedRequest;
+  const hasHookedResponse = !!req.hookedResponse;
 
   return {
     id: (req.id ?? req.request_id).toString(),
@@ -127,6 +130,15 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
             url: req.hookedRequest!.url,
             headersCount: Object.keys(req.hookedRequest!.headers ?? {}).length,
             bodySize: req.hookedRequest!.bodySize,
+          }
+        : undefined,
+      hasHookedResponse,
+      hookedResponse: hasHookedResponse
+        ? {
+            statusCode: req.hookedResponse!.statusCode,
+            statusMessage: req.hookedResponse!.statusMessage,
+            headersCount: Object.keys(req.hookedResponse!.headers ?? {}).length,
+            bodySize: req.hookedResponse!.bodySize,
           }
         : undefined,
     },
@@ -508,6 +520,31 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       }
     } else {
       formatted.responseContent = `# 响应信息\n\n- **状态**: ${req.status}\n`;
+    }
+
+    if (req.hookedResponse) {
+      const hookedHeaders = req.hookedResponse.headers ?? {};
+      formatted.hookedResponseContent =
+        `# Hooked 响应信息\n\n` +
+        `- **状态码**: ${req.hookedResponse.statusCode ?? ""} ${req.hookedResponse.statusMessage || ""}\n\n` +
+        `## 响应头\n\n\`\`\`\n${Object.entries(hookedHeaders)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join("\n")}\n\`\`\`\n\n`;
+
+      const hookedContentType = req.hookedResponse.contentType ?? null;
+      const hookedBodyDataUrl = coerceBodyDataUrl(req.hookedResponse.bodyDataUrl, hookedContentType);
+
+      if (hookedBodyDataUrl) {
+        const { mime, buffer } = dataUrlToBuffer(hookedBodyDataUrl);
+        const isText = isTextLikeMime(mime);
+        formatted.hookedResponseContent += `## 响应体\n\n大小: ${req.hookedResponse.bodySize} bytes\n\n`;
+        if (isText) {
+          formatted.hookedResponseContent += `\`\`\`\n${buffer.toString("utf-8")}\n\`\`\`\n`;
+        } else {
+          formatted.hookedResponseContent += `二进制数据 (${buffer.length} bytes)\n`;
+        }
+        formatted.hookedResponseBody = hookedBodyDataUrl;
+      }
     }
 
     return formatted;

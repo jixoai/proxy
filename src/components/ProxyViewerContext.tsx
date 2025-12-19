@@ -64,6 +64,10 @@ export interface RequestData {
     hasHookedRequest?: boolean;
     /** hooks 处理后的请求元数据 */
     hookedRequest?: RequestMetadata;
+    /** hooks 是否有修改响应 */
+    hasHookedResponse?: boolean;
+    /** hooks 处理后的响应元数据 */
+    hookedResponse?: ResponseMetadata;
   };
   requestContent?: string;
   responseContent?: string;
@@ -75,6 +79,10 @@ export interface RequestData {
   hookedRequestContent?: string;
   /** hooks 处理后的请求体 */
   hookedRequestBody?: string;
+  /** hooks 处理后的响应头（markdown 格式） */
+  hookedResponseContent?: string;
+  /** hooks 处理后的响应体 */
+  hookedResponseBody?: string;
 }
 
 interface ProxyViewerContextValue {

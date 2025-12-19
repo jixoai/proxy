@@ -1111,3 +1111,7 @@ dbPath 默认值为:"~/.jixo/.proxy/${VERSION}",这里用抽象的字段定义. 
 
 BUG: 同name的forwards, 第一个disabled了,但是仍然会走到第一个.
 还有我们的RequestData是不是没有客观存储forwardId?不然我切换forwards规则的时候,页面上所有的req列表,hover上去显示的forward就变了
+
+---
+
+我们req/res都有hook的支持,但是目前只有request有在界面上渲染Hooked/Origin的tabs,我们的 ResponeBody 也需要支持,如果有的话
