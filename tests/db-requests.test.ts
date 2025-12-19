@@ -21,6 +21,7 @@ describe("db-requests logging pipeline", () => {
       timestamp: new Date().toISOString(),
       instance_name: "test-instance",
       forward_name: "test-forward",
+      forward_id: "test-forward-id",
       group_name: "test-instance/test-forward",
       status: "pending",
       abort_reason: null,

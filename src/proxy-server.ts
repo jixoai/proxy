@@ -153,6 +153,10 @@ async function main(argv: string[]) {
       log.info(
         `[Config] Loaded ${forwards.length} forward rules (${enabledCount} enabled) for "${INSTANCE_NAME}"`,
       );
+      // 详细日志：显示每个 forward 的 enabled 状态
+      forwards.forEach((f, idx) => {
+        log.info(`[Config]   [${idx}] ${f.name}: enabled=${f.enabled}, path=${f.path || "(default)"}`);
+      });
 
       // 初始化 hooks 执行器
       if (instanceHooks || forwards.some((f) => f.hooks)) {
@@ -212,6 +216,10 @@ async function main(argv: string[]) {
     log.info(
       `[Reload] Config updated: ${forwards.length} forward rules (${enabledCount} enabled), headers: ${instanceHeaders ? Object.keys(instanceHeaders).length : 0}`,
     );
+    // 详细日志：显示每个 forward 的 enabled 状态
+    forwards.forEach((f, idx) => {
+      log.info(`[Reload]   [${idx}] ${f.name}: enabled=${f.enabled}, path=${f.path || "(default)"}`);
+    });
   }
 
   // Worker 消息处理
@@ -606,6 +614,7 @@ async function main(argv: string[]) {
           timestamp,
           instance_name: INSTANCE_NAME,
           forward_name: forwardRule.name,
+          forward_id: forwardRule.id,
           group_name: `${INSTANCE_NAME}/${forwardRule.name}`,
           status: "pending",
           abort_reason: null,
@@ -923,7 +932,7 @@ async function main(argv: string[]) {
 
     const targetUrl = buildTargetUrl(matched.rule, requestUrl);
 
-    handleWebSocketProxy(req, socket, head, targetUrl, INSTANCE_NAME, matched.rule.name);
+    handleWebSocketProxy(req, socket, head, targetUrl, INSTANCE_NAME, matched.rule.name, matched.rule.id);
   });
 
   server.on("error", (error) => {

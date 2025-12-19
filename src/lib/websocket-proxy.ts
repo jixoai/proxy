@@ -124,6 +124,7 @@ export function handleWebSocketProxy(
   targetUrl: URL,
   instanceName: string,
   forwardName: string | null,
+  forwardId: string | null,
 ) {
   const log = createLogger("proxy:websocket");
 
@@ -195,6 +196,7 @@ export function handleWebSocketProxy(
           createWebSocketMessage({
             instance_name: instanceName,
             forward_name: forwardName,
+            forward_id: forwardId,
             connection_id: connectionId,
             message_index: ++messageIndex,
             direction: "send",
@@ -229,6 +231,7 @@ export function handleWebSocketProxy(
           createWebSocketMessage({
             instance_name: instanceName,
             forward_name: forwardName,
+            forward_id: forwardId,
             connection_id: connectionId,
             message_index: ++messageIndex,
             direction: "receive",

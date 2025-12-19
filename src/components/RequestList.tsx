@@ -185,12 +185,15 @@ export function RequestList() {
   // 跟踪当前右键菜单打开的行
   const [contextMenuOpenId, setContextMenuOpenId] = useState<string | null>(null);
 
-  // 根据 instanceName 和 forwardName 查找 forward 信息
-  const getForwardInfo = (instanceName?: string, forwardName?: string) => {
+  // 根据 instanceName 和 forwardId/forwardName 查找 forward 信息
+  const getForwardInfo = (instanceName?: string, forwardName?: string, forwardId?: string) => {
     if (!instanceName || !forwardName) return null;
     const instance = instances.find((i) => i.name === instanceName);
     if (!instance) return null;
-    const forward = instance.forwards.find((f) => f.name === forwardName);
+    // 优先使用 forwardId 精确匹配
+    const forward = forwardId
+      ? instance.forwards.find((f) => f.id === forwardId)
+      : instance.forwards.find((f) => f.name === forwardName);
     return forward ? { name: forward.name, description: forward.description } : null;
   };
 
@@ -339,6 +342,7 @@ export function RequestList() {
                               const forwardInfo = getForwardInfo(
                                 req.metadata.instanceName,
                                 req.metadata.forwardName,
+                                req.metadata.forwardId,
                               );
                               return forwardInfo ? (
                                 <div className="space-y-1">

@@ -1106,3 +1106,8 @@ dbPath 默认值为:"~/.jixo/.proxy/${VERSION}",这里用抽象的字段定义. 
 
 接下来我需要你开一个packages文件夹,将我们的plugins复制到这些packages中,现有的plugins不要动
 在packages中,我需要你开发一个子包:`@jixo/proxy-plugin`,目的是封装目前插件开发的一些抽象接口,让插件开发更加容易,然后另外开一个`@jixo/proxy-plugin-droid`,来基于`@jixo/proxy-plugin`重新实现,并提供健全的单元测试(bun test)
+
+---
+
+BUG: 同name的forwards, 第一个disabled了,但是仍然会走到第一个.
+还有我们的RequestData是不是没有客观存储forwardId?不然我切换forwards规则的时候,页面上所有的req列表,hover上去显示的forward就变了

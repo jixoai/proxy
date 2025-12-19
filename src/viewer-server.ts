@@ -95,6 +95,7 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
       bodyMs: req.response?.bodyMs,
       instanceName: req.instance_name,
       forwardName: req.forward_name,
+      forwardId: req.forward_id,
       status: req.status,
       abortReason: req.abort_reason,
       isWebSocket: req.is_websocket,

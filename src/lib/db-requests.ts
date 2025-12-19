@@ -38,6 +38,8 @@ export interface LoggedRequest {
   timestamp: string;
   instance_name: string | null;
   forward_name: string | null;
+  /** forward 的唯一 id，用于精确匹配同名 forward */
+  forward_id: string | null;
   group_name: string | null;
   status: RequestStatus;
   abort_reason: AbortReason | null;
@@ -74,6 +76,7 @@ function deserializeRequest(row: { id: number; data: string }): LoggedRequest {
   const parsed = JSON.parse(row.data) as LoggedRequest;
   parsed.id = row.id;
   parsed.abort_reason ??= null;
+  parsed.forward_id ??= null;
   return parsed;
 }
 
@@ -343,6 +346,7 @@ export function updateStreamingProgress(
 export function createWebSocketMessage(params: {
   instance_name: string | null;
   forward_name: string | null;
+  forward_id: string | null;
   connection_id: string;
   message_index: number;
   direction: "send" | "receive";
@@ -362,6 +366,7 @@ export function createWebSocketMessage(params: {
     timestamp: params.timestamp || new Date().toISOString(),
     instance_name: params.instance_name,
     forward_name: params.forward_name,
+    forward_id: params.forward_id,
     group_name: coerceGroupName(params.instance_name, params.forward_name),
     status: "completed",
     abort_reason: null,

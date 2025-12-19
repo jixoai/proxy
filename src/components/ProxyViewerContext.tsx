@@ -48,6 +48,8 @@ export interface RequestData {
     bodyMs?: number;
     instanceName?: string;
     forwardName?: string;
+    /** forward 的唯一 id，用于精确匹配同名 forward */
+    forwardId?: string;
     status: RequestStatus;
     abortReason?: AbortReason | null;
     isWebSocket: boolean;
