@@ -16,10 +16,12 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@jixo/proxy-plugin": "workspace:*"
+    "@jixo/proxy-plugin": "workspace:*",
+    "jmespath": "^0.16.0"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/jmespath": "^0.15.2",
     "typescript": "^5.0.0"
   }
 }

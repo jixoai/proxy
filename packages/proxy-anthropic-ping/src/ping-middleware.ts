@@ -10,14 +10,16 @@
 
 import { SessionManager } from "./session-manager";
 import { PrivateHeaders } from "@jixo/proxy-plugin";
+import jmespath from "jmespath";
 import type {
   SessionState,
   AnthropicRequestBody,
   PingPluginOptions,
   PingResult,
   Message,
+  SkipPingMatcher,
 } from "./types";
-import { PING_SESSION_END_MESSAGE } from "./types";
+import { DEFAULT_SKIP_PING_MATCHERS } from "./types";
 
 const DEFAULT_MAX_KEEP_ALIVE_DURATION_MS = 60 * 60 * 1000; // 60 分钟
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟，Anthropic 官方值
@@ -34,6 +36,7 @@ export class AnthropicPingMiddleware {
   private readonly idleThresholdMs: number;
   private readonly pollingIntervalMs: number;
   private readonly debug: boolean;
+  private readonly skipPingMatchers: SkipPingMatcher[];
   private readonly onPing?: (sessionId: string, pingCount: number) => void;
   private readonly onExpire?: (sessionId: string, reason: "timeout" | "manual") => void;
 
@@ -42,6 +45,7 @@ export class AnthropicPingMiddleware {
     this.idleThresholdMs = options.idleThresholdMs ?? DEFAULT_IDLE_THRESHOLD_MS;
     this.pollingIntervalMs = options.pollingIntervalMs ?? DEFAULT_POLLING_INTERVAL_MS;
     this.debug = options.debug ?? false;
+    this.skipPingMatchers = options.skipPingMatchers ?? DEFAULT_SKIP_PING_MATCHERS;
     this.onPing = options.onPing;
     this.onExpire = options.onExpire;
   }
@@ -114,29 +118,103 @@ export class AnthropicPingMiddleware {
 
   /**
    * 检查是否是结束保活的消息
-   * 检查最后一条 user 消息是否包含结束消息
+   * 使用 JMESPath 查询 body，如果任意规则返回 truthy 则认为是结束消息
    */
   private isEndMessage(body: AnthropicRequestBody): boolean {
     if (!body.messages || body.messages.length === 0) return false;
+    if (this.skipPingMatchers.length === 0) return false;
 
-    const lastMsg = body.messages[body.messages.length - 1];
-    if (!lastMsg || lastMsg.role !== "user") return false;
+    // 预处理 messages，将 content 数组转换为纯文本以便 JMESPath 查询
+    const normalizedBody = this.normalizeBodyForQuery(body);
 
-    if (typeof lastMsg.content === "string") {
-      return lastMsg.content.includes(PING_SESSION_END_MESSAGE);
+    // 检查是否匹配任意规则
+    return this.skipPingMatchers.some((matcher) => this.matchWithJMESPath(normalizedBody, matcher));
+  }
+
+  /**
+   * 预处理 body，将 message.content 数组转换为纯文本字符串
+   * 这样 JMESPath 查询时可以直接用 contains(content, 'xxx')
+   */
+  private normalizeBodyForQuery(body: AnthropicRequestBody): AnthropicRequestBody {
+    if (!body.messages) return body;
+
+    const normalizedMessages = body.messages.map((msg) => ({
+      ...msg,
+      content: this.extractMessageText(msg),
+    }));
+
+    return { ...body, messages: normalizedMessages };
+  }
+
+  /**
+   * 提取消息的文本内容
+   */
+  private extractMessageText(message: Message): string {
+    if (typeof message.content === "string") {
+      return message.content;
     }
 
-    if (Array.isArray(lastMsg.content)) {
-      // 检查任意一个 text block 是否包含结束消息
-      for (const block of lastMsg.content) {
+    if (Array.isArray(message.content)) {
+      const texts: string[] = [];
+      for (const block of message.content) {
         if (block.type === "text" && "text" in block) {
-          if (String(block.text).includes(PING_SESSION_END_MESSAGE)) {
-            return true;
-          }
+          texts.push(String(block.text));
+        }
+      }
+      return texts.join("");
+    }
+
+    return "";
+  }
+
+  /**
+   * 检查匹配器是否是 JMESPath 类型
+   */
+  private isJMESPathMatcher(matcher: SkipPingMatcher): matcher is string | { jmespath: string } {
+    if (typeof matcher === "string") return true;
+    return "jmespath" in matcher;
+  }
+
+  /**
+   * 检查匹配器是否是响应状态码类型
+   */
+  private isResponseStatusMatcher(matcher: SkipPingMatcher): matcher is { responseStatus: number | number[] } {
+    return typeof matcher === "object" && "responseStatus" in matcher;
+  }
+
+  /**
+   * 使用 JMESPath 查询匹配
+   */
+  private matchWithJMESPath(body: AnthropicRequestBody, matcher: SkipPingMatcher): boolean {
+    // 跳过非 JMESPath 匹配器
+    if (!this.isJMESPathMatcher(matcher)) return false;
+
+    const expression = typeof matcher === "string" ? matcher : matcher.jmespath;
+    
+    try {
+      const result = jmespath.search(body, expression);
+      // truthy 判断：非 null、非 undefined、非空字符串、非 false
+      return Boolean(result);
+    } catch (error) {
+      this.log(`JMESPath query error for "${expression}":`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 检查响应状态码是否匹配 skipPingMatchers 中的 responseStatus 规则
+   */
+  private shouldStopOnResponseStatus(statusCode: number): boolean {
+    for (const matcher of this.skipPingMatchers) {
+      if (this.isResponseStatusMatcher(matcher)) {
+        const { responseStatus } = matcher;
+        if (Array.isArray(responseStatus)) {
+          if (responseStatus.includes(statusCode)) return true;
+        } else {
+          if (responseStatus === statusCode) return true;
         }
       }
     }
-
     return false;
   }
 
@@ -239,6 +317,14 @@ export class AnthropicPingMiddleware {
         headers: pingHeaders,
         body: JSON.stringify(pingBody),
       });
+
+      // 检查是否应该因为响应状态码而停止 ping
+      if (this.shouldStopOnResponseStatus(response.status)) {
+        this.log(`Stopping ping for session ${sessionId} due to response status ${response.status}`);
+        this.sessionManager.delete(sessionId);
+        this.onExpire?.(sessionId, "manual");
+        return { success: false, sessionId, pingCount: state.pingCount, error: `Stopped due to status ${response.status}` };
+      }
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");

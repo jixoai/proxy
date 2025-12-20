@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { AnthropicPingMiddleware } from "../ping-middleware";
-import { PING_SESSION_END_MESSAGE } from "../types";
+import { DEFAULT_SKIP_PING_MATCHERS } from "../types";
 import {
   sampleHeaders,
   sampleHeadersWithSessionId,
@@ -315,14 +315,14 @@ describe("AnthropicPingMiddleware - End Message", () => {
     mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
     expect(mw.getActiveSessionCount()).toBe(1);
 
-    // Send end message
+    // Send end message (using new format with dash)
     const result = mw.intercept(
       sampleHeaders,
       {
         ...sampleRequestBody,
         messages: [
           ...sampleRequestBody.messages!,
-          { role: "user", content: PING_SESSION_END_MESSAGE },
+          { role: "user", content: "jixo:proxy-ping-end" },
         ],
       },
       PROXY_URL,
@@ -357,7 +357,7 @@ describe("AnthropicPingMiddleware - End Message", () => {
         ...sampleRequestBody,
         messages: [
           ...sampleRequestBody.messages!,
-          { role: "user", content: PING_SESSION_END_MESSAGE },
+          { role: "user", content: "jixo:proxy-stop-ping" },
         ],
       },
       PROXY_URL,
@@ -383,7 +383,7 @@ describe("AnthropicPingMiddleware - End Message", () => {
           ...sampleRequestBody.messages!,
           {
             role: "user",
-            content: [{ type: "text" as const, text: PING_SESSION_END_MESSAGE }],
+            content: [{ type: "text" as const, text: "jixo:proxy-ping-end" }],
           },
         ],
       },
@@ -450,5 +450,284 @@ describe("AnthropicPingMiddleware - Ping Payload", () => {
     expect(session?.latestContextPayload.system).toBe("You are a helpful assistant.");
 
     middleware.destroy();
+  });
+});
+
+describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
+  it("should use starts_with matcher", () => {
+    const mw = new AnthropicPingMiddleware({
+      skipPingMatchers: [
+        "messages[?role=='user'] | [-1] | starts_with(content, 'A previous instance of Droid')",
+      ],
+    });
+
+    // Create a session first
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+    expect(mw.getActiveSessionCount()).toBe(1);
+
+    // Message with matching prefix at the end should trigger end
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          {
+            role: "user",
+            content: "A previous instance of Droid has summarized the conversation thus far.",
+          },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(true);
+    // Session is cleared because messages prefix matches
+    expect(mw.getActiveSessionCount()).toBe(0);
+
+    mw.destroy();
+  });
+
+  it("should not match starts_with when pattern is in middle", () => {
+    const mw = new AnthropicPingMiddleware({
+      skipPingMatchers: [
+        "messages[?role=='user'] | [-1] | starts_with(content, 'STOP_PING')",
+      ],
+    });
+
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+
+    // Message with pattern in middle should not trigger end
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: "Please STOP_PING now" },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(false);
+    expect(mw.getActiveSessionCount()).toBe(1);
+
+    mw.destroy();
+  });
+
+  it("should support multiple matchers (OR logic)", () => {
+    const mw = new AnthropicPingMiddleware({
+      skipPingMatchers: [
+        "messages[?role=='user'] | [-1] | starts_with(content, 'STOP:')",
+        "messages[?role=='user'] | [-1] | contains(content, 'jixo:proxy_ping_end')",
+      ],
+    });
+
+    // Test starts_with matcher
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+    let result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: "STOP: session ending" },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+    expect(result.shouldReturn204).toBe(true);
+
+    // Test contains matcher
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+    result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: "something jixo:proxy_ping_end here" },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+    expect(result.shouldReturn204).toBe(true);
+
+    mw.destroy();
+  });
+
+  it("should not match anything when skipPingMatchers is empty", () => {
+    const mw = new AnthropicPingMiddleware({
+      skipPingMatchers: [],
+    });
+
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+
+    // Even end message should not trigger when skipPingMatchers is empty
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: "jixo:proxy-ping-end" },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(false);
+    expect(mw.getActiveSessionCount()).toBe(1);
+
+    mw.destroy();
+  });
+
+  it("should support object format { jmespath: '...' }", () => {
+    const mw = new AnthropicPingMiddleware({
+      skipPingMatchers: [
+        { jmespath: "messages[?role=='user'] | [-1] | contains(content, 'END_SESSION')" },
+      ],
+    });
+
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: "please END_SESSION now" },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(true);
+
+    mw.destroy();
+  });
+
+  it("should handle invalid JMESPath gracefully", () => {
+    const mw = new AnthropicPingMiddleware({
+      skipPingMatchers: [
+        "invalid[[[syntax",
+      ],
+      debug: false,
+    });
+
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+
+    // Should not crash, just return false
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: "test" },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(false);
+
+    mw.destroy();
+  });
+
+  it("should use default matchers when not specified", () => {
+    const mw = new AnthropicPingMiddleware({});
+
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+    expect(mw.getActiveSessionCount()).toBe(1);
+
+    // Default matcher #2: jixo:proxy-ping-end (note the dash, not underscore)
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: "jixo:proxy-ping-end" },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(true);
+    expect(mw.getActiveSessionCount()).toBe(0);
+
+    mw.destroy();
+  });
+
+  it("should match Droid session summary (default matcher #1)", () => {
+    const mw = new AnthropicPingMiddleware({});
+
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+
+    // First user message starts with Droid summary
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          {
+            role: "user",
+            content: "A previous instance of Droid has summarized the conversation thus far as follows: ...",
+          },
+          ...sampleRequestBody.messages!.slice(1),
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(true);
+
+    mw.destroy();
+  });
+
+  it("should match compression prompt (default matcher #4)", () => {
+    const mw = new AnthropicPingMiddleware({});
+
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          {
+            role: "user",
+            content: "Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests...",
+          },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(true);
+
+    mw.destroy();
+  });
+
+  it("should have responseStatus matcher in defaults", () => {
+    // Verify DEFAULT_SKIP_PING_MATCHERS includes responseStatus: 400
+    const hasResponseStatusMatcher = DEFAULT_SKIP_PING_MATCHERS.some(
+      (m) => typeof m === "object" && "responseStatus" in m && m.responseStatus === 400
+    );
+    expect(hasResponseStatusMatcher).toBe(true);
   });
 });
