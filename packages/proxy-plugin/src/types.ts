@@ -30,11 +30,13 @@ export interface RequestHookParams {
  * 请求 hook 返回值
  * - 返回 { modified: false } 表示插件处理过但未修改内容
  * - 返回 { meta, body } 表示有修改
+ * - 返回 { respondWith } 表示短路请求，直接返回响应
  * - 返回 null/undefined 表示跳过（不记录该层）
  */
 export type RequestHookResult = 
   | { modified: false }
-  | { modified?: true; meta?: Partial<RequestMeta>; body?: Buffer };
+  | { modified?: true; meta?: Partial<RequestMeta>; body?: Buffer }
+  | { respondWith: { statusCode: number; body?: string | Buffer; headers?: Record<string, string> } };
 
 /**
  * 响应 hook 参数

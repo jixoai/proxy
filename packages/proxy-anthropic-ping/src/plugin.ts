@@ -45,14 +45,12 @@ export function createAnthropicPingPlugin(
 
       const result = middleware.intercept(headers, parsed, proxyUrl, targetUrl);
 
-      // 如果会话被取消，添加标记
-      if (result.cancelled) {
+      // 如果收到结束消息，直接返回 204
+      if (result.shouldReturn204) {
+        console.log("[AnthropicPing] End message detected, returning 204");
         return {
-          meta: {
-            headers: {
-              ...meta.headers,
-              [PrivateHeaders.REQUEST_TYPE]: "session-cancelled",
-            },
+          respondWith: {
+            statusCode: 204,
           },
         };
       }

@@ -67,6 +67,12 @@ export interface RequestHookResult {
   skipped?: boolean;
   /** 是否修改了内容 */
   modified?: boolean;
+  /** 短路请求，直接返回响应 */
+  respondWith?: {
+    statusCode: number;
+    headers?: Record<string, string | string[]>;
+    body?: Buffer;
+  };
   method?: string;
   url?: string;
   headers?: Record<string, string | string[]>;
@@ -350,6 +356,18 @@ class HookProcess {
 
     const metaObj = meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
 
+    // 检查是否是 respondWith - 短路请求
+    if (metaObj.respondWith === true) {
+      const headers = normalizeHeaders(metaObj.headers);
+      return {
+        respondWith: {
+          statusCode: typeof metaObj.statusCode === "number" ? metaObj.statusCode : 200,
+          headers,
+          body,
+        },
+      };
+    }
+
     // 检查是否被跳过（插件返回 null）
     if (metaObj.skipped === true) {
       return { skipped: true };
@@ -490,6 +508,12 @@ export interface RequestHooksExecutionResult {
   layers: HookLayer[];
   /** 是否有任何修改 */
   hasChanges: boolean;
+  /** 短路响应（如果有插件要求直接返回） */
+  respondWith?: {
+    statusCode: number;
+    headers?: Record<string, string | string[]>;
+    body?: Buffer;
+  };
 }
 
 /** 响应 hooks 执行结果 */
@@ -604,6 +628,17 @@ export class HooksExecutor {
     for (const hook of allHooks) {
       const hookResult = await hook.rewriteRequest(result);
       const pluginName = hook.pluginName;
+
+      // 检查是否是 respondWith - 短路请求
+      if (hookResult.respondWith) {
+        layers.push({ pluginName, modified: true });
+        return {
+          params: result,
+          layers,
+          hasChanges: true,
+          respondWith: hookResult.respondWith,
+        };
+      }
 
       if (hookResult.skipped) {
         // 插件返回 null，不记录该层

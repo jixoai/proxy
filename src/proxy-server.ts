@@ -602,6 +602,18 @@ async function main(argv: string[]) {
             },
             (body) => body.length > 0 ? bufferToDataUrl(body, requestContentType) : null,
           );
+          // 检查是否是 respondWith - 短路请求，直接返回响应
+          if (hookExecResult.respondWith) {
+            const { statusCode, headers, body } = hookExecResult.respondWith;
+            res.writeHead(statusCode, headers as http.OutgoingHttpHeaders);
+            if (body && body.length > 0) {
+              res.end(body);
+            } else {
+              res.end();
+            }
+            return;
+          }
+
           const hookResult = hookExecResult.params;
           hasRequestHookChanges = hookExecResult.hasChanges;
           requestHookLayers = hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;

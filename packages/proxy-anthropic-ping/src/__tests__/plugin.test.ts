@@ -13,7 +13,7 @@ describe("createAnthropicPingPlugin", () => {
 
   beforeEach(() => {
     plugin = createAnthropicPingPlugin({
-      maxPings: 5,
+      maxKeepAliveDurationMs: 60 * 60 * 1000,
       debug: false,
     });
   });

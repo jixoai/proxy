@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { AnthropicPingMiddleware } from "../ping-middleware";
+import { PING_SESSION_END_MESSAGE } from "../types";
 import {
   sampleHeaders,
   sampleHeadersWithSessionId,
@@ -17,7 +18,7 @@ describe("AnthropicPingMiddleware", () => {
 
   beforeEach(() => {
     middleware = new AnthropicPingMiddleware({
-      maxPings: 3,
+      maxKeepAliveDurationMs: 60 * 60 * 1000, // 60 minutes
       idleThresholdMs: 100,
       pollingIntervalMs: 50,
       debug: false,
@@ -198,13 +199,13 @@ describe("AnthropicPingMiddleware", () => {
   });
 
   describe("callbacks", () => {
-    it("should call onExpire when max pings exceeded", async () => {
+    it("should call onExpire when session exceeds max duration", async () => {
       let expiredSessionId = "";
       let expireReason = "";
 
       const mw = new AnthropicPingMiddleware({
-        maxPings: 1,
-        idleThresholdMs: 10,
+        maxKeepAliveDurationMs: 10, // Very short for testing
+        idleThresholdMs: 5,
         pollingIntervalMs: 20,
         onExpire: (sessionId, reason) => {
           expiredSessionId = sessionId;
@@ -219,26 +220,18 @@ describe("AnthropicPingMiddleware", () => {
         TARGET_URL
       );
 
-      // Manually set pingCount to max
-      const session = mw.getSession("test-session-abc123");
-      if (session) {
-        session.pingCount = 1;
-        session.lastActiveTime = Date.now() - 20;
-      }
-
-      // Wait for polling
+      // Wait for session to expire
       await new Promise((r) => setTimeout(r, 50));
 
       mw.destroy();
 
       expect(expiredSessionId).toBe("test-session-abc123");
-      expect(expireReason).toBe("max_pings");
+      expect(expireReason).toBe("timeout");
     });
   });
 
   describe("buildPingPayload (via integration)", () => {
     it("should create minimal ping payload structure", () => {
-      // Test through the middleware's internal logic
       const mw = new AnthropicPingMiddleware({ debug: false });
 
       mw.intercept(
@@ -258,199 +251,163 @@ describe("AnthropicPingMiddleware", () => {
   });
 });
 
-describe("AnthropicPingMiddleware - Cancel Triggers", () => {
-  it("should cancel request when header trigger matches", () => {
-    let cancelCalled = false;
+describe("AnthropicPingMiddleware - No cache_control", () => {
+  it("should not create session when no cache_control in messages", () => {
+    const mw = new AnthropicPingMiddleware({});
 
-    const mw = new AnthropicPingMiddleware({
-      cancelTriggers: [{ headerKey: "x-disable-ping" }],
-      onCancel: () => {
-        cancelCalled = true;
-      },
-    });
-
-    // Request with cancel header - should not create session
     const result = mw.intercept(
-      { ...sampleHeadersWithSessionId, "x-disable-ping": "true" },
-      sampleRequestBody,
-      PROXY_URL,
-      TARGET_URL
-    );
-
-    expect(result.cancelled).toBe(true);
-    expect(result.sessionId).toBeNull();
-    expect(cancelCalled).toBe(true);
-
-    mw.destroy();
-  });
-
-  it("should cancel request when message pattern matches", () => {
-    const mw = new AnthropicPingMiddleware({
-      cancelTriggers: [{ messagePattern: /^\/quit$/i }],
-    });
-
-    // Send /quit message - should not create session
-    const result = mw.intercept(
-      sampleHeadersWithSessionId,
+      sampleHeaders,
       {
-        ...sampleRequestBody,
-        messages: [{ role: "user", content: "/quit" }],
+        model: "claude-3-sonnet",
+        messages: [{ role: "user", content: "hello" }],
       },
       PROXY_URL,
       TARGET_URL
     );
 
-    expect(result.cancelled).toBe(true);
     expect(result.sessionId).toBeNull();
+    expect(result.isNew).toBe(false);
     expect(mw.getActiveSessionCount()).toBe(0);
 
     mw.destroy();
   });
+});
 
-  it("should cancel request when message pattern matches in TextBlock array", () => {
-    const mw = new AnthropicPingMiddleware({
-      cancelTriggers: [{ messagePattern: /goodbye|bye|exit/i }],
-    });
+describe("AnthropicPingMiddleware - Prefix Session Clearing", () => {
+  it("should clear old session when new request extends conversation", () => {
+    const mw = new AnthropicPingMiddleware({});
 
-    const result = mw.intercept(
-      sampleHeadersWithSessionId,
-      {
-        ...sampleRequestBody,
-        messages: [
-          { role: "assistant", content: "How can I help?" },
-          {
-            role: "user",
-            content: [
-              { type: "text" as const, text: "Thanks for your help!" },
-              { type: "text" as const, text: "Goodbye!" },
-            ],
-          },
-        ],
-      },
-      PROXY_URL,
-      TARGET_URL
-    );
-
-    expect(result.cancelled).toBe(true);
-    expect(mw.getActiveSessionCount()).toBe(0);
-
-    mw.destroy();
-  });
-
-  it("should cancel request with custom trigger", () => {
-    const mw = new AnthropicPingMiddleware({
-      cancelTriggers: [
-        {
-          custom: (body, headers) => {
-            return body.max_tokens === 1 && headers["x-test"] === "cancel";
-          },
-        },
-      ],
-    });
-
-    const result = mw.intercept(
-      { ...sampleHeadersWithSessionId, "x-test": "cancel" },
-      { ...sampleRequestBody, max_tokens: 1 },
-      PROXY_URL,
-      TARGET_URL
-    );
-
-    expect(result.cancelled).toBe(true);
-    expect(mw.getActiveSessionCount()).toBe(0);
-
-    mw.destroy();
-  });
-
-  it("should not cancel when no trigger matches", () => {
-    const mw = new AnthropicPingMiddleware({
-      cancelTriggers: [
-        { headerKey: "x-disable-ping" },
-        { messagePattern: /^\/quit$/i },
-      ],
-    });
-
-    const result = mw.intercept(
-      sampleHeadersWithSessionId,
-      sampleRequestBody,
-      PROXY_URL,
-      TARGET_URL
-    );
-
-    expect(result.cancelled).toBe(false);
-    expect(mw.getActiveSessionCount()).toBe(1);
-
-    mw.destroy();
-  });
-
-  it("should clear prefix sessions even when cancelled", () => {
-    const mw = new AnthropicPingMiddleware({
-      cancelTriggers: [{ messagePattern: /^\/quit$/i }],
-    });
-
-    // First create a session (don't use header session ID, use hash-based)
+    // First request creates a session
     mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
     expect(mw.getActiveSessionCount()).toBe(1);
 
-    // Now send more messages with /quit - should clear prefix sessions
-    // The new request includes original messages as prefix, so old session should be cleared
+    // Second request with more messages should clear the old session
     const result = mw.intercept(
       sampleHeaders,
       {
         ...sampleRequestBody,
         messages: [
           ...sampleRequestBody.messages!,
-          { role: "assistant", content: "ok" },
-          { role: "user", content: "/quit" },
+          { role: "assistant", content: "response" },
+          {
+            role: "user",
+            content: [{ type: "text" as const, text: "next", cache_control: { type: "ephemeral" } }],
+          },
         ],
       },
       PROXY_URL,
       TARGET_URL
     );
 
-    expect(result.cancelled).toBe(true);
     expect(result.clearedCount).toBeGreaterThanOrEqual(1);
+    // New session created with new hash
+    expect(mw.getActiveSessionCount()).toBe(1);
+
+    mw.destroy();
+  });
+});
+
+describe("AnthropicPingMiddleware - End Message", () => {
+  it("should return shouldReturn204 when end message is received", () => {
+    const mw = new AnthropicPingMiddleware({});
+
+    // First create a session
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+    expect(mw.getActiveSessionCount()).toBe(1);
+
+    // Send end message
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: PING_SESSION_END_MESSAGE },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(true);
+    expect(result.sessionId).toBeNull();
     expect(mw.getActiveSessionCount()).toBe(0);
 
     mw.destroy();
   });
 
-  it("should support multiple triggers (OR logic)", () => {
+  it("should call onExpire with 'manual' reason when end message clears sessions", () => {
+    let expiredCount = 0;
+    let lastReason = "";
+
     const mw = new AnthropicPingMiddleware({
-      cancelTriggers: [
-        { headerKey: "x-no-cache" },
-        { messagePattern: /^\/end$/i },
-        { messagePattern: /^bye$/i },
-      ],
+      onExpire: (_sessionId, reason) => {
+        expiredCount++;
+        lastReason = reason;
+      },
     });
 
-    // Test first trigger
-    let result = mw.intercept(
-      { ...sampleHeaders, "x-session-id": "s1", "x-no-cache": "1" },
+    // Create a session
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+
+    // Send end message
+    mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          { role: "user", content: PING_SESSION_END_MESSAGE },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(expiredCount).toBeGreaterThanOrEqual(1);
+    expect(lastReason).toBe("manual");
+
+    mw.destroy();
+  });
+
+  it("should handle end message with TextBlock array", () => {
+    const mw = new AnthropicPingMiddleware({});
+
+    mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
+
+    const result = mw.intercept(
+      sampleHeaders,
+      {
+        ...sampleRequestBody,
+        messages: [
+          ...sampleRequestBody.messages!,
+          {
+            role: "user",
+            content: [{ type: "text" as const, text: PING_SESSION_END_MESSAGE }],
+          },
+        ],
+      },
+      PROXY_URL,
+      TARGET_URL
+    );
+
+    expect(result.shouldReturn204).toBe(true);
+
+    mw.destroy();
+  });
+
+  it("should not treat regular messages as end message", () => {
+    const mw = new AnthropicPingMiddleware({});
+
+    const result = mw.intercept(
+      sampleHeaders,
       sampleRequestBody,
       PROXY_URL,
       TARGET_URL
     );
-    expect(result.cancelled).toBe(true);
 
-    // Test second trigger
-    result = mw.intercept(
-      { ...sampleHeaders, "x-session-id": "s2" },
-      { ...sampleRequestBody, messages: [{ role: "user", content: "/end" }] },
-      PROXY_URL,
-      TARGET_URL
-    );
-    expect(result.cancelled).toBe(true);
-
-    // Test third trigger
-    result = mw.intercept(
-      { ...sampleHeaders, "x-session-id": "s3" },
-      { ...sampleRequestBody, messages: [{ role: "user", content: "bye" }] },
-      PROXY_URL,
-      TARGET_URL
-    );
-    expect(result.cancelled).toBe(true);
-
-    expect(mw.getActiveSessionCount()).toBe(0);
+    expect(result.shouldReturn204).toBe(false);
+    expect(mw.getActiveSessionCount()).toBe(1);
 
     mw.destroy();
   });
@@ -470,7 +427,6 @@ describe("AnthropicPingMiddleware - Ping Payload", () => {
     const session = middleware.getSession("test-session-abc123");
     expect(session?.latestContextPayload.system).toBeDefined();
 
-    // Verify system has cache_control blocks
     const system = session?.latestContextPayload.system;
     if (Array.isArray(system)) {
       const hasCacheControl = system.some((b) => b.cache_control);

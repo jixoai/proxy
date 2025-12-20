@@ -178,6 +178,7 @@ export class SessionManager {
 
   /**
    * 更新会话：重置 pingCount，更新 lastActiveTime 和 latestContextPayload
+   * 如果是新会话，设置 createdAt；否则保留原来的 createdAt
    */
   touch(
     sessionId: string,
@@ -191,6 +192,7 @@ export class SessionManager {
 
     const state: SessionState = {
       sessionId,
+      createdAt: existing?.createdAt ?? now,
       lastActiveTime: now,
       pingCount: 0,
       latestContextPayload: body,

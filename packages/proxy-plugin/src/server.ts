@@ -46,6 +46,22 @@ export async function startPluginServer(options: PluginServerOptions): Promise<v
           if (plugin.onRequest) {
             const result = await plugin.onRequest({ meta: normalizedMeta, body });
             if (result) {
+              // 检查是否是 respondWith - 短路请求，直接返回响应
+              if ("respondWith" in result) {
+                const { statusCode, body: respBody, headers: respHeaders } = result.respondWith;
+                const payload = encodeEnvelope(
+                  {
+                    respondWith: true,
+                    statusCode,
+                    headers: respHeaders,
+                  },
+                  respBody ? Buffer.from(respBody) : Buffer.alloc(0)
+                );
+                return new Response(new Uint8Array(payload), {
+                  status: 200,
+                  headers: { "content-type": "application/octet-stream" },
+                });
+              }
               // 检查是否是 { modified: false }
               if ("modified" in result && result.modified === false) {
                 const payload = encodeEnvelope({ modified: false }, body);

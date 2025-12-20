@@ -4,7 +4,8 @@
  * 功能：
  * 1. 拦截 Anthropic API 请求，识别并跟踪会话
  * 2. 全局轮询检测即将过期的缓存，自动发送心跳
- * 3. 经济熔断：超过最大 ping 次数后销毁会话
+ * 3. 超过最大保活时长后自动停止
+ * 4. 收到 __PING_SESSION_END__ 消息时立即停止保活
  */
 
 import { SessionManager } from "./session-manager";
@@ -15,10 +16,10 @@ import type {
   PingPluginOptions,
   PingResult,
   Message,
-  CancelTrigger,
 } from "./types";
+import { PING_SESSION_END_MESSAGE } from "./types";
 
-const DEFAULT_MAX_PINGS = 12;
+const DEFAULT_MAX_KEEP_ALIVE_DURATION_MS = 60 * 60 * 1000; // 60 分钟
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟，Anthropic 官方值
 const DEFAULT_PING_LEAD_TIME_MS = 1 * 60 * 1000; // 提前 1 分钟开始保活
 const DEFAULT_IDLE_THRESHOLD_MS = DEFAULT_CACHE_TTL_MS - DEFAULT_PING_LEAD_TIME_MS; // 4 分钟
@@ -29,24 +30,20 @@ export class AnthropicPingMiddleware {
   private pollingTimer: ReturnType<typeof setInterval> | null = null;
   private isPolling = false;
 
-  private readonly maxPings: number;
+  private readonly maxKeepAliveDurationMs: number;
   private readonly idleThresholdMs: number;
   private readonly pollingIntervalMs: number;
   private readonly debug: boolean;
-  private readonly cancelTriggers: CancelTrigger[];
   private readonly onPing?: (sessionId: string, pingCount: number) => void;
-  private readonly onExpire?: (sessionId: string, reason: "max_pings" | "ttl_exceeded") => void;
-  private readonly onCancel?: (sessionId: string, trigger: string) => void;
+  private readonly onExpire?: (sessionId: string, reason: "timeout" | "manual") => void;
 
   constructor(options: PingPluginOptions = {}) {
-    this.maxPings = options.maxPings ?? DEFAULT_MAX_PINGS;
+    this.maxKeepAliveDurationMs = options.maxKeepAliveDurationMs ?? DEFAULT_MAX_KEEP_ALIVE_DURATION_MS;
     this.idleThresholdMs = options.idleThresholdMs ?? DEFAULT_IDLE_THRESHOLD_MS;
     this.pollingIntervalMs = options.pollingIntervalMs ?? DEFAULT_POLLING_INTERVAL_MS;
     this.debug = options.debug ?? false;
-    this.cancelTriggers = options.cancelTriggers ?? [];
     this.onPing = options.onPing;
     this.onExpire = options.onExpire;
-    this.onCancel = options.onCancel;
   }
 
   private log(...args: unknown[]): void {
@@ -59,9 +56,10 @@ export class AnthropicPingMiddleware {
    * 处理用户真实请求
    * 
    * 核心算法：
-   * 1. 清理所有前缀对话的 ping 任务（因为新请求覆盖了旧的上下文）
-   * 2. 计算最终 session ID（基于到最后一个 cache_control 的消息）
-   * 3. 如果有 cache_control，创建新的 ping 任务
+   * 1. 检查是否是结束消息 __PING_SESSION_END__
+   * 2. 清理所有前缀对话的 ping 任务（因为新请求覆盖了旧的上下文）
+   * 3. 计算最终 session ID（基于到最后一个 cache_control 的消息）
+   * 4. 如果有 cache_control，创建新的 ping 任务
    *
    * @param headers 请求头
    * @param body 请求体
@@ -73,32 +71,34 @@ export class AnthropicPingMiddleware {
     body: AnthropicRequestBody,
     proxyUrl: string,
     targetUrl: string
-  ): { sessionId: string | null; isNew: boolean; cancelled: boolean; clearedCount: number } {
-    // 1. 清理所有前缀对话的 ping 任务
+  ): { sessionId: string | null; isNew: boolean; shouldReturn204: boolean; clearedCount: number } {
+    // 1. 检查是否是结束消息
+    if (this.isEndMessage(body)) {
+      const clearedIds = this.sessionManager.clearPrefixSessions(body);
+      this.log(`End message received, cleared ${clearedIds.length} sessions`);
+      for (const id of clearedIds) {
+        this.onExpire?.(id, "manual");
+      }
+      return { sessionId: null, isNew: false, shouldReturn204: true, clearedCount: clearedIds.length };
+    }
+
+    // 2. 清理所有前缀对话的 ping 任务
     const clearedIds = this.sessionManager.clearPrefixSessions(body);
     if (clearedIds.length > 0) {
       this.log(`Cleared ${clearedIds.length} prefix sessions:`, clearedIds);
     }
 
-    // 检查是否触发取消条件 - 如果触发，不创建新任务
-    const cancelReason = this.checkCancelTriggers(headers, body);
-    if (cancelReason) {
-      this.log(`Request cancelled (reason: ${cancelReason})`);
-      this.onCancel?.(cancelReason, cancelReason);
-      return { sessionId: null, isNew: false, cancelled: true, clearedCount: clearedIds.length };
-    }
-
-    // 2. 计算最终 session ID（如果有 header 优先使用）
+    // 3. 计算最终 session ID（如果有 header 优先使用）
     const headerSessionId = this.sessionManager.getSessionIdFromHeader(headers);
     const sessionId = headerSessionId ?? this.sessionManager.computeFinalSessionId(body);
 
     // 如果没有 cache_control，不需要 ping 任务
     if (!sessionId) {
       this.log("No cache_control found, skipping ping task");
-      return { sessionId: null, isNew: false, cancelled: false, clearedCount: clearedIds.length };
+      return { sessionId: null, isNew: false, shouldReturn204: false, clearedCount: clearedIds.length };
     }
 
-    // 3. 创建或更新 ping 任务
+    // 4. 创建或更新 ping 任务
     const existing = this.sessionManager.get(sessionId);
     const isNew = !existing;
 
@@ -109,66 +109,35 @@ export class AnthropicPingMiddleware {
       this.startPolling();
     }
 
-    return { sessionId, isNew, cancelled: false, clearedCount: clearedIds.length };
+    return { sessionId, isNew, shouldReturn204: false, clearedCount: clearedIds.length };
   }
 
   /**
-   * 检查是否触发取消条件
-   * @returns 触发原因，未触发返回 null
+   * 检查是否是结束保活的消息
+   * 检查最后一条 user 消息是否包含结束消息
    */
-  private checkCancelTriggers(
-    headers: Record<string, string>,
-    body: AnthropicRequestBody
-  ): string | null {
-    for (const trigger of this.cancelTriggers) {
-      // 检查 header
-      if (trigger.headerKey && headers[trigger.headerKey.toLowerCase()]) {
-        return `header:${trigger.headerKey}`;
-      }
+  private isEndMessage(body: AnthropicRequestBody): boolean {
+    if (!body.messages || body.messages.length === 0) return false;
 
-      // 检查最后一条 user message
-      if (trigger.messagePattern && body.messages && body.messages.length > 0) {
-        const lastUserMsg = this.getLastUserMessageText(body);
-        if (lastUserMsg && trigger.messagePattern.test(lastUserMsg)) {
-          return `message:${trigger.messagePattern.source}`;
-        }
-      }
+    const lastMsg = body.messages[body.messages.length - 1];
+    if (!lastMsg || lastMsg.role !== "user") return false;
 
-      // 自定义判断
-      if (trigger.custom && trigger.custom(body, headers)) {
-        return "custom";
-      }
+    if (typeof lastMsg.content === "string") {
+      return lastMsg.content.includes(PING_SESSION_END_MESSAGE);
     }
 
-    return null;
-  }
-
-  /**
-   * 获取最后一条 user message 的文本内容
-   */
-  private getLastUserMessageText(body: AnthropicRequestBody): string | null {
-    if (!body.messages || body.messages.length === 0) return null;
-
-    // 从后往前找最后一条 user message
-    for (let i = body.messages.length - 1; i >= 0; i--) {
-      const msg = body.messages[i];
-      if (!msg) continue;
-
-      if (msg.role === "user") {
-        if (typeof msg.content === "string") {
-          return msg.content;
-        }
-        if (Array.isArray(msg.content)) {
-          const texts = msg.content
-            .filter((b) => b.type === "text")
-            .map((b) => b.text)
-            .join("\n");
-          return texts || null;
+    if (Array.isArray(lastMsg.content)) {
+      // 检查任意一个 text block 是否包含结束消息
+      for (const block of lastMsg.content) {
+        if (block.type === "text" && "text" in block) {
+          if (String(block.text).includes(PING_SESSION_END_MESSAGE)) {
+            return true;
+          }
         }
       }
     }
 
-    return null;
+    return false;
   }
 
   /**
@@ -209,22 +178,25 @@ export class AnthropicPingMiddleware {
       const sessionsToPing: SessionState[] = [];
 
       for (const [sessionId, state] of this.sessionManager.entries()) {
-        const elapsed = now - state.lastActiveTime;
+        const sessionAge = now - state.createdAt;
+        const idleTime = now - state.lastActiveTime;
 
-        if (state.pingCount >= this.maxPings) {
+        // 检查是否超过最大保活时长
+        if (sessionAge >= this.maxKeepAliveDurationMs) {
           sessionsToExpire.push(sessionId);
-          this.log(`Session ${sessionId} exceeded max pings (${this.maxPings})`);
+          this.log(`Session ${sessionId} exceeded max keep-alive duration (${this.maxKeepAliveDurationMs}ms)`);
           continue;
         }
 
-        if (elapsed > this.idleThresholdMs) {
+        // 检查是否需要发送心跳
+        if (idleTime > this.idleThresholdMs) {
           sessionsToPing.push(state);
         }
       }
 
       for (const sessionId of sessionsToExpire) {
         this.sessionManager.delete(sessionId);
-        this.onExpire?.(sessionId, "max_pings");
+        this.onExpire?.(sessionId, "timeout");
       }
 
       for (const state of sessionsToPing) {
