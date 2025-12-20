@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
+import type { HookLayer } from "@/components/ProxyViewerContext";
 import { parseMarkdownHeaders } from "@/components/utils";
 import { RequestBodyViewer } from "@/components/RequestBodyViewer";
 import { ResponseBodyViewer } from "@/components/ResponseBodyViewer";
 import { RequestInfoCard } from "@/components/RequestInfoCard";
 import { ResponseInfoCard } from "@/components/ResponseInfoCard";
 import { HeadersCard } from "@/components/HeadersCard";
+import { HookLayersTabs } from "@/components/HookLayersTabs";
 import {
   Empty,
   EmptyHeader,
@@ -20,7 +22,6 @@ import {
   ChevronDown,
   PlusCircle,
   ArrowRightCircle,
-  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,7 +31,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
 import {
   generateFetchCode,
   generateNodeFetchCode,
@@ -39,7 +40,7 @@ import {
 import { AddForwardFromRequestDialog } from "@/components/AddForwardFromRequestDialog";
 
 export function RequestDetail() {
-  const { selectedDetail, detailLoading, jumpToForwardRule } = useProxyViewer();
+  const { selectedDetail, detailNotFound, detailLoading, selectRequest, jumpToForwardRule } = useProxyViewer();
   const [copiedType, setCopiedType] = useState<string | null>(null); // 格式: "proxy-browser" | "origin-node" 等
 
   const requestHeaders = useMemo(() => {
@@ -72,6 +73,8 @@ export function RequestDetail() {
 
   const hasHookedRequest = selectedDetail?.metadata?.hasHookedRequest ?? false;
   const hasHookedResponse = selectedDetail?.metadata?.hasHookedResponse ?? false;
+  const requestHookLayers = selectedDetail?.metadata?.requestHookLayers;
+  const responseHookLayers = selectedDetail?.metadata?.responseHookLayers;
 
   // 复制为 fetch 代码
   const handleCopyAsFetch = async (mode: "via-proxy" | "to-target") => {
@@ -88,6 +91,25 @@ export function RequestDetail() {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="text-muted-foreground">Loading detail...</div>
+      </div>
+    );
+  }
+
+  if (detailNotFound) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <FileText />
+            </EmptyMedia>
+            <EmptyTitle>请求不存在</EmptyTitle>
+            <EmptyDescription>该请求记录可能已被删除或从未存在</EmptyDescription>
+          </EmptyHeader>
+          <Button variant="outline" onClick={() => selectRequest(null)}>
+            返回列表
+          </Button>
+        </Empty>
       </div>
     );
   }
@@ -183,90 +205,98 @@ export function RequestDetail() {
 
       {/* Request & Response Headers - Two columns on wide screens */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {hasHookedRequest ? (
-          <Tabs defaultValue="hooked" className="w-full">
-            <TabsList>
-              <TabsTrigger value="hooked" className="gap-1">
-                <Zap className="h-3 w-3" />
-                Hooked Headers
-              </TabsTrigger>
-              <TabsTrigger value="original">Original Headers</TabsTrigger>
-            </TabsList>
-            <TabsContent value="hooked">
-              <HeadersCard title="Request Headers (Hooked)" headers={hookedRequestHeaders} />
-            </TabsContent>
-            <TabsContent value="original">
-              <HeadersCard
-                title="Request Headers (Original)"
-                headers={forwardedHeaders}
-                originalHeaders={requestHeaders}
-              />
-            </TabsContent>
-          </Tabs>
-        ) : (
-          <HeadersCard
-            title="Request Headers"
-            headers={forwardedHeaders}
-            originalHeaders={requestHeaders}
-          />
-        )}
-        <HeadersCard title="Response Headers" headers={responseHeaders} />
+        <HookLayersTabs
+          layers={requestHookLayers}
+          hasHooked={hasHookedRequest}
+          renderOriginal={() => (
+            <HeadersCard
+              title="Request Headers"
+              headers={forwardedHeaders}
+              originalHeaders={requestHeaders}
+            />
+          )}
+          renderHooked={() => (
+            <HeadersCard title="Request Headers (Hooked)" headers={hookedRequestHeaders} />
+          )}
+          renderLayer={(layer: HookLayer) => (
+            <HeadersCard
+              title={`Request Headers (${layer.pluginName})`}
+              headers={layer.headers ? Object.fromEntries(
+                Object.entries(layer.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : v])
+              ) : {}}
+            />
+          )}
+        />
+        <HookLayersTabs
+          layers={responseHookLayers}
+          hasHooked={hasHookedResponse}
+          renderOriginal={() => (
+            <HeadersCard title="Response Headers" headers={responseHeaders} />
+          )}
+          renderHooked={() => (
+            <HeadersCard title="Response Headers (Hooked)" headers={hookedResponseHeaders} />
+          )}
+          renderLayer={(layer: HookLayer) => (
+            <HeadersCard
+              title={`Response Headers (${layer.pluginName})`}
+              headers={layer.headers ? Object.fromEntries(
+                Object.entries(layer.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : v])
+              ) : {}}
+            />
+          )}
+        />
       </div>
 
       {/* Request & Response Body - 使用容器查询实现响应式布局 */}
       <div className="@container">
         <div className="grid grid-cols-1 gap-4 @[1280px]:grid-cols-2">
-          {/* Request Body - 如果有 hooked 数据，使用 tabs */}
-          {selectedDetail.requestBody &&
-            (hasHookedRequest ? (
-              <Tabs defaultValue="hooked" className="w-full">
-                <TabsList>
-                  <TabsTrigger value="hooked" className="gap-1">
-                    <Zap className="h-3 w-3" />
-                    Hooked
-                  </TabsTrigger>
-                  <TabsTrigger value="original">Original</TabsTrigger>
-                </TabsList>
-                <TabsContent value="hooked">
-                  <RequestBodyViewer
-                    body={selectedDetail.hookedRequestBody || selectedDetail.requestBody}
-                    headers={hookedRequestHeaders}
-                  />
-                </TabsContent>
-                <TabsContent value="original">
-                  <RequestBodyViewer body={selectedDetail.requestBody} headers={requestHeaders} />
-                </TabsContent>
-              </Tabs>
-            ) : (
-              <RequestBodyViewer body={selectedDetail.requestBody} headers={requestHeaders} />
-            ))}
-
-          {/* Response Body - 如果有 hooked 数据，使用 tabs */}
-          {hasHookedResponse ? (
-            <Tabs defaultValue="hooked" className="w-full">
-              <TabsList>
-                <TabsTrigger value="hooked" className="gap-1">
-                  <Zap className="h-3 w-3" />
-                  Hooked
-                </TabsTrigger>
-                <TabsTrigger value="original">Original</TabsTrigger>
-              </TabsList>
-              <TabsContent value="hooked">
-                <ResponseBodyViewer
-                  body={selectedDetail.hookedResponseBody || ""}
-                  headers={hookedResponseHeaders}
+          {/* Request Body - 如果有 hookLayers 或 hooked 数据，使用 tabs */}
+          {selectedDetail.requestBody && (
+            <HookLayersTabs
+              layers={requestHookLayers}
+              hasHooked={hasHookedRequest}
+              renderOriginal={() => (
+                <RequestBodyViewer body={selectedDetail.requestBody!} headers={requestHeaders} />
+              )}
+              renderHooked={() => (
+                <RequestBodyViewer
+                  body={selectedDetail.hookedRequestBody || selectedDetail.requestBody!}
+                  headers={hookedRequestHeaders}
                 />
-              </TabsContent>
-              <TabsContent value="original">
-                <ResponseBodyViewer
-                  body={selectedDetail.responseBody || ""}
-                  headers={responseHeaders}
+              )}
+              renderLayer={(layer: HookLayer) => (
+                <RequestBodyViewer
+                  body={layer.bodyDataUrl || ""}
+                  headers={layer.headers ? Object.fromEntries(
+                    Object.entries(layer.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : v])
+                  ) : {}}
                 />
-              </TabsContent>
-            </Tabs>
-          ) : (
-            <ResponseBodyViewer body={selectedDetail.responseBody || ""} headers={responseHeaders} />
+              )}
+            />
           )}
+
+          {/* Response Body - 如果有 hookLayers 或 hooked 数据，使用 tabs */}
+          <HookLayersTabs
+            layers={responseHookLayers}
+            hasHooked={hasHookedResponse}
+            renderOriginal={() => (
+              <ResponseBodyViewer body={selectedDetail.responseBody || ""} headers={responseHeaders} />
+            )}
+            renderHooked={() => (
+              <ResponseBodyViewer
+                body={selectedDetail.hookedResponseBody || ""}
+                headers={hookedResponseHeaders}
+              />
+            )}
+            renderLayer={(layer: HookLayer) => (
+              <ResponseBodyViewer
+                body={layer.bodyDataUrl || ""}
+                headers={layer.headers ? Object.fromEntries(
+                  Object.entries(layer.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : v])
+                ) : {}}
+              />
+            )}
+          />
         </div>
       </div>
     </div>

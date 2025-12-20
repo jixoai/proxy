@@ -33,3 +33,26 @@ export { createLogger, type PluginLogger, type LoggerOptions } from "./logger";
 
 // Server
 export { startPluginServer, definePlugin, type PluginServerOptions } from "./server";
+
+// Private Headers
+export {
+  PRIVATE_HEADER_PREFIX,
+  PrivateHeaders,
+  isPrivateHeader,
+  stripPrivateHeaders,
+  extractPrivateHeaders,
+  setPluginOrigin,
+  addPluginProcessed,
+  getPluginOrigin,
+  getPluginsProcessed,
+  parsePrivateHeaders,
+  type PrivateHeaderKey,
+  type PrivateHeaderInfo,
+} from "./private-headers";
+
+// Plugin Config
+export {
+  getPluginConfig,
+  getPluginConfigWithDefaults,
+  definePluginConfig,
+} from "./config";

@@ -3,9 +3,56 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import { Buffer } from "node:buffer";
 import createDebug from "debug";
-import type { HookConfig, HooksConfig } from "../types/proxy";
+import type { HookConfig, HooksConfig, HookLayer } from "../types/proxy";
 
 const debug = createDebug("proxy:hooks");
+
+/** 私有 header：记录处理过该请求的插件列表 */
+const HEADER_PLUGIN_PROCESSED = "x-jixo-proxy-plugin-processed";
+
+/** 从 HookConfig 提取插件名称 */
+function getPluginName(config: HookConfig): string {
+  // 优先使用 config 中的 name 字段
+  if (config.config && typeof config.config === "object" && "name" in config.config) {
+    return String(config.config.name);
+  }
+  // 其次从 args 中提取（如 bunx @jixo/proxy-plugin-droid -> proxy-plugin-droid）
+  const args = config.args ?? [];
+  for (const arg of args) {
+    if (arg.startsWith("@jixo/")) {
+      return arg.replace("@jixo/", "");
+    }
+    if (arg.includes("proxy-plugin-") || arg.includes("proxy-anthropic-")) {
+      return arg.split("/").pop() ?? arg;
+    }
+  }
+  // 最后使用 command
+  return config.command;
+}
+
+/** 添加插件处理标记到 headers */
+function addPluginProcessedHeader(
+  headers: Record<string, string | string[]>,
+  pluginName: string,
+): Record<string, string | string[]> {
+  const existing = headers[HEADER_PLUGIN_PROCESSED];
+  const list = existing
+    ? (Array.isArray(existing) ? existing.join(",") : existing).split(",")
+    : [];
+  if (!list.includes(pluginName)) {
+    list.push(pluginName);
+  }
+  return {
+    ...headers,
+    [HEADER_PLUGIN_PROCESSED]: list.join(","),
+  };
+}
+
+/** 规范化 hooks 配置 */
+function normalizeHooksConfig(hooks: HooksConfig | null | undefined): HookConfig[] {
+  if (!hooks) return [];
+  return Array.isArray(hooks) ? hooks : [hooks];
+}
 
 export interface RequestHookParams {
   method: string;
@@ -16,6 +63,10 @@ export interface RequestHookParams {
 }
 
 export interface RequestHookResult {
+  /** 是否被跳过（插件返回 null） */
+  skipped?: boolean;
+  /** 是否修改了内容 */
+  modified?: boolean;
   method?: string;
   url?: string;
   headers?: Record<string, string | string[]>;
@@ -31,6 +82,10 @@ export interface ResponseHookParams {
 }
 
 export interface ResponseHookResult {
+  /** 是否被跳过（插件返回 null） */
+  skipped?: boolean;
+  /** 是否修改了内容 */
+  modified?: boolean;
   statusCode?: number;
   statusMessage?: string;
   headers?: Record<string, string | string[]>;
@@ -92,11 +147,18 @@ class HookProcess {
   private listenUrl: string | null = null;
   private readyPromise: Promise<void> | null = null;
   private callbackServer: http.Server | null = null;
+  private _pluginName: string;
 
   constructor(
     private config: HookConfig,
     readonly hashId: string,
-  ) {}
+  ) {
+    this._pluginName = getPluginName(config);
+  }
+
+  get pluginName(): string {
+    return this._pluginName;
+  }
 
   addRef(): void {
     this.refCount++;
@@ -124,6 +186,7 @@ class HookProcess {
     });
 
     const server = http.createServer((req, res) => {
+      debug(`[HookPool:${this.hashId}] Callback server received ${req.method} request`);
       if (req.method !== "POST") {
         res.statusCode = 405;
         res.end("Method Not Allowed");
@@ -135,6 +198,7 @@ class HookProcess {
       });
       req.on("end", () => {
         const payload = Buffer.concat(chunks).toString("utf-8").trim();
+        debug(`[HookPool:${this.hashId}] Callback received payload: ${payload}`);
         if (!payload) {
           res.statusCode = 400;
           res.end("empty body");
@@ -179,12 +243,32 @@ class HookProcess {
     const callback = await this.createCallbackServer();
     const args = [this.config.command, ...(this.config.args ?? [])];
 
+    // 构建环境变量，包含插件配置
+    const pluginEnv: Record<string, string | undefined> = {
+      ...process.env,
+      __CALLBACK_URL__: callback.url,
+    };
+
+    // 如果有插件配置，通过 PLUGIN_CONFIG 环境变量传递
+    if (this.config.config) {
+      pluginEnv.PLUGIN_CONFIG = JSON.stringify(this.config.config);
+    }
+
+    debug(`[HookPool:${this.hashId}] Starting: ${args.join(" ")} with callback ${callback.url}`);
+
     this.process = spawn(args, {
       cwd: this.config.cwd,
       stdin: "ignore",
       stdout: "inherit",
       stderr: "inherit",
-      env: { ...process.env, __CALLBACK_URL__: callback.url },
+      env: pluginEnv,
+    });
+
+    // 监听进程退出
+    this.process.exited.then((code) => {
+      if (code !== 0 && code !== null) {
+        console.error(`[HookPool:${this.hashId}] Process exited with code ${code}`);
+      }
     });
 
     this.readyPromise = (async () => {
@@ -265,8 +349,21 @@ class HookProcess {
     );
 
     const metaObj = meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
+
+    // 检查是否被跳过（插件返回 null）
+    if (metaObj.skipped === true) {
+      return { skipped: true };
+    }
+
+    // 检查是否未修改
+    if (metaObj.modified === false) {
+      return { modified: false };
+    }
+
+    // 有修改
     const headers = normalizeHeaders(metaObj.headers);
     return {
+      modified: true,
       method: typeof metaObj.method === "string" ? metaObj.method : undefined,
       url: typeof metaObj.url === "string" ? metaObj.url : undefined,
       headers,
@@ -288,8 +385,21 @@ class HookProcess {
     );
 
     const metaObj = meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
+
+    // 检查是否被跳过（插件返回 null）
+    if (metaObj.skipped === true) {
+      return { skipped: true };
+    }
+
+    // 检查是否未修改
+    if (metaObj.modified === false) {
+      return { modified: false };
+    }
+
+    // 有修改
     const headers = normalizeHeaders(metaObj.headers);
     return {
+      modified: true,
       statusCode: typeof metaObj.statusCode === "number" ? metaObj.statusCode : undefined,
       statusMessage: typeof metaObj.statusMessage === "string" ? metaObj.statusMessage : undefined,
       headers,
@@ -372,26 +482,44 @@ class HooksPool {
 
 const globalHooksPool = new HooksPool();
 
+/** 请求 hooks 执行结果 */
+export interface RequestHooksExecutionResult {
+  /** 最终的请求参数 */
+  params: RequestHookParams;
+  /** 每层 hook 的执行结果 */
+  layers: HookLayer[];
+  /** 是否有任何修改 */
+  hasChanges: boolean;
+}
+
+/** 响应 hooks 执行结果 */
+export interface ResponseHooksExecutionResult {
+  /** 最终的响应参数 */
+  params: ResponseHookParams;
+  /** 每层 hook 的执行结果 */
+  layers: HookLayer[];
+  /** 是否有任何修改 */
+  hasChanges: boolean;
+}
+
 export class HooksExecutor {
-  private instanceRequestHooks: HookProcess[] = [];
-  private instanceResponseHooks: HookProcess[] = [];
-  private forwardRequestHooks: HookProcess[] = [];
-  private forwardResponseHooks: HookProcess[] = [];
+  /** 实例级 hooks（同时用于 request 和 response） */
+  private instanceHookProcesses: HookProcess[] = [];
+  /** Forward 级 hooks（同时用于 request 和 response） */
+  private forwardHookProcesses: HookProcess[] = [];
 
   constructor(
     private instanceName: string,
     private instanceHooks: HooksConfig | null | undefined,
   ) {}
 
-  private normalizeHooks(hooks: HookConfig | HookConfig[] | null | undefined): HookConfig[] {
-    if (!hooks) return [];
-    return Array.isArray(hooks) ? hooks : [hooks];
-  }
-
   private applyRequestPatch(
     current: RequestHookParams,
     patch: RequestHookResult,
   ): RequestHookParams {
+    if (patch.skipped || patch.modified === false) {
+      return current;
+    }
     return {
       ...current,
       method: patch.method ?? current.method,
@@ -405,6 +533,9 @@ export class HooksExecutor {
     current: ResponseHookParams,
     patch: ResponseHookResult,
   ): ResponseHookParams {
+    if (patch.skipped || patch.modified === false) {
+      return current;
+    }
     return {
       ...current,
       statusCode: patch.statusCode ?? current.statusCode,
@@ -415,117 +546,166 @@ export class HooksExecutor {
   }
 
   async start(): Promise<void> {
-    const reqresConfigs = this.normalizeHooks(this.instanceHooks?.reqres);
-    const requestConfigs = [...reqresConfigs, ...this.normalizeHooks(this.instanceHooks?.request)];
-    const responseConfigs = [...reqresConfigs, ...this.normalizeHooks(this.instanceHooks?.response)];
+    const configs = normalizeHooksConfig(this.instanceHooks);
 
-    for (const config of requestConfigs) {
+    for (const config of configs) {
       const hook = await globalHooksPool.acquire(config);
-      this.instanceRequestHooks.push(hook);
+      this.instanceHookProcesses.push(hook);
     }
 
-    for (const config of responseConfigs) {
-      const hook = await globalHooksPool.acquire(config);
-      this.instanceResponseHooks.push(hook);
-    }
-
-    if (requestConfigs.length > 0 || responseConfigs.length > 0) {
+    if (configs.length > 0) {
       debug(
-        `[HooksExecutor:${this.instanceName}] Started with ${requestConfigs.length} request hooks, ${responseConfigs.length} response hooks`,
+        `[HooksExecutor:${this.instanceName}] Started with ${configs.length} hooks`,
       );
     }
   }
 
   async stop(): Promise<void> {
     await Promise.all([
-      ...this.instanceRequestHooks.map((h) => globalHooksPool.release(h)),
-      ...this.instanceResponseHooks.map((h) => globalHooksPool.release(h)),
-      ...this.forwardRequestHooks.map((h) => globalHooksPool.release(h)),
-      ...this.forwardResponseHooks.map((h) => globalHooksPool.release(h)),
+      ...this.instanceHookProcesses.map((h) => globalHooksPool.release(h)),
+      ...this.forwardHookProcesses.map((h) => globalHooksPool.release(h)),
     ]);
 
-    this.instanceRequestHooks = [];
-    this.instanceResponseHooks = [];
-    this.forwardRequestHooks = [];
-    this.forwardResponseHooks = [];
+    this.instanceHookProcesses = [];
+    this.forwardHookProcesses = [];
   }
 
   async setForwardHooks(forwardName: string, hooks: HooksConfig | null | undefined): Promise<void> {
-    // 保存旧的 hooks 引用，稍后释放
-    const oldRequestHooks = this.forwardRequestHooks;
-    const oldResponseHooks = this.forwardResponseHooks;
+    const oldHooks = this.forwardHookProcesses;
+    const configs = normalizeHooksConfig(hooks);
+    const newHooks: HookProcess[] = [];
 
-    // 先 acquire 新的 hooks（这样如果配置相同，引用计数会先+1）
-    const reqresConfigs = this.normalizeHooks(hooks?.reqres);
-    const requestConfigs = [...reqresConfigs, ...this.normalizeHooks(hooks?.request)];
-    const responseConfigs = [...reqresConfigs, ...this.normalizeHooks(hooks?.response)];
-
-    const newRequestHooks: HookProcess[] = [];
-    const newResponseHooks: HookProcess[] = [];
-
-    for (const config of requestConfigs) {
+    for (const config of configs) {
       const hook = await globalHooksPool.acquire(config);
-      newRequestHooks.push(hook);
+      newHooks.push(hook);
     }
 
-    for (const config of responseConfigs) {
-      const hook = await globalHooksPool.acquire(config);
-      newResponseHooks.push(hook);
-    }
+    this.forwardHookProcesses = newHooks;
+    await Promise.all(oldHooks.map((h) => globalHooksPool.release(h)));
 
-    // 更新实例引用
-    this.forwardRequestHooks = newRequestHooks;
-    this.forwardResponseHooks = newResponseHooks;
-
-    // 最后释放旧的 hooks（如果配置相同，引用计数-1后仍>0，不会销毁）
-    await Promise.all(oldRequestHooks.map((h) => globalHooksPool.release(h)));
-    await Promise.all(oldResponseHooks.map((h) => globalHooksPool.release(h)));
-
-    if (requestConfigs.length > 0 || responseConfigs.length > 0) {
+    if (configs.length > 0) {
       debug(
-        `[HooksExecutor:${this.instanceName}/${forwardName}] Set forward hooks: ${requestConfigs.length} request, ${responseConfigs.length} response`,
+        `[HooksExecutor:${this.instanceName}/${forwardName}] Set forward hooks: ${configs.length}`,
       );
     }
   }
 
-  async executeRequestHooks(params: RequestHookParams): Promise<RequestHookParams> {
+  /** 执行请求 hooks 并返回层层记录 */
+  async executeRequestHooksWithLayers(
+    params: RequestHookParams,
+    bodyToDataUrl: (body: Buffer) => string | null,
+  ): Promise<RequestHooksExecutionResult> {
     let result = params;
+    const layers: HookLayer[] = [];
+    let hasChanges = false;
 
-    for (const hook of this.instanceRequestHooks) {
+    const allHooks = [...this.instanceHookProcesses, ...this.forwardHookProcesses];
+
+    for (const hook of allHooks) {
       const hookResult = await hook.rewriteRequest(result);
-      result = this.applyRequestPatch(result, hookResult);
+      const pluginName = hook.pluginName;
+
+      if (hookResult.skipped) {
+        // 插件返回 null，不记录该层
+        continue;
+      }
+
+      if (hookResult.modified === false) {
+        // 处理过但未修改
+        layers.push({ pluginName, modified: false });
+      } else {
+        // 有修改
+        hasChanges = true;
+        const nextResult = this.applyRequestPatch(result, hookResult);
+        // 自动添加 plugin-processed header
+        nextResult.headers = addPluginProcessedHeader(nextResult.headers, pluginName);
+        layers.push({
+          pluginName,
+          modified: true,
+          method: nextResult.method,
+          url: nextResult.url,
+          headers: nextResult.headers,
+          bodyDataUrl: bodyToDataUrl(nextResult.body),
+          bodySize: nextResult.body.length,
+        });
+        result = nextResult;
+      }
     }
 
-    for (const hook of this.forwardRequestHooks) {
-      const hookResult = await hook.rewriteRequest(result);
-      result = this.applyRequestPatch(result, hookResult);
+    return { params: result, layers, hasChanges };
+  }
+
+  /** 执行响应 hooks 并返回层层记录 */
+  async executeResponseHooksWithLayers(
+    params: ResponseHookParams,
+    bodyToDataUrl: (body: Buffer) => string | null,
+    getContentType: (headers: Record<string, string | string[]>) => string | null,
+  ): Promise<ResponseHooksExecutionResult> {
+    let result = params;
+    const layers: HookLayer[] = [];
+    let hasChanges = false;
+
+    const allHooks = [...this.forwardHookProcesses, ...this.instanceHookProcesses];
+
+    for (const hook of allHooks) {
+      const hookResult = await hook.rewriteResponse(result);
+      const pluginName = hook.pluginName;
+
+      if (hookResult.skipped) {
+        continue;
+      }
+
+      if (hookResult.modified === false) {
+        layers.push({ pluginName, modified: false });
+      } else {
+        hasChanges = true;
+        const nextResult = this.applyResponsePatch(result, hookResult);
+        layers.push({
+          pluginName,
+          modified: true,
+          statusCode: nextResult.statusCode,
+          statusMessage: nextResult.statusMessage,
+          headers: nextResult.headers,
+          bodyDataUrl: bodyToDataUrl(nextResult.body),
+          bodySize: nextResult.body.length,
+          contentType: getContentType(nextResult.headers),
+        });
+        result = nextResult;
+      }
     }
 
+    return { params: result, layers, hasChanges };
+  }
+
+  /** 向后兼容：执行请求 hooks */
+  async executeRequestHooks(params: RequestHookParams): Promise<RequestHookParams> {
+    const { params: result } = await this.executeRequestHooksWithLayers(
+      params,
+      () => null, // 不需要 dataUrl
+    );
     return result;
   }
 
+  /** 向后兼容：执行响应 hooks */
   async executeResponseHooks(params: ResponseHookParams): Promise<ResponseHookParams> {
-    let result = params;
-
-    for (const hook of this.forwardResponseHooks) {
-      const hookResult = await hook.rewriteResponse(result);
-      result = this.applyResponsePatch(result, hookResult);
-    }
-
-    for (const hook of this.instanceResponseHooks) {
-      const hookResult = await hook.rewriteResponse(result);
-      result = this.applyResponsePatch(result, hookResult);
-    }
-
+    const { params: result } = await this.executeResponseHooksWithLayers(
+      params,
+      () => null,
+      () => null,
+    );
     return result;
+  }
+
+  get hasHooks(): boolean {
+    return this.instanceHookProcesses.length > 0 || this.forwardHookProcesses.length > 0;
   }
 
   get hasRequestHooks(): boolean {
-    return this.instanceRequestHooks.length > 0 || this.forwardRequestHooks.length > 0;
+    return this.hasHooks;
   }
 
   get hasResponseHooks(): boolean {
-    return this.instanceResponseHooks.length > 0 || this.forwardResponseHooks.length > 0;
+    return this.hasHooks;
   }
 }
 

@@ -41,14 +41,17 @@ describe("createDroidPlugin", () => {
     const result = await plugin.onRequest!(params);
 
     expect(result).not.toBeNull();
-    expect(result!.meta?.headers).toBeDefined();
-    expect(result!.body).toBeDefined();
+    expect("modified" in result! && result.modified !== false).toBe(true);
 
-    const headers = result!.meta!.headers as Record<string, string>;
+    const modifiedResult = result as { meta?: { headers?: Record<string, string> }; body?: Buffer };
+    expect(modifiedResult.meta?.headers).toBeDefined();
+    expect(modifiedResult.body).toBeDefined();
+
+    const headers = modifiedResult.meta!.headers as Record<string, string>;
     expect(headers["anthropic-beta"]).toContain("claude-code");
     expect(headers["authorization"]).toBe("Bearer sk-ant-123");
 
-    const parsedBody = JSON.parse(result!.body!.toString("utf-8"));
+    const parsedBody = JSON.parse(modifiedResult.body!.toString("utf-8"));
     expect(Array.isArray(parsedBody.system)).toBe(true);
     expect(parsedBody.system[0].text).toContain("Claude Code");
   });
@@ -96,9 +99,12 @@ describe("createDroidPlugin", () => {
     const result = await plugin.onResponse!(params);
 
     expect(result).not.toBeNull();
-    expect(result!.meta?.statusCode).toBe(400);
+    expect("modified" in result! && result.modified !== false).toBe(true);
 
-    const parsedBody = JSON.parse(result!.body!.toString("utf-8"));
+    const modifiedResult = result as { meta?: { statusCode?: number }; body?: Buffer };
+    expect(modifiedResult.meta?.statusCode).toBe(400);
+
+    const parsedBody = JSON.parse(modifiedResult.body!.toString("utf-8"));
     expect(parsedBody.error.code).toBe("context_length_exceeded");
     expect(parsedBody.error.type).toBe("invalid_request_error");
   });

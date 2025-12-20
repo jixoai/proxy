@@ -18,7 +18,7 @@ import { initDatabase } from "./lib/db";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
 import { HooksExecutor, stopAllHooks } from "./lib/hooks-executor";
-import type { HooksConfig } from "./types/proxy";
+import type { HooksConfig, HookLayer } from "./types/proxy";
 import type {
   WorkerMessage,
   WorkerResponse,
@@ -28,6 +28,23 @@ import type {
 import { normalizeForwardGroups, normalizePathname } from "./lib/forward-utils";
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
 import { forwardStatsStore } from "./lib/forward-stats";
+
+/** 私有 header 前缀，这些 headers 只记录到数据库，不转发到远程服务器 */
+const PRIVATE_HEADER_PREFIX = "x-jixo-proxy-";
+
+/** 私有 header：原始 Proxy URL（用于插件发起回环请求，如心跳） */
+const HEADER_PROXY_URL = "x-jixo-proxy-url";
+
+/** 过滤掉私有 headers */
+function stripPrivateHeaders(headers: http.IncomingHttpHeaders): http.IncomingHttpHeaders {
+  const result: http.IncomingHttpHeaders = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (!key.toLowerCase().startsWith(PRIVATE_HEADER_PREFIX)) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
 
 const debugNotifier = createDebug("plugins:db-notifier");
 
@@ -534,6 +551,7 @@ async function main(argv: string[]) {
       abortReason?: AbortReason;
       forwardRule: ForwardRule;
       hasResponseHookChanges?: boolean;
+      responseHookLayers?: HookLayer[];
       originalStatusCode?: number;
       originalStatusMessage?: string;
       originalHeaders?: http.IncomingHttpHeaders;
@@ -554,7 +572,8 @@ async function main(argv: string[]) {
       }
 
       let targetUrl = buildTargetUrl(forwardRule, requestUrl);
-      const forwardHeaders: http.OutgoingHttpHeaders = { ...req.headers };
+      // 过滤掉私有 headers（x-proxy-* 前缀），这些只记录到数据库，不转发
+      const forwardHeaders: http.OutgoingHttpHeaders = { ...stripPrivateHeaders(req.headers) };
       forwardHeaders.host = targetUrl.host;
       applyCustomHeaders(forwardHeaders, instanceHeaders);
       applyCustomHeaders(forwardHeaders, forwardRule.headers ?? null);
@@ -564,37 +583,35 @@ async function main(argv: string[]) {
       let hookedRequestBody = originalRequestBody;
       let hookedForwardHeaders: http.OutgoingHttpHeaders = { ...forwardHeaders };
       let hasRequestHookChanges = false;
+      let requestHookLayers: HookLayer[] | undefined;
 
       if (hooksExecutor?.hasRequestHooks) {
         try {
-          const hookResult = await hooksExecutor.executeRequestHooks({
-            method,
-            url: targetUrl.href,
-            headers: hookedForwardHeaders as Record<string, string | string[]>,
-            body: hookedRequestBody,
-            signal: abortSignal,
-          });
+          // 添加 proxy URL header，让插件知道如何发起回环请求（如心跳）
+          const headersForHooks: Record<string, string | string[]> = {
+            ...(hookedForwardHeaders as Record<string, string | string[]>),
+            [HEADER_PROXY_URL]: requestUrl.href,
+          };
+          const hookExecResult = await hooksExecutor.executeRequestHooksWithLayers(
+            {
+              method,
+              url: targetUrl.href,
+              headers: headersForHooks,
+              body: hookedRequestBody,
+              signal: abortSignal,
+            },
+            (body) => body.length > 0 ? bufferToDataUrl(body, requestContentType) : null,
+          );
+          const hookResult = hookExecResult.params;
+          hasRequestHookChanges = hookExecResult.hasChanges;
+          requestHookLayers = hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
 
-          if (hookResult.method && hookResult.method !== hookedMethod) {
+          if (hasRequestHookChanges) {
             hookedMethod = hookResult.method;
-            hasRequestHookChanges = true;
-          }
-          if (hookResult.url && hookResult.url !== hookedTargetUrl.href) {
             hookedTargetUrl = new URL(hookResult.url);
-            hasRequestHookChanges = true;
-            hookedForwardHeaders.host = hookedTargetUrl.host;
-          }
-          if (hookResult.headers) {
             hookedForwardHeaders = hookResult.headers as http.OutgoingHttpHeaders;
             hookedForwardHeaders.host = hookedTargetUrl.host;
-            hasRequestHookChanges = true;
-          }
-          if (hookResult.body !== undefined) {
-            const nextBody = Buffer.from(hookResult.body);
-            if (!nextBody.equals(hookedRequestBody)) {
-              hasRequestHookChanges = true;
-            }
-            hookedRequestBody = nextBody;
+            hookedRequestBody = Buffer.from(hookResult.body);
           }
         } catch (err) {
           console.error("[Hooks] Request hook error:", err);
@@ -645,6 +662,7 @@ async function main(argv: string[]) {
                 bodySize: hookedRequestBody.length,
               }
             : undefined,
+          requestHookLayers,
           response: undefined,
         });
         // 注册到活跃请求 Map，支持外部中断
@@ -670,6 +688,7 @@ async function main(argv: string[]) {
         ttfbMs: number;
         bodyMs: number;
         hasResponseHookChanges?: boolean;
+        responseHookLayers?: HookLayer[];
         originalStatusCode?: number;
         originalStatusMessage?: string;
         originalHeaders?: http.IncomingHttpHeaders;
@@ -738,34 +757,30 @@ async function main(argv: string[]) {
               const originalBodyBuffer = bodyBuffer;
               const originalContentType = contentType;
               let hasResponseHookChanges = false;
+              let responseHookLayers: HookLayer[] | undefined;
 
               if (hooksExecutor?.hasResponseHooks) {
                 try {
-                  const hookResult = await hooksExecutor.executeResponseHooks({
-                    statusCode,
-                    statusMessage,
-                    headers: responseHeaders as Record<string, string | string[]>,
-                    body: bodyBuffer,
-                    signal: abortSignal,
-                  });
-                  if (hookResult.statusCode !== undefined && hookResult.statusCode !== statusCode) {
+                  const hookExecResult = await hooksExecutor.executeResponseHooksWithLayers(
+                    {
+                      statusCode,
+                      statusMessage,
+                      headers: responseHeaders as Record<string, string | string[]>,
+                      body: bodyBuffer,
+                      signal: abortSignal,
+                    },
+                    (body) => body.length > 0 ? bufferToDataUrl(body, contentType) : null,
+                    (headers) => (headers["content-type"] as string) ?? null,
+                  );
+                  const hookResult = hookExecResult.params;
+                  hasResponseHookChanges = hookExecResult.hasChanges;
+                  responseHookLayers = hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
+
+                  if (hasResponseHookChanges) {
                     statusCode = hookResult.statusCode;
-                    hasResponseHookChanges = true;
-                  }
-                  if (hookResult.statusMessage !== undefined && hookResult.statusMessage !== statusMessage) {
                     statusMessage = hookResult.statusMessage;
-                    hasResponseHookChanges = true;
-                  }
-                  if (hookResult.headers) {
                     responseHeaders = hookResult.headers as http.IncomingHttpHeaders;
-                    hasResponseHookChanges = true;
-                  }
-                  if (hookResult.body !== undefined) {
-                    const nextBody = Buffer.from(hookResult.body);
-                    if (!nextBody.equals(bodyBuffer)) {
-                      hasResponseHookChanges = true;
-                    }
-                    bodyBuffer = nextBody;
+                    bodyBuffer = Buffer.from(hookResult.body);
                   }
                   contentType = (responseHeaders["content-type"] as string) ?? contentType;
                 } catch (err) {
@@ -785,6 +800,7 @@ async function main(argv: string[]) {
                 bodyMs,
                 // 原始响应数据（如果有 hook 变更）
                 hasResponseHookChanges,
+                responseHookLayers,
                 originalStatusCode: hasResponseHookChanges ? originalStatusCode : undefined,
                 originalStatusMessage: hasResponseHookChanges ? originalStatusMessage : undefined,
                 originalHeaders: hasResponseHookChanges ? originalHeaders : undefined,
@@ -975,6 +991,7 @@ async function main(argv: string[]) {
             contentType: finalResult.contentType ?? null,
           }
         : undefined,
+      responseHookLayers: finalResult.responseHookLayers,
     });
     dbNotifier.notify("update", "proxy_requests", dbRecordId);
 

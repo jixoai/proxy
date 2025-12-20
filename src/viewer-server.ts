@@ -51,6 +51,45 @@ import {
 } from "./lib/runtime-paths";
 import type { StoreChangeEvent } from "./lib/store/base-store";
 
+/** 私有 header 前缀 */
+const PRIVATE_HEADER_PREFIX = "x-jixo-proxy-";
+
+/** 从 headers 中解析插件信息 */
+function parsePluginInfo(headers: Record<string, string | string[]> | undefined): {
+  pluginOrigin?: string;
+  pluginsProcessed?: string[];
+  requestType?: string;
+  sessionId?: string;
+  pingCount?: number;
+} | undefined {
+  if (!headers) return undefined;
+
+  const getValue = (key: string): string | undefined => {
+    const v = headers[key];
+    if (!v) return undefined;
+    return Array.isArray(v) ? v[0] : v;
+  };
+
+  const pluginOrigin = getValue(`${PRIVATE_HEADER_PREFIX}plugin-origin`);
+  const pluginsProcessedStr = getValue(`${PRIVATE_HEADER_PREFIX}plugin-processed`);
+  const requestType = getValue(`${PRIVATE_HEADER_PREFIX}request-type`);
+  const sessionId = getValue(`${PRIVATE_HEADER_PREFIX}session-id`);
+  const pingCountStr = getValue(`${PRIVATE_HEADER_PREFIX}ping-count`);
+
+  // 如果没有任何插件信息，返回 undefined
+  if (!pluginOrigin && !pluginsProcessedStr && !requestType) {
+    return undefined;
+  }
+
+  return {
+    pluginOrigin,
+    pluginsProcessed: pluginsProcessedStr ? pluginsProcessedStr.split(",").filter(Boolean) : undefined,
+    requestType,
+    sessionId,
+    pingCount: pingCountStr ? parseInt(pingCountStr, 10) : undefined,
+  };
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const log = createLogger("proxy:viewer");
@@ -132,6 +171,7 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
             bodySize: req.hookedRequest!.bodySize,
           }
         : undefined,
+      requestHookLayers: req.requestHookLayers,
       hasHookedResponse,
       hookedResponse: hasHookedResponse
         ? {
@@ -141,6 +181,12 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
             bodySize: req.hookedResponse!.bodySize,
           }
         : undefined,
+      responseHookLayers: req.responseHookLayers,
+      // 解析私有 headers 中的插件信息（合并原始 headers 和 hooked headers）
+      pluginInfo: parsePluginInfo({
+        ...req.request.headers,
+        ...req.hookedRequest?.headers,
+      }),
     },
   };
 }

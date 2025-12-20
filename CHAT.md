@@ -1118,9 +1118,147 @@ BUG: 同name的forwards, 第一个disabled了,但是仍然会走到第一个.
 
 ---
 
-我们的耗时显示,比如3284ms要自动格式化成3.284s (统一保留3位小数点)  ,所以也要支持 h小时.
+我们的耗时显示,比如3284ms要自动格式化成3.284s (统一保留3位小数点) ,所以也要支持 h小时.
 kb/mb/gb 也是一样
 
 ---
 
-我们需要开发一个插件,叫做`anthropic-ping`,放在`packages/proxy-anthropic-ping`
+我们需要开发一个插件,叫做`anthropic-ping`,放在`packages/proxy-anthropic-ping`:
+
+# Task
+
+设计并实现一个 **Anthropic 缓存保活中间件 (Cache Keep-Alive Plugin)** 类。
+该插件运行在代理服务器中，负责接管流量，自动维护 Prompt Caching 的生命周期，并在“保活成本”超过“重建成本”时执行**经济熔断**。
+
+# Core Requirements & Algorithms
+
+1.  **会话态识别 (Session Resolution)**
+    - 由于是网关环境，需从混合流量中提取会话上下文。
+    - **策略**：优先读取自定义 Header `x-session-id`；若缺失，则对 `system` + `messages` 前缀进行 Hash 计算作为 Key。
+    - **存储**：使用内存 `Map` 或 LRU 维护活跃会话状态（需包含 `lastActiveTime`, `pingCount`, `latestContextPayload`）。
+
+2.  **经济熔断算法 (Economic Circuit Breaker)**
+    - **背景**：Anthropic Cache TTL 为 5 分钟。
+    - **触发机制**：采用全局轮询（Global Polling，单一定时器）扫描所有会话。若 `now - lastActiveTime > 4m30s`，触发保活。
+    - **熔断逻辑**：
+      - 设定 `MAX_PINGS` 阈值（例如 12 次，即 1 小时）。
+      - `IF pingCount < MAX_PINGS`：发送心跳，`pingCount++`。
+      - `IF pingCount >= MAX_PINGS`：**立即销毁会话状态**。判定用户已离开，累计保活成本已逼近重建成本，停止亏损。
+
+3.  **最小化心跳开销 (Payload Minimization)**
+    - 构造心跳请求时，复用 `latestContextPayload` 中的 Cached 部分。
+    - 追加一个极简 Dummy User Message。
+    - **关键约束**：强制设置 `max_tokens: 1`，确保 Output Token 费用几乎为零。
+
+4.  **并发与性能**
+    - 避免为每个 Session 创建独立的 Timer，必须使用单一 `setInterval` 循环处理所有 Key。
+    - 实现 `intercept(req, res, next)` 风格的中间件方法：
+      - 收到用户真实请求 -> 重置 `pingCount = 0`，更新 `lastActiveTime` 和 `latestContextPayload`。
+
+备注: 你可以查看我们的数据库,现在数据库里面全是anthropic的api请求的格式.
+
+---
+
+我希望在前端的请求列表中,能显示这个请求是被哪些插件(hooks)处理了,或者这个请求是被哪个插件发起的。核心的逻辑辑是
+我们数据库会记录一些私有字段到Headers中,但是这关系Headlers不会发送到远程服务器,所以我们就可以用这种字段来标记己:请求是被哪个插件发起的;
+请求是被哪个插件处理过。
+
+---
+
+还有, hooks(插件)要能支持配置,这样我们才能配置我们这个插件的间隔时间、最大重试次数、最大保活时间等参数。
+
+---
+
+启动的时候,如果url对应的请求详情不存在,不应该报错,而是应该返回列表页面,比如`http://localhost:33000/?page=1&requestId=%22168%22`,目前这个页面会报错 .
+或者不直接返回,而是显示一个“空”,然后给一个按钮来返回列表页面
+
+---
+
+是的,我们需要进行破坏性更新,但是为了节省,我们需要在我们的插件协议中新增一种"未修改",这意味着hooks执行器可以立刻将数据整理好重新发往下一个插件,但我们的界面
+上仍然需要显示它,只不过这个hooks对应的tab是disbaleed的状态,因为它并没有对内容做出任何修改
+
+---
+
+同时我们需要重构我们的插件写法,目前的写法主要是:
+
+```json
+"hooks": {
+  "reqres": {
+    "type": "http",
+    "command": "bunx",
+    "args": [
+      "@jixo/proxy-plugin-droid"
+    ]
+  }
+}
+```
+
+它等价于:
+
+```json
+"hooks": [{
+  "reqres": {
+    "type": "http",
+    "command": "bunx",
+    "args": [
+      "@jixo/proxy-plugin-droid"
+    ]
+  }
+}]
+```
+
+在代码上,也就等价于:
+
+```ts
+server.use(
+  reqres({
+    type: "http",
+    command: "bunx",
+    args: ["@jixo/proxy-plugin-droid"],
+  }),
+);
+```
+
+也就是说,后续的hooks应该是只支持这两种写法:
+
+```json
+"hooks": Plugin | Array<Plugin>
+```
+
+最后再按照我的需求,检查一下是否还有遗漏的工作
+
+---
+
+好的,现在我发现一个BUG,根据我插件的顺序,就是anthropic-ping发起的数据是来自plugin-droid的,然后拿这个reqBody再次发起请求的时候,被reqBody再次处理了
+所以这的bug是,plugin-droid应该要能正确识别出直接处理过的reqBody,避免重复处理
+
+---
+
+我们的系统中存在fallback机制, 能否将失败的也记录下来
+
+---
+
+
+1. 清理 ping任务 算法
+    1. 遍历messages:`hash=''`
+    2. `hash=hashify(hash+remove_cache_control(messages[0]))`
+    3. `clear_ping_task_by_hash(hash)`
+    4. `hash=hashify(hash+remove_cache_control(messages[1]))`
+    5. `clear_ping_task_by_hash(hash)`
+    6. ...循环到所有消息都结束
+2. 发起 ping任务 的算法
+    1. `have_cache_messages = messages.slice(0,messages.findLastOwnCacheControlMessageIndex())`
+    2. `have_cache_messages.length == 0?return`
+    1. 遍历have_cache_messages:`hash=''`
+    2. `hash=hashify(hash+remove_cache_control(have_cache_messages[0]))`
+    4. `hash=hashify(hash+remove_cache_control(have_cache_messages[1]))`
+    6. taskMap.set(hash,startPingTask(hash))
+
+---
+
+我不确定model是否会影响缓存,我自己的直觉认为应该是不会影响,所以请你先移除模型对hash计算的影响.
+等我测试完成后再跟你说结果, 如果切换模型不影响缓存, 那么我们的配置中需要允许配置一个激发缓存的模型.
+
+---
+
+我在上游做了请求取消,但是我们代理侧的好像没收到取消的指令,还是在继续发送请求? 请你看一下是哪里的问题,是我的发请求的客户端没有做abort的问题?还是它abort了,但是我们没有正确处理?

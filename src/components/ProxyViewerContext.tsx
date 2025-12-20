@@ -37,6 +37,38 @@ export interface ResponseMetadata {
   bodySize: number;
 }
 
+/** 插件标记信息 */
+export interface PluginInfo {
+  /** 请求的发起插件（如心跳请求由 anthropic-ping 发起） */
+  pluginOrigin?: string;
+  /** 处理过该请求的插件列表 */
+  pluginsProcessed?: string[];
+  /** 请求类型：normal, ping, session-cancelled 等 */
+  requestType?: string;
+  /** 会话 ID */
+  sessionId?: string;
+  /** 心跳计数 */
+  pingCount?: number;
+}
+
+/** 单层 hook 执行结果 */
+export interface HookLayer {
+  /** 插件名称 */
+  pluginName: string;
+  /** 是否修改了内容 */
+  modified: boolean;
+  /** 以下字段仅在 modified=true 时存在 */
+  method?: string;
+  url?: string;
+  headers?: Record<string, string | string[]>;
+  bodyDataUrl?: string | null;
+  bodySize?: number;
+  /** Response 特有字段 */
+  statusCode?: number;
+  statusMessage?: string;
+  contentType?: string | null;
+}
+
 export interface RequestData {
   id: string;
   folderName: string;
@@ -68,6 +100,12 @@ export interface RequestData {
     hasHookedResponse?: boolean;
     /** hooks 处理后的响应元数据 */
     hookedResponse?: ResponseMetadata;
+    /** 每层 request hook 的执行结果 */
+    requestHookLayers?: HookLayer[];
+    /** 每层 response hook 的执行结果 */
+    responseHookLayers?: HookLayer[];
+    /** 插件标记信息 */
+    pluginInfo?: PluginInfo;
   };
   requestContent?: string;
   responseContent?: string;
@@ -129,6 +167,7 @@ interface ProxyViewerContextValue {
 
   selectedId: string | null;
   selectedDetail: RequestData | null;
+  detailNotFound: boolean;
   detailLoading: boolean;
   selectRequest: (id: string | null, options?: { skipUrlSync?: boolean }) => Promise<void>;
 
@@ -175,6 +214,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
   const [selectedDetail, setSelectedDetail] = useState<RequestData | null>(null);
+  const [detailNotFound, setDetailNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [currentPage, setCurrentPageState] = useState(1);
@@ -295,6 +335,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const selectRequest = useCallback(
     async (id: string | null, options?: { skipUrlSync?: boolean }) => {
       setSelectedId(id);
+      setDetailNotFound(false);
 
       if (!options?.skipUrlSync && !applyingSearchRef.current) {
         updateSearch((prev) => ({ ...prev, requestId: id ?? undefined }));
@@ -311,10 +352,15 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
 
       try {
         const response = await fetch(`/api/requests/${id}`);
+        if (!response.ok) {
+          setDetailNotFound(true);
+          return;
+        }
         const data = await response.json();
         setSelectedDetail(data);
       } catch (error) {
         console.error("Failed to load request detail:", error);
+        setDetailNotFound(true);
       } finally {
         setDetailLoading(false);
       }
@@ -708,6 +754,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     setFrontendAutoPullConfig,
     selectedId,
     selectedDetail,
+    detailNotFound,
     detailLoading,
     selectRequest,
     jsonDialogOpen,

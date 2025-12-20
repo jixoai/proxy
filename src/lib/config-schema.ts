@@ -14,27 +14,20 @@ const httpHookSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
   cwd: z.string().optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
 });
 
 const hookConfigSchema = httpHookSchema;
 
-/** hook 字段 schema：单个对象或数组，兼容旧配置 */
-const hookFieldSchema = z
-  .union([hookConfigSchema, z.array(hookConfigSchema)])
-  .optional()
-  .nullable();
-
+/** hooks schema：单个插件或插件数组 */
 const hooksSchema = z
-  .object({
-    request: hookFieldSchema,
-    response: hookFieldSchema,
-    reqres: hookFieldSchema,
-  })
+  .union([hookConfigSchema, z.array(hookConfigSchema)])
   .optional()
   .nullable()
   .transform<HooksConfig | null>((value) => {
     if (!value) return null;
-    if (!value.request && !value.response && !value.reqres) return null;
+    // 如果是空数组，返回 null
+    if (Array.isArray(value) && value.length === 0) return null;
     return value;
   });
 

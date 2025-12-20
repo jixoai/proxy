@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { db } from "./db";
 import { dbNotifier } from "./db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, ensureDataUrl, isDataUrl } from "./data-url";
+import type { HookLayer } from "../types/proxy";
 
 export type AbortReason = "client_disconnect" | "user_abort";
 export type RequestStatus = "pending" | "streaming" | "completed" | "error" | "aborted";
@@ -47,11 +48,15 @@ export interface LoggedRequest {
   websocket_direction: WebSocketDirection;
   error_message: string | null;
   request: RequestData;
-  /** hooks 处理后的请求（如果有 request hook） */
+  /** hooks 处理后的请求（如果有 request hook） - 最终结果 */
   hookedRequest?: RequestData;
+  /** 每层 request hook 的执行结果 */
+  requestHookLayers?: HookLayer[];
   response?: ResponseData;
-  /** hooks 处理后的响应（如果有 response hook） */
+  /** hooks 处理后的响应（如果有 response hook） - 最终结果 */
   hookedResponse?: ResponseData;
+  /** 每层 response hook 的执行结果 */
+  responseHookLayers?: HookLayer[];
 }
 
 export interface ProxyRequestFilters {

@@ -13,11 +13,15 @@ import {
   ArrowRightCircle,
   Clock,
   Download,
+  Plug,
+  Heart,
+  XOctagon,
 } from "lucide-react";
 import {
   useProxyViewer,
   type RequestData,
   type RequestStatus,
+  type PluginInfo,
 } from "@/components/ProxyViewerContext";
 import { formatBytes, formatDuration, getMethodColor, getStatusClass } from "@/components/utils";
 import {
@@ -100,6 +104,79 @@ function StatusBadge({ status }: { status: RequestStatus }) {
       <span>{config.label}</span>
     </Badge>
   );
+}
+
+// 插件标记渲染
+function PluginBadge({ pluginInfo }: { pluginInfo?: PluginInfo }) {
+  if (!pluginInfo) return null;
+
+  const { pluginOrigin, pluginsProcessed, requestType } = pluginInfo;
+
+  // 心跳请求特殊显示
+  if (requestType === "ping") {
+    return (
+      <Tooltip>
+        <TooltipTrigger>
+          <Badge className="flex items-center gap-1 border-pink-500/20 bg-pink-500/10 text-xs text-pink-700">
+            <Heart className="h-3 w-3" />
+            <span>ping</span>
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent>
+          <div className="space-y-1 text-xs">
+            <div>心跳请求 (cache keep-alive)</div>
+            {pluginInfo.pingCount && <div>第 {pluginInfo.pingCount} 次心跳</div>}
+            {pluginInfo.sessionId && (
+              <div className="font-mono text-muted-foreground">
+                Session: {pluginInfo.sessionId.slice(0, 8)}...
+              </div>
+            )}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  // 会话取消标记
+  if (requestType === "session-cancelled") {
+    return (
+      <Tooltip>
+        <TooltipTrigger>
+          <Badge className="flex items-center gap-1 border-amber-500/20 bg-amber-500/10 text-xs text-amber-700">
+            <XOctagon className="h-3 w-3" />
+            <span>cancelled</span>
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent>会话保活已取消</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  // 显示处理过的插件
+  if (pluginsProcessed && pluginsProcessed.length > 0) {
+    return (
+      <Tooltip>
+        <TooltipTrigger>
+          <Badge className="flex items-center gap-1 border-cyan-500/20 bg-cyan-500/10 text-xs text-cyan-700">
+            <Plug className="h-3 w-3" />
+            <span>{pluginsProcessed.length}</span>
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent>
+          <div className="space-y-1 text-xs">
+            <div className="font-medium">处理插件:</div>
+            {pluginsProcessed.map((p) => (
+              <div key={p} className="font-mono">
+                {p}
+              </div>
+            ))}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return null;
 }
 
 // 耗时显示组件
@@ -272,6 +349,7 @@ export function RequestList() {
                 <TableHead className="w-20">时间</TableHead>
                 <TableHead className="w-25">类型</TableHead>
                 <TableHead className="w-30">状态</TableHead>
+                <TableHead className="w-20">插件</TableHead>
                 <TableHead className="w-20">响应码</TableHead>
                 <TableHead className="min-w-60">路径</TableHead>
                 <TableHead className="min-w-50">目标</TableHead>
@@ -313,6 +391,9 @@ export function RequestList() {
                       </TableCell>
                       <TableCell>
                         <StatusBadge status={req.metadata.status} />
+                      </TableCell>
+                      <TableCell>
+                        <PluginBadge pluginInfo={req.metadata.pluginInfo} />
                       </TableCell>
                       <TableCell>
                         {req.metadata.response?.statusCode ? (

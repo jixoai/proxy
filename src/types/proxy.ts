@@ -8,16 +8,34 @@ export interface HttpHookConfig {
   command: string;
   args?: string[];
   cwd?: string;
+  /** 插件配置参数，会通过环境变量 PLUGIN_CONFIG 传递给插件进程（JSON 字符串） */
+  config?: Record<string, unknown>;
 }
 
 export type HookConfig = HttpHookConfig;
 
-/** hooks 配置，支持 request 和 response 两个阶段，每个阶段可以是单个 hook 或多个 hooks 数组 */
-export interface HooksConfig {
-  request?: HookConfig | HookConfig[] | null;
-  response?: HookConfig | HookConfig[] | null;
-  /** 同时作为 request 和 response hook */
-  reqres?: HookConfig | HookConfig[] | null;
+/** 插件配置类型别名，用于更清晰地表达意图 */
+export type PluginConfig = Record<string, unknown>;
+
+/** hooks 配置：单个插件或插件数组，每个插件同时作为 request 和 response hook */
+export type HooksConfig = HookConfig | HookConfig[] | null;
+
+/** 单层 hook 执行结果 */
+export interface HookLayer {
+  /** 插件名称 */
+  pluginName: string;
+  /** 是否修改了内容 */
+  modified: boolean;
+  /** 以下字段仅在 modified=true 时存在 */
+  method?: string;
+  url?: string;
+  headers?: Record<string, string | string[]>;
+  bodyDataUrl?: string | null;
+  bodySize?: number;
+  /** Response 特有字段 */
+  statusCode?: number;
+  statusMessage?: string;
+  contentType?: string | null;
 }
 
 export interface ProxyForwardConfig {

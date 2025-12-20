@@ -8,6 +8,8 @@ import type { RequestBody, Message, TextBlock, RewriteResult } from "./types";
 
 /**
  * 检测是否为 Droid 请求
+ *
+ * 注意：如果请求已经被处理过（包含 <droid-system-context>），则返回 false
  */
 export function isDroidRequest(requestBody: RequestBody): boolean {
   if (!requestBody.system) return false;
@@ -15,6 +17,11 @@ export function isDroidRequest(requestBody: RequestBody): boolean {
   const systemText = Array.isArray(requestBody.system)
     ? requestBody.system.map((s) => s.text || "").join(" ")
     : String(requestBody.system);
+
+  // 如果已经被处理过（包含重写后的标记），跳过
+  if (systemText.includes("<droid-system-context>")) {
+    return false;
+  }
 
   return (
     systemText.includes("Droid") ||

@@ -46,6 +46,21 @@ describe("isDroidRequest", () => {
     };
     expect(isDroidRequest(body)).toBe(false);
   });
+
+  it("should return false for already rewritten requests (contains droid-system-context)", () => {
+    // 这是重写后的格式，包含 <droid-system-context> 标签
+    const body: RequestBody = {
+      system: [
+        { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+        {
+          type: "text",
+          text: "<droid-system-context>\nYou are Droid, an AI assistant built by Factory.\n</droid-system-context>",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    };
+    expect(isDroidRequest(body)).toBe(false);
+  });
 });
 
 describe("extractSystemText", () => {

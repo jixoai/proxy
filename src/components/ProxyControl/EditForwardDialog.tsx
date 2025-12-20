@@ -13,7 +13,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tag, ExternalLink as LinkIcon } from "lucide-react";
 import { CustomHeadersInput } from "./CustomHeadersInput";
-import type { ProxyForwardConfig, ProxyConfigFile } from "@/types/proxy";
+import { HooksInput } from "./HooksInput";
+import type { ProxyForwardConfig, ProxyConfigFile, HooksConfig } from "@/types/proxy";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface EditForwardDialogProps {
@@ -40,6 +41,7 @@ export function EditForwardDialog({
   const [method, setMethod] = useState("*");
   const [description, setDescription] = useState("");
   const [customHeaders, setCustomHeaders] = useState("");
+  const [hooks, setHooks] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -51,6 +53,7 @@ export function EditForwardDialog({
       setMethod(forward.methods?.join(",") || "*");
       setDescription(forward.description || "");
       setCustomHeaders(forward.headers ? JSON.stringify(forward.headers) : "");
+      setHooks(forward.hooks ? JSON.stringify(forward.hooks) : "");
       setError("");
     }
   }, [open, forward]);
@@ -79,6 +82,16 @@ export function EditForwardDialog({
         }
       }
 
+      // 解析 hooks
+      let parsedHooks: HooksConfig | null = null;
+      if (hooks.trim()) {
+        try {
+          parsedHooks = JSON.parse(hooks);
+        } catch {
+          throw new Error("Invalid hooks JSON");
+        }
+      }
+
       // 解析 methods
       const methods = method.trim() === "*" || !method.trim() 
         ? ["*"] 
@@ -92,6 +105,7 @@ export function EditForwardDialog({
         path: path || null,
         methods,
         headers,
+        hooks: parsedHooks,
       };
 
       const saveResponse = await fetch("/api/config", {
@@ -209,6 +223,7 @@ export function EditForwardDialog({
                 </div>
               )}
               <CustomHeadersInput value={customHeaders} onChange={setCustomHeaders} />
+              <HooksInput value={hooks} onChange={setHooks} />
               {error && <div className="text-destructive text-sm">{error}</div>}
             </div>
           </ScrollArea>

@@ -28,11 +28,13 @@ export interface RequestHookParams {
 
 /**
  * 请求 hook 返回值
+ * - 返回 { modified: false } 表示插件处理过但未修改内容
+ * - 返回 { meta, body } 表示有修改
+ * - 返回 null/undefined 表示跳过（不记录该层）
  */
-export interface RequestHookResult {
-  meta?: Partial<RequestMeta>;
-  body?: Buffer;
-}
+export type RequestHookResult = 
+  | { modified: false }
+  | { modified?: true; meta?: Partial<RequestMeta>; body?: Buffer };
 
 /**
  * 响应 hook 参数
@@ -44,11 +46,13 @@ export interface ResponseHookParams {
 
 /**
  * 响应 hook 返回值
+ * - 返回 { modified: false } 表示插件处理过但未修改内容
+ * - 返回 { meta, body } 表示有修改
+ * - 返回 null/undefined 表示跳过（不记录该层）
  */
-export interface ResponseHookResult {
-  meta?: Partial<ResponseMeta>;
-  body?: Buffer;
-}
+export type ResponseHookResult = 
+  | { modified: false }
+  | { modified?: true; meta?: Partial<ResponseMeta>; body?: Buffer };
 
 /**
  * 插件配置

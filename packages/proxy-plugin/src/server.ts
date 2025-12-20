@@ -46,10 +46,20 @@ export async function startPluginServer(options: PluginServerOptions): Promise<v
           if (plugin.onRequest) {
             const result = await plugin.onRequest({ meta: normalizedMeta, body });
             if (result) {
+              // 检查是否是 { modified: false }
+              if ("modified" in result && result.modified === false) {
+                const payload = encodeEnvelope({ modified: false }, body);
+                return new Response(new Uint8Array(payload), {
+                  status: 200,
+                  headers: { "content-type": "application/octet-stream" },
+                });
+              }
+              // 有修改
               const nextMeta = { ...normalizedMeta, ...result.meta };
               const nextBody = result.body ?? body;
               const payload = encodeEnvelope(
                 {
+                  modified: true,
                   method: nextMeta.method,
                   url: nextMeta.url,
                   headers: nextMeta.headers,
@@ -63,9 +73,10 @@ export async function startPluginServer(options: PluginServerOptions): Promise<v
             }
           }
 
-          // Pass-through
+          // Pass-through (null/undefined) - 不记录该层
           const payload = encodeEnvelope(
             {
+              skipped: true,
               method: normalizedMeta.method,
               url: normalizedMeta.url,
               headers: normalizedMeta.headers,
@@ -85,10 +96,20 @@ export async function startPluginServer(options: PluginServerOptions): Promise<v
           if (plugin.onResponse) {
             const result = await plugin.onResponse({ meta: normalizedMeta, body });
             if (result) {
+              // 检查是否是 { modified: false }
+              if ("modified" in result && result.modified === false) {
+                const payload = encodeEnvelope({ modified: false }, body);
+                return new Response(new Uint8Array(payload), {
+                  status: 200,
+                  headers: { "content-type": "application/octet-stream" },
+                });
+              }
+              // 有修改
               const nextMeta = { ...normalizedMeta, ...result.meta };
               const nextBody = result.body ?? body;
               const payload = encodeEnvelope(
                 {
+                  modified: true,
                   statusCode: nextMeta.statusCode,
                   statusMessage: nextMeta.statusMessage,
                   headers: nextMeta.headers,
@@ -102,9 +123,10 @@ export async function startPluginServer(options: PluginServerOptions): Promise<v
             }
           }
 
-          // Pass-through
+          // Pass-through (null/undefined) - 不记录该层
           const payload = encodeEnvelope(
             {
+              skipped: true,
               statusCode: normalizedMeta.statusCode,
               statusMessage: normalizedMeta.statusMessage,
               headers: normalizedMeta.headers,

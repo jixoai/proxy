@@ -1,0 +1,25 @@
+{
+  "name": "@jixo/proxy-anthropic-ping",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "proxy-anthropic-ping": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "ts": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@jixo/proxy-plugin": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}
