@@ -19,7 +19,7 @@ import {
   type RequestData,
   type RequestStatus,
 } from "@/components/ProxyViewerContext";
-import { formatBytes, getMethodColor, getStatusClass } from "@/components/utils";
+import { formatBytes, formatDuration, getMethodColor, getStatusClass } from "@/components/utils";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -131,7 +131,7 @@ function DurationDisplay({
     return (
       <span className="flex items-center gap-1 text-yellow-600">
         <Clock className="h-3 w-3 animate-pulse" />
-        <span>{elapsed}ms</span>
+        <span>{formatDuration(elapsed)}</span>
       </span>
     );
   }
@@ -141,10 +141,10 @@ function DurationDisplay({
     const bodyElapsed = ttfbMs !== undefined ? now - startTime - ttfbMs : 0;
     return (
       <span className="flex items-center gap-1 text-blue-600">
-        <span>{ttfbMs ?? 0}ms</span>
+        <span>{formatDuration(ttfbMs ?? 0)}</span>
         <span>+</span>
         <Download className="h-3 w-3 animate-pulse" />
-        <span>{bodyElapsed}ms</span>
+        <span>{formatDuration(bodyElapsed)}</span>
       </span>
     );
   }
@@ -153,9 +153,9 @@ function DurationDisplay({
   if (ttfbMs !== undefined && bodyMs !== undefined) {
     return (
       <span className="flex items-center gap-1">
-        <span>{ttfbMs}ms</span>
+        <span>{formatDuration(ttfbMs)}</span>
         <span className="text-muted-foreground">+</span>
-        <span>{bodyMs}ms</span>
+        <span>{formatDuration(bodyMs)}</span>
       </span>
     );
   }
@@ -409,7 +409,7 @@ export function RequestList() {
                     />
                     <ContextMenuItem
                       disabled={!req.metadata.forwardName}
-                      onClick={() => {
+                      onSelect={() => {
                         const forwardName = req.metadata.forwardName;
                         if (forwardName) {
                           jumpToForwardRule(req.metadata.instanceName || "", forwardName);
@@ -423,7 +423,7 @@ export function RequestList() {
                     {(req.metadata.status === "pending" || req.metadata.status === "streaming") && (
                       <ContextMenuItem
                         className="flex items-center gap-2 text-orange-600"
-                        onClick={() => abortRequest(req.id)}
+                        onSelect={() => abortRequest(req.id)}
                       >
                         <XCircle className="h-4 w-4" />
                         <span>中断请求</span>
@@ -431,7 +431,7 @@ export function RequestList() {
                     )}
                     <ContextMenuItem
                       className="text-destructive mt-1 flex items-center gap-2 border-t pt-1"
-                      onClick={() => deleteRequest(req.id)}
+                      onSelect={() => deleteRequest(req.id)}
                     >
                       <Trash2 className="h-4 w-4" />
                       <span>删除请求</span>

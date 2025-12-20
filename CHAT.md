@@ -1115,3 +1115,12 @@ BUG: 同name的forwards, 第一个disabled了,但是仍然会走到第一个.
 ---
 
 我们req/res都有hook的支持,但是目前只有request有在界面上渲染Hooked/Origin的tabs,我们的 ResponeBody 也需要支持,如果有的话
+
+---
+
+我们的耗时显示,比如3284ms要自动格式化成3.284s (统一保留3位小数点)  ,所以也要支持 h小时.
+kb/mb/gb 也是一样
+
+---
+
+我们需要开发一个插件,叫做`anthropic-ping`,放在`packages/proxy-anthropic-ping`

@@ -1,9 +1,19 @@
 export function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
+  if (bytes === 0) return "0B";
   const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
+  const value = bytes / Math.pow(k, i);
+  // B 不需要小数，其他保留3位
+  if (i === 0) return `${Math.round(value)}B`;
+  return `${value.toFixed(3)}${sizes[i]}`;
+}
+
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(3)}s`;
+  if (ms < 3600000) return `${(ms / 60000).toFixed(3)}min`;
+  return `${(ms / 3600000).toFixed(3)}h`;
 }
 
 export function getStatusClass(status: number): string {
