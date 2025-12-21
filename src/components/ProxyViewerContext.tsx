@@ -137,6 +137,10 @@ interface ProxyViewerContextValue {
   pagesParam: string | undefined;
   /** 更新多页分页参数 */
   setPagesParam: (value: string) => void;
+  /** 每页数据条数 */
+  pageSize: number;
+  /** 更新每页数据条数 */
+  setPageSize: (value: number) => void;
 
   livePush: boolean;
   setLivePush: (enabled: boolean) => void;
@@ -200,6 +204,8 @@ type SearchParams = {
   dialog?: "json";
   /** 多页分页参数，格式：anchor,count */
   pages?: string;
+  /** 每页数据条数 */
+  pageSize?: string;
   filterMethod?: string;
   filterStatus?: string;
   filterUrl?: string;
@@ -283,6 +289,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [pagesParam, setPagesParamState] = useState<string | undefined>(undefined);
+  const [pageSize, setPageSizeState] = useState(20);
   const [livePush, setLivePush] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -502,6 +509,24 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     },
     [updateSearch],
   );
+  const setPageSize = useCallback(
+    (value: number) => {
+      const size = Math.max(1, Math.min(100, value));
+      setPageSizeState(size);
+      setPagesParamState(undefined); // 重置分页
+      if (!applyingSearchRef.current && window.location.pathname === "/") {
+        updateSearch(
+          (prev) => ({
+            ...prev,
+            pageSize: String(size),
+            pages: undefined,
+          }),
+          { replace: true },
+        );
+      }
+    },
+    [updateSearch],
+  );
 
   const setJsonDialogOpen = useCallback(
     (open: boolean) => {
@@ -585,6 +610,12 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     (search: SearchParams) => {
       applyingSearchRef.current = true;
       setPagesParamState(search.pages);
+      if (search.pageSize) {
+        const size = parseInt(search.pageSize, 10);
+        if (!isNaN(size) && size > 0) {
+          setPageSizeState(Math.max(1, Math.min(100, size)));
+        }
+      }
       setFilterMethodState(search.filterMethod ?? "");
       setFilterStatusState(search.filterStatus ?? "");
       setFilterUrlState(search.filterUrl ?? "");
@@ -803,6 +834,8 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     loading,
     pagesParam,
     setPagesParam,
+    pageSize,
+    setPageSize,
     livePush,
     setLivePush,
     wsConnected,

@@ -37,15 +37,38 @@
 }
 
 /* 新请求高亮动画 */
-@keyframes highlight {
-  0% {
-    background-color: hsl(var(--primary) / 0.15);
-  }
-  100% {
-    background-color: transparent;
-  }
+tr.animate-highlight {
+  background-size: 100% 400%;
+  background-position: 0 0;
+  animation: highlight-slide 5s ease-out forwards;
 }
 
-.animate-highlight {
-  animation: highlight 3s ease-out forwards;
+tr.animate-highlight[data-method="GET"] {
+  background-image: linear-gradient(to bottom, rgb(16 185 129 / 0.3), transparent 25%);
+}
+tr.animate-highlight[data-method="POST"] {
+  background-image: linear-gradient(to bottom, rgb(59 130 246 / 0.3), transparent 25%);
+}
+tr.animate-highlight[data-method="PUT"] {
+  background-image: linear-gradient(to bottom, rgb(245 158 11 / 0.3), transparent 25%);
+}
+tr.animate-highlight[data-method="DELETE"] {
+  background-image: linear-gradient(to bottom, rgb(239 68 68 / 0.3), transparent 25%);
+}
+tr.animate-highlight[data-method="PATCH"] {
+  background-image: linear-gradient(to bottom, rgb(168 85 247 / 0.3), transparent 25%);
+}
+tr.animate-highlight:not([data-method="GET"]):not([data-method="POST"]):not(
+    [data-method="PUT"]
+  ):not([data-method="DELETE"]):not([data-method="PATCH"]) {
+  background-image: linear-gradient(to bottom, rgb(107 114 128 / 0.3), transparent 25%);
+}
+
+@keyframes highlight-slide {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 100%;
+  }
 }

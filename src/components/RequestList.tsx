@@ -53,7 +53,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { AddForwardFromRequestDialog } from "@/components/AddForwardFromRequestDialog";
 import { PluginUiBadge } from "@/components/PluginUiBadge";
 
-const ITEMS_PER_PAGE = 50;
+const DEFAULT_PAGE_SIZE = 20;
 
 // 状态徽章渲染
 function StatusBadge({ status }: { status: RequestStatus }) {
@@ -239,21 +239,16 @@ function DurationDisplay({
   return <span>-</span>;
 }
 
-/** 高亮动画持续时间（秒），需与 CSS 动画时间一致 */
-const HIGHLIGHT_DURATION_SEC = 3;
-
-/** 判断请求是否是最近的（基于时间戳） */
-function isRecentRequest(timestamp: string): boolean {
-  const requestTime = new Date(timestamp).getTime();
-  const now = Date.now();
-  return now - requestTime < HIGHLIGHT_DURATION_SEC * 1000;
-}
+/** 判定为"新请求"的时间窗口（秒） */
+const NEW_REQUEST_WINDOW_SEC = 10;
 
 export function RequestList() {
   const {
     requests,
+    loading,
     pagesParam,
     setPagesParam,
+    pageSize,
     filterMethod,
     filterStatus,
     filterUrl,
@@ -319,7 +314,8 @@ export function RequestList() {
   }, [requests, activeInstanceName, activeRuleName, filterMethod, filterStatus, filterUrl]);
 
   // Pagination - 使用新的多页分页系统
-  const totalPages = Math.ceil(filteredRequests.length / ITEMS_PER_PAGE);
+  const itemsPerPage = pageSize || DEFAULT_PAGE_SIZE;
+  const totalPages = Math.ceil(filteredRequests.length / itemsPerPage);
   const pagination = useMultiPagePagination({
     totalPages,
     pagesParam,
@@ -329,23 +325,36 @@ export function RequestList() {
   // 根据页码范围获取要显示的请求（可能包含多页）
   const paginatedRequests = useMemo(() => {
     const { pages } = pagination.pageRange;
-    // pages 是降序的（如 [4, 3]）
-    // 数据结构：最新的在 index 0，第 1 页 = 最新数据
-    // 渲染顺序：第 4 页（较新）应该在第 3 页（较旧）上面
-    // 所以直接用降序遍历，先取第 4 页再取第 3 页
+    const totalItems = filteredRequests.length;
+    // pages 是降序的（如 [4, 3]），第4页（较新）在第3页（较旧）上面
+    // 数据结构：filteredRequests 中最新的在 index 0
+    // 分页逻辑：第1页 = 最老的数据（数组末尾），第N页 = 最新的数据（数组开头）
     const result: RequestData[] = [];
     for (const page of pages) {
-      const startIndex = (page - 1) * ITEMS_PER_PAGE;
-      const pageItems = filteredRequests.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+      const pageEndFromStart = totalItems - (page - 1) * itemsPerPage;
+      const pageStartFromStart = Math.max(0, pageEndFromStart - itemsPerPage);
+      const pageItems = filteredRequests.slice(pageStartFromStart, pageEndFromStart);
       result.push(...pageItems);
     }
     return result;
-  }, [filteredRequests, pagination.pageRange]);
+  }, [filteredRequests, pagination.pageRange, itemsPerPage]);
 
   // 格式化时间戳
   const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
     return date.toLocaleTimeString("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  };
+
+  const formatFullTimestamp = (timestamp: string) => {
+    const date = new Date(timestamp);
+    return date.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
@@ -357,7 +366,17 @@ export function RequestList() {
     <div className="flex h-full flex-col overflow-hidden">
       {/* Request Table */}
       <div className="flex-1 overflow-auto">
-        {paginatedRequests.length === 0 ? (
+        {loading ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Loader2 className="animate-spin" />
+              </EmptyMedia>
+              <EmptyTitle>加载中...</EmptyTitle>
+              <EmptyDescription>正在获取请求记录</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : paginatedRequests.length === 0 ? (
           <Empty>
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -371,6 +390,7 @@ export function RequestList() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-16">#</TableHead>
                 <TableHead className="w-20">时间</TableHead>
                 <TableHead className="w-25">类型</TableHead>
                 <TableHead className="w-30">状态</TableHead>
@@ -384,7 +404,9 @@ export function RequestList() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {paginatedRequests.map((req) => (
+              {paginatedRequests.map((req) => {
+                const isRecent = Date.now() - new Date(req.metadata.timestamp).getTime() < NEW_REQUEST_WINDOW_SEC * 1000;
+                return (
                 <ContextMenu
                   key={req.id}
                   onOpenChange={(open) => setContextMenuOpenId(open ? req.id : null)}
@@ -392,11 +414,22 @@ export function RequestList() {
                   <ContextMenuTrigger asChild>
                     <TableRow
                       data-state={selectedId === req.id ? "selected" : undefined}
+                      data-method={req.metadata.request.method}
                       onClick={() => selectRequest(req.id)}
-                      className={`cursor-pointer ${contextMenuOpenId === req.id ? "bg-accent ring-2 ring-primary/50" : ""} ${isRecentRequest(req.metadata.timestamp) ? "animate-highlight" : ""}`}
+                      className={`cursor-pointer ${contextMenuOpenId === req.id ? "bg-accent ring-2 ring-primary/50" : ""} ${isRecent ? "animate-highlight" : ""}`}
                     >
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {req.id}
+                      </TableCell>
                       <TableCell className="font-mono text-xs">
-                        {formatTimestamp(req.metadata.timestamp)}
+                        <Tooltip>
+                          <TooltipTrigger>
+                            {formatTimestamp(req.metadata.timestamp)}
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {formatFullTimestamp(req.metadata.timestamp)}
+                          </TooltipContent>
+                        </Tooltip>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
@@ -549,7 +582,8 @@ export function RequestList() {
                     </ContextMenuItem>
                   </ContextMenuContent>
                 </ContextMenu>
-              ))}
+              );
+              })}
             </TableBody>
           </Table>
         )}

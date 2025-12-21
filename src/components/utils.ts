@@ -22,15 +22,16 @@ export function getStatusClass(status: number): string {
   return "error";
 }
 
+const METHOD_COLORS: Record<string, string> = {
+  GET: "bg-emerald-500",
+  POST: "bg-blue-500",
+  PUT: "bg-amber-500",
+  DELETE: "bg-red-500",
+  PATCH: "bg-purple-500",
+};
+
 export function getMethodColor(method: string): string {
-  const colors: Record<string, string> = {
-    GET: "bg-emerald-500",
-    POST: "bg-blue-500",
-    PUT: "bg-amber-500",
-    DELETE: "bg-red-500",
-    PATCH: "bg-purple-500",
-  };
-  return colors[method] || "bg-gray-500";
+  return METHOD_COLORS[method] || "bg-gray-500";
 }
 
 export function parseMarkdownHeaders(markdown: string): Record<string, string> {
