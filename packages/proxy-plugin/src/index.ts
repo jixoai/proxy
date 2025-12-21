@@ -50,6 +50,21 @@ export {
   type PrivateHeaderInfo,
 } from "./private-headers";
 
+// Plugin UI
+export {
+  PLUGIN_UI_HEADER_PREFIX,
+  PLUGIN_UI_STREAM_SUFFIX,
+  isPluginUiHeader,
+  isPluginUiStreamHeader,
+  parsePluginUiHeaders,
+  buildPluginUiHeaderKey,
+  buildPluginUiStreamHeaderKey,
+  type PluginTrayItem,
+  type PluginUiPayload,
+  type PluginUiData,
+  type PluginUiMap,
+} from "./plugin-ui";
+
 // Plugin Config
 export {
   getPluginConfig,

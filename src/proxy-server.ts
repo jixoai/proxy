@@ -30,10 +30,10 @@ import { createLogger, installGlobalErrorLogger } from "./lib/logger";
 import { forwardStatsStore } from "./lib/forward-stats";
 
 /** 私有 header 前缀，这些 headers 只记录到数据库，不转发到远程服务器 */
-const PRIVATE_HEADER_PREFIX = "x-jixo-proxy-";
+const PRIVATE_HEADER_PREFIX = "-x-jixo-proxy-";
 
 /** 私有 header：原始 Proxy URL（用于插件发起回环请求，如心跳） */
-const HEADER_PROXY_URL = "x-jixo-proxy-url";
+const HEADER_PROXY_URL = "-x-jixo-proxy-url";
 
 /** 过滤掉私有 headers */
 function stripPrivateHeaders(headers: http.IncomingHttpHeaders): http.IncomingHttpHeaders {

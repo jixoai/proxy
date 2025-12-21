@@ -1,10 +1,12 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Heart, XOctagon, Plug, Zap } from "lucide-react";
+import { RequestDetailPluginUi } from "@/components/RequestDetailPluginUi";
 import type { RequestData } from "@/components/ProxyViewerContext";
 
 export function RequestInfoCard({ metadata }: { metadata: RequestData["metadata"] }) {
   const pluginInfo = metadata?.pluginInfo;
+  const pluginUi = metadata?.pluginUi;
 
   return (
     <Card>
@@ -66,6 +68,11 @@ export function RequestInfoCard({ metadata }: { metadata: RequestData["metadata"
               </div>
             </>
           )}
+          {pluginUi?.records?.length ? (
+            <div className="col-span-2">
+              <RequestDetailPluginUi key={pluginUi.version} records={pluginUi.records} />
+            </div>
+          ) : null}
         </div>
       </CardContent>
     </Card>

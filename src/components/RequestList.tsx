@@ -54,6 +54,7 @@ import {
 } from "@/components/ui/pagination";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AddForwardFromRequestDialog } from "@/components/AddForwardFromRequestDialog";
+import { PluginUiBadge } from "@/components/PluginUiBadge";
 
 const ITEMS_PER_PAGE = 50;
 
@@ -393,7 +394,12 @@ export function RequestList() {
                         <StatusBadge status={req.metadata.status} />
                       </TableCell>
                       <TableCell>
-                        <PluginBadge pluginInfo={req.metadata.pluginInfo} />
+                        <div className="space-y-1">
+                          <PluginBadge pluginInfo={req.metadata.pluginInfo} />
+                          {req.metadata.pluginUi?.records?.length ? (
+                            <PluginUiBadge key={req.metadata.pluginUi.version} records={req.metadata.pluginUi.records} />
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell>
                         {req.metadata.response?.statusCode ? (

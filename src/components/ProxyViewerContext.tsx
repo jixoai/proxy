@@ -9,6 +9,8 @@ import {
   type SetStateAction,
 } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { sanitizePluginUiPayload, type PluginUiRecord } from "@/lib/plugin-ui";
+import { usePluginUiStream } from "@/contexts/PluginUiStreamContext";
 import type { ProxyInstanceConfig, ProxyConfigFile } from "@/types/proxy";
 
 export type RequestStatus = "pending" | "streaming" | "completed" | "error" | "aborted";
@@ -106,6 +108,12 @@ export interface RequestData {
     responseHookLayers?: HookLayer[];
     /** 插件标记信息 */
     pluginInfo?: PluginInfo;
+    /** 插件 UI 信息（tray/remark/stream） */
+    pluginUi?: {
+      records: PluginUiRecord[];
+      order: string[];
+      version: number;
+    };
   };
   requestContent?: string;
   responseContent?: string;
@@ -205,6 +213,61 @@ export function useProxyViewer() {
 }
 
 export function ProxyViewerProvider({ children }: { children: ReactNode }) {
+  const stream = usePluginUiStream();
+  const pluginUiCacheRef = useRef(new Map<string, { payload: PluginUiRecord["payload"]; updatedAt: number }>());
+  const pluginUiSubsRef = useRef(new Map<string, { unsub: () => void }>());
+  const pluginUiSubscribedRef = useRef(new Set<string>());
+  const applyPluginUiDynamic = useCallback((records: PluginUiRecord[]) => {
+    let changed = false;
+    const next = records.map((record) => {
+      if (!record.streamUrl) return record;
+      const cached = pluginUiCacheRef.current.get(record.streamUrl);
+      if (!cached) return record;
+      if (cached.payload === record.payload) return record;
+      changed = true;
+      return { ...record, payload: cached.payload };
+    });
+    return { records: next, changed };
+  }, []);
+  const normalizeIncomingRequest = useCallback((item: RequestData): RequestData => {
+    if (!item.metadata.pluginUi) return item;
+    const result = applyPluginUiDynamic(item.metadata.pluginUi.records);
+    if (!result.changed) return item;
+    return {
+      ...item,
+      metadata: {
+        ...item.metadata,
+        pluginUi: {
+          ...item.metadata.pluginUi,
+          records: result.records,
+          version: (item.metadata.pluginUi.version ?? 0) + 1,
+        },
+      },
+    };
+  }, [applyPluginUiDynamic]);
+
+  const subscribePluginUiStreams = useCallback((records: PluginUiRecord[]) => {
+    for (const record of records) {
+      if (!record.streamUrl) continue;
+      if (pluginUiSubscribedRef.current.has(record.streamUrl)) continue;
+      const unsub = stream.subscribe(record.streamUrl, (data) => {
+        const payload = sanitizePluginUiPayload(data.payload);
+        pluginUiCacheRef.current.set(record.streamUrl!, { payload, updatedAt: data.updatedAt });
+        setRequests((prev) => prev.map(normalizeIncomingRequest));
+        setSelectedDetail((prev) => (prev ? normalizeIncomingRequest(prev) : prev));
+      });
+      pluginUiSubsRef.current.set(record.streamUrl, { unsub });
+      pluginUiSubscribedRef.current.add(record.streamUrl);
+    }
+  }, [normalizeIncomingRequest, stream]);
+
+  const unsubscribeAllPluginUiStreams = useCallback(() => {
+    for (const entry of pluginUiSubsRef.current.values()) {
+      entry.unsub();
+    }
+    pluginUiSubsRef.current.clear();
+    pluginUiSubscribedRef.current.clear();
+  }, []);
   const navigate = useNavigate();
   const applyingSearchRef = useRef(false);
   const [requests, setRequests] = useState<RequestData[]>([]);
@@ -274,16 +337,22 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   );
 
   const loadRequests = useCallback(async () => {
+    unsubscribeAllPluginUiStreams();
     try {
       const response = await fetch("/api/requests");
-      const data = await response.json();
-      setRequests(data);
+      const data = (await response.json()) as RequestData[];
+      const normalized = data.map((item) => normalizeIncomingRequest(item));
+      setRequests(normalized);
+      for (const item of normalized) {
+        const records = item.metadata.pluginUi?.records;
+        if (records) subscribePluginUiStreams(records);
+      }
     } catch (error) {
       console.error("Failed to load requests:", error);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [normalizeIncomingRequest, subscribePluginUiStreams, unsubscribeAllPluginUiStreams]);
 
   const handleClearAll = useCallback(async () => {
     try {
@@ -293,11 +362,12 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
         setSelectedId(null);
         setSelectedDetail(null);
         setCurrentPage(1);
+        unsubscribeAllPluginUiStreams();
       }
     } catch (error) {
       console.error("Failed to clear requests:", error);
     }
-  }, []);
+  }, [unsubscribeAllPluginUiStreams]);
 
   const deleteRequest = useCallback(
     async (id: string) => {
@@ -356,8 +426,11 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
           setDetailNotFound(true);
           return;
         }
-        const data = await response.json();
-        setSelectedDetail(data);
+        const data = (await response.json()) as RequestData;
+        const normalized = data ? normalizeIncomingRequest(data) : data;
+        setSelectedDetail(normalized);
+        const records = normalized?.metadata?.pluginUi?.records;
+        if (records) subscribePluginUiStreams(records);
       } catch (error) {
         console.error("Failed to load request detail:", error);
         setDetailNotFound(true);
@@ -367,7 +440,6 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     },
     [updateSearch],
   );
-
   const fetchConfig = useCallback(async (): Promise<ProxyConfigFile> => {
     const response = await fetch("/api/config");
     return response.json();
@@ -633,15 +705,21 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
         try {
           const message = JSON.parse(event.data);
           if (message.type === "new-request" && message.data) {
-            setRequests((prev) => [message.data, ...prev]);
+            const normalized = normalizeIncomingRequest(message.data as RequestData);
+            setRequests((prev) => [normalized, ...prev]);
+            const records = normalized.metadata.pluginUi?.records;
+            if (records) subscribePluginUiStreams(records);
             setCurrentPage(1);
           } else if (message.type === "update-request" && message.data) {
             const updatedId = String(message.id);
-            setRequests((prev) => prev.map((req) => (req.id === updatedId ? message.data : req)));
+            const normalized = normalizeIncomingRequest(message.data as RequestData);
+            setRequests((prev) => prev.map((req) => (req.id === updatedId ? normalized : req)));
+            const records = normalized.metadata.pluginUi?.records;
+            if (records) subscribePluginUiStreams(records);
 
             setSelectedDetail((prev) => {
               if (prev && prev.id === updatedId) {
-                return { ...prev, ...message.data };
+                return { ...prev, ...normalized };
               }
               return prev;
             });
@@ -657,6 +735,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
             setSelectedId(null);
             setSelectedDetail(null);
             setCurrentPage(1);
+            unsubscribeAllPluginUiStreams();
           } else if (message.type === "config-changed") {
             // 全局开关语义：只有当前页面开着 autoPull，才会响应 config-changed 并拉取最新配置。
             // 如果当前页面已关闭 autoPull，则忽略任何配置变更（包含别人把 autoPull 再打开）。
@@ -717,7 +796,13 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
         }
       }
     };
-  }, [livePush, reloadInstances, loadRules, fetchConfig]);
+  }, [fetchConfig, livePush, loadRules, reloadInstances, subscribePluginUiStreams, normalizeIncomingRequest, unsubscribeAllPluginUiStreams]);
+
+  useEffect(() => {
+    return () => {
+      unsubscribeAllPluginUiStreams();
+    };
+  }, [unsubscribeAllPluginUiStreams]);
 
   const value: ProxyViewerContextValue = {
     requests,

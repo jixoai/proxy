@@ -9,7 +9,11 @@
  */
 
 import { SessionManager } from "./session-manager";
-import { PrivateHeaders } from "@jixo/proxy-plugin";
+import {
+  PrivateHeaders,
+  buildPluginUiHeaderKey,
+  buildPluginUiStreamHeaderKey,
+} from "@jixo/proxy-plugin";
 import jmespath from "jmespath";
 import type {
   SessionState,
@@ -21,6 +25,8 @@ import type {
   SkipPingMatcherMap,
 } from "./types";
 import { DEFAULT_SKIP_PING_MATCHERS } from "./types";
+import { pingStatusStreamUrl, pingStatusUiPayload } from "./ping-status-client";
+import { pingStatusStore } from "./ping-status-server";
 
 const DEFAULT_MAX_KEEP_ALIVE_DURATION_MS = 60 * 60 * 1000; // 60 分钟
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟，Anthropic 官方值
@@ -156,16 +162,6 @@ export class AnthropicPingMiddleware {
     return { ...body, messages: normalizedMessages };
   }
 
-  private normalizeSkipPingMatchers(
-    overrides: SkipPingMatcherMap | undefined
-  ): ActiveSkipPingMatcher[] {
-    const merged: SkipPingMatcherMap = {
-      ...DEFAULT_SKIP_PING_MATCHERS,
-      ...(overrides ?? {}),
-    };
-    return Object.values(merged).filter(isActiveSkipPingMatcher);
-  }
-
   private buildRequestContext(
     headers: Record<string, string>,
     body: AnthropicRequestBody
@@ -194,31 +190,14 @@ export class AnthropicPingMiddleware {
     return "";
   }
 
-  private buildResponseContext(response: Response): ResponseContext {
-    return {
-      status: response.status,
-      ok: response.ok,
-      statusText: response.statusText,
-      url: response.url,
-      headers: this.headersToRecord(response.headers),
+  private normalizeSkipPingMatchers(
+    overrides: SkipPingMatcherMap | undefined
+  ): ActiveSkipPingMatcher[] {
+    const merged: SkipPingMatcherMap = {
+      ...DEFAULT_SKIP_PING_MATCHERS,
+      ...(overrides ?? {}),
     };
-  }
-
-  private headersToRecord(headers: Headers): Record<string, string> {
-    const record: Record<string, string> = {};
-    headers.forEach((value, key) => {
-      record[key] = value;
-    });
-    return record;
-  }
-
-  private parseResponseBody(text: string): unknown {
-    if (!text) return "";
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
+    return Object.values(merged).filter(isActiveSkipPingMatcher);
   }
 
   /**
@@ -336,6 +315,10 @@ export class AnthropicPingMiddleware {
       const pingBody = this.buildPingPayload(latestContextPayload);
       this.log(`Sending ping for session ${sessionId} (count: ${state.pingCount + 1}) to ${pingUrl}`);
 
+      const uiPayloadObj = pingStatusUiPayload(sessionId, false);
+      const uiPayload = JSON.stringify(uiPayloadObj);
+      const streamUrl = pingStatusStreamUrl(pingUrl, sessionId);
+
       // 添加私有 headers 标记这是一个心跳请求
       const pingHeaders: Record<string, string> = {
         ...headers,
@@ -343,6 +326,8 @@ export class AnthropicPingMiddleware {
         [PrivateHeaders.REQUEST_TYPE]: "ping",
         [PrivateHeaders.SESSION_ID]: sessionId,
         [PrivateHeaders.PING_COUNT]: String(state.pingCount + 1),
+        [buildPluginUiHeaderKey("anthropic-ping")]: uiPayload,
+        [buildPluginUiStreamHeaderKey("anthropic-ping")]: streamUrl,
       };
 
       const response = await fetch(pingUrl, {
@@ -350,6 +335,8 @@ export class AnthropicPingMiddleware {
         headers: pingHeaders,
         body: JSON.stringify(pingBody),
       });
+
+      pingStatusStore.set(sessionId, uiPayloadObj);
 
       const responseText = await response.text().catch(() => "");
       const responseBody = this.parseResponseBody(responseText);
@@ -360,6 +347,7 @@ export class AnthropicPingMiddleware {
         this.log(`Stopping ping for session ${sessionId} due to response matcher (status ${response.status})`);
         this.sessionManager.delete(sessionId);
         this.onExpire?.(sessionId, "manual");
+        pingStatusStore.set(sessionId, pingStatusUiPayload(sessionId, true));
         return {
           success: false,
           sessionId,
@@ -479,6 +467,33 @@ export class AnthropicPingMiddleware {
     this.stopPolling();
     for (const [sessionId] of this.sessionManager.entries()) {
       this.sessionManager.delete(sessionId);
+    }
+  }
+
+  private buildResponseContext(response: Response): ResponseContext {
+    return {
+      status: response.status,
+      ok: response.ok,
+      statusText: response.statusText,
+      url: response.url,
+      headers: this.headersToRecord(response.headers),
+    };
+  }
+
+  private headersToRecord(headers: Headers): Record<string, string> {
+    const record: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      record[key] = value;
+    });
+    return record;
+  }
+
+  private parseResponseBody(text: string): unknown {
+    if (!text) return "";
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
     }
   }
 }
