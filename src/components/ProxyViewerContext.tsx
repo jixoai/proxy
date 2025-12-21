@@ -131,8 +131,14 @@ export interface RequestData {
 }
 
 interface ProxyViewerContextValue {
+  /** 当前显示的请求数据（已按分页加载） */
   requests: RequestData[];
+  /** 请求总数 */
+  totalCount: number;
+  /** 初次加载中（显示全屏加载状态） */
   loading: boolean;
+  /** 页面切换加载中（显示顶部进度条，保留现有数据） */
+  pageLoading: boolean;
   /** 多页分页参数，格式：anchor,count（如 "-1,2" 或 "4,2"） */
   pagesParam: string | undefined;
   /** 更新多页分页参数 */
@@ -141,6 +147,8 @@ interface ProxyViewerContextValue {
   pageSize: number;
   /** 更新每页数据条数 */
   setPageSize: (value: number) => void;
+  /** 加载指定页的数据 */
+  loadPages: (pages: number[]) => Promise<void>;
 
   livePush: boolean;
   setLivePush: (enabled: boolean) => void;
@@ -279,6 +287,11 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const applyingSearchRef = useRef(false);
   const [requests, setRequests] = useState<RequestData[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const totalCountRef = useRef(0);
+  useEffect(() => {
+    totalCountRef.current = totalCount;
+  }, [totalCount]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -287,9 +300,20 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const [selectedDetail, setSelectedDetail] = useState<RequestData | null>(null);
   const [detailNotFound, setDetailNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [pageLoading, setPageLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [pagesParam, setPagesParamState] = useState<string | undefined>(undefined);
+  const pagesParamRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    pagesParamRef.current = pagesParam;
+  }, [pagesParam]);
   const [pageSize, setPageSizeState] = useState(20);
+  const pageSizeRef = useRef(20);
+  useEffect(() => {
+    pageSizeRef.current = pageSize;
+  }, [pageSize]);
+  /** 当前显示的请求中最大的 ID */
+  const maxDisplayedIdRef = useRef<number>(0);
   const [livePush, setLivePush] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -341,32 +365,103 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     [cleanSearch, navigate],
   );
 
+  /** 加载指定页的数据（前端页码：1=最老，N=最新）*/
+  const loadPages = useCallback(
+    async (pages: number[]) => {
+      const currentPageSize = pageSize;
+
+      // 标记正在加载（页面切换加载，保留现有数据）
+      setPageLoading(true);
+
+      try {
+        // 并行加载所有需要的页（不使用缓存，每次都从后端加载）
+        const results = await Promise.all(
+          pages.map(async (page) => {
+            const response = await fetch(
+              `/api/requests?page=${page}&limit=${currentPageSize}&order=asc`,
+            );
+            const data = (await response.json()) as {
+              items: RequestData[];
+              total: number;
+              page: number;
+              limit: number;
+              totalPages: number;
+            };
+            return { page, data };
+          }),
+        );
+
+        // 构建 requests 数据
+        const allData: RequestData[] = [];
+        for (const { page, data } of results) {
+          // 后端返回 order=asc（旧的在前），反转让新的在前（与显示顺序一致）
+          const normalized = data.items.map((item) => normalizeIncomingRequest(item)).reverse();
+          // pages 是降序的（如 [4,3]），按此顺序拼接
+          allData.push(...normalized);
+          // 订阅 pluginUi streams
+          for (const item of normalized) {
+            const records = item.metadata.pluginUi?.records;
+            if (records) subscribePluginUiStreams(records);
+          }
+          // 更新 totalCount（取最新的值）
+          setTotalCount(data.total);
+          totalCountRef.current = data.total;
+        }
+
+        setRequests(allData);
+        // 更新最大显示 ID
+        if (allData.length > 0) {
+          const maxId = Math.max(...allData.map((r) => parseInt(r.id, 10)));
+          maxDisplayedIdRef.current = maxId;
+        }
+      } catch (error) {
+        console.error("Failed to load pages:", error);
+      } finally {
+        setPageLoading(false);
+        setLoading(false);
+      }
+    },
+    [pageSize, normalizeIncomingRequest, subscribePluginUiStreams],
+  );
+
+  /** 初始加载：只获取 totalCount，数据由 RequestList 的 useEffect 加载 */
   const loadRequests = useCallback(async () => {
     unsubscribeAllPluginUiStreams();
+    // 不清空 requests，让 WebSocket 推送的数据可以先显示
+    setLoading(true);
+
     try {
-      const response = await fetch("/api/requests");
-      const data = (await response.json()) as RequestData[];
-      const normalized = data.map((item) => normalizeIncomingRequest(item));
-      setRequests(normalized);
-      for (const item of normalized) {
-        const records = item.metadata.pluginUi?.records;
-        if (records) subscribePluginUiStreams(records);
+      // 只获取总数
+      const response = await fetch("/api/requests/count");
+      const data = (await response.json()) as { total: number };
+
+      // 设置 totalCount，触发 RequestList 的 useEffect 加载数据
+      setTotalCount(data.total);
+      totalCountRef.current = data.total;
+      
+      // 如果没有数据，直接结束加载
+      if (data.total === 0) {
+        setRequests([]);
+        setLoading(false);
       }
+      // 有数据时，loading 状态由 loadPages 控制
     } catch (error) {
       console.error("Failed to load requests:", error);
-    } finally {
       setLoading(false);
     }
-  }, [normalizeIncomingRequest, subscribePluginUiStreams, unsubscribeAllPluginUiStreams]);
+  }, [unsubscribeAllPluginUiStreams]);
 
   const handleClearAll = useCallback(async () => {
     try {
       const response = await fetch("/api/clear", { method: "POST" });
       if (response.ok) {
         setRequests([]);
+        setTotalCount(0);
+        totalCountRef.current = 0;
+        maxDisplayedIdRef.current = 0;
         setSelectedId(null);
         setSelectedDetail(null);
-        setPagesParamState(undefined); // 重置分页
+        setPagesParamState(undefined);
         unsubscribeAllPluginUiStreams();
       }
     } catch (error) {
@@ -684,11 +779,16 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     [fetchConfig, reloadInstances, loadRules],
   );
 
+  // 防止 React Strict Mode 重复初始化
+  const initializedRef = useRef(false);
   useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
     loadRequests();
     loadRules();
     reloadInstances();
-  }, [loadRequests, loadRules, reloadInstances]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // WebSocket 连接
   useEffect(() => {
@@ -732,7 +832,79 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
           const message = JSON.parse(event.data);
           if (message.type === "new-request" && message.data) {
             const normalized = normalizeIncomingRequest(message.data as RequestData);
-            setRequests((prev) => [normalized, ...prev]);
+            const newId = parseInt(normalized.id, 10);
+            
+            // 增加 totalCount
+            setTotalCount((prev) => prev + 1);
+            totalCountRef.current += 1;
+            
+            // 判断是否在显示最新页（动态模式：anchor=-1 或 undefined）
+            const currentPagesParam = pagesParamRef.current;
+            const isShowingLatest = !currentPagesParam || currentPagesParam.startsWith("-1,");
+            
+            if (isShowingLatest) {
+              const currentMaxId = maxDisplayedIdRef.current;
+              const expectedId = currentMaxId + 1;
+              
+              if (currentMaxId === 0 || newId === expectedId) {
+                // ID 连续，直接插入
+                setRequests((prev) => [normalized, ...prev]);
+                maxDisplayedIdRef.current = newId;
+              } else if (newId > expectedId) {
+                // ID 不连续，有缺失数据，加载缺失的请求
+                const startId = expectedId;
+                const endId = newId - 1;
+                fetch(`/api/requests/range?start=${startId}&end=${endId}`)
+                  .then((res) => res.json())
+                  .then((missingData: RequestData[]) => {
+                    const missingNormalized = missingData.map((item) => normalizeIncomingRequest(item));
+                    setRequests((prev) => {
+                      // 检查哪些数据还未存在
+                      const existingIds = new Set(prev.map((r) => r.id));
+                      const toInsert: RequestData[] = [];
+                      
+                      // 检查新请求是否已存在
+                      if (!existingIds.has(normalized.id)) {
+                        toInsert.push(normalized);
+                      }
+                      
+                      // 检查缺失数据是否已存在（按 ID 降序）
+                      for (const item of missingNormalized) {
+                        if (!existingIds.has(item.id)) {
+                          toInsert.push(item);
+                        }
+                      }
+                      
+                      if (toInsert.length === 0) {
+                        return prev;
+                      }
+                      
+                      return [...toInsert, ...prev];
+                    });
+                    maxDisplayedIdRef.current = Math.max(maxDisplayedIdRef.current, newId);
+                    // 订阅缺失数据的 pluginUi streams
+                    for (const item of missingNormalized) {
+                      const records = item.metadata.pluginUi?.records;
+                      if (records) subscribePluginUiStreams(records);
+                    }
+                  })
+                  .catch((error) => {
+                    console.error("Failed to load missing requests:", error);
+                    // 降级：直接插入新请求（如果不存在）
+                    setRequests((prev) => {
+                      if (prev.some((r) => r.id === normalized.id)) {
+                        return prev;
+                      }
+                      return [normalized, ...prev];
+                    });
+                    maxDisplayedIdRef.current = Math.max(maxDisplayedIdRef.current, newId);
+                  });
+              } else {
+                // newId <= currentMaxId，可能是重复或乱序，忽略
+              }
+            }
+            // 如果不是显示最新页（pinned 到某旧页），不修改 requests，只更新 totalCount
+            
             const records = normalized.metadata.pluginUi?.records;
             if (records) subscribePluginUiStreams(records);
           } else if (message.type === "update-request" && message.data) {
@@ -750,6 +922,9 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
             });
           } else if (message.type === "delete-request" && message.id) {
             const deletedId = String(message.id);
+            // 减少 totalCount
+            setTotalCount((prev) => Math.max(0, prev - 1));
+            totalCountRef.current = Math.max(0, totalCountRef.current - 1);
             setRequests((prev) => prev.filter((req) => req.id !== deletedId));
             if (selectedIdRef.current === deletedId) {
               setSelectedId(null);
@@ -757,9 +932,12 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
             }
           } else if (message.type === "clear-all") {
             setRequests([]);
+            setTotalCount(0);
+            totalCountRef.current = 0;
+            maxDisplayedIdRef.current = 0;
             setSelectedId(null);
             setSelectedDetail(null);
-            setPagesParamState(undefined); // 重置分页
+            setPagesParamState(undefined);
             unsubscribeAllPluginUiStreams();
           } else if (message.type === "config-changed") {
             // 全局开关语义：只有当前页面开着 autoPull，才会响应 config-changed 并拉取最新配置。
@@ -831,11 +1009,14 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
 
   const value: ProxyViewerContextValue = {
     requests,
+    totalCount,
     loading,
+    pageLoading,
     pagesParam,
     setPagesParam,
     pageSize,
     setPageSize,
+    loadPages,
     livePush,
     setLivePush,
     wsConnected,

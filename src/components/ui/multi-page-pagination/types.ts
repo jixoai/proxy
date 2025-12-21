@@ -71,7 +71,7 @@ export function serializePaginationParams(state: MultiPageState): string {
  */
 export function calculatePageRange(state: MultiPageState, totalPages: number): PageRange {
   if (totalPages <= 0) {
-    return { start: 1, end: 1, pages: [1] };
+    return { start: 0, end: 0, pages: [] };
   }
 
   // 计算实际的锚定页

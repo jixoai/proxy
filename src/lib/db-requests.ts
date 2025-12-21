@@ -69,6 +69,8 @@ export interface ProxyRequestFilters {
 export interface ProxyRequestPagination {
   page: number;
   limit: number;
+  /** 排序方向：asc=旧的在前（ID升序），desc=新的在前（ID降序） */
+  order?: "asc" | "desc";
 }
 
 export const requestEvents = new EventEmitter();
@@ -134,6 +136,14 @@ export function getRequestsAfterId(lastId: number): LoggedRequest[] {
   return rows.map(deserializeRequest);
 }
 
+/** 获取指定 ID 范围内的请求（包含边界） */
+export function getRequestsByIdRange(startId: number, endId: number): LoggedRequest[] {
+  const rows = db
+    .query("SELECT id, data FROM proxy_requests WHERE id >= ? AND id <= ? ORDER BY id DESC")
+    .all(startId, endId) as Array<{ id: number; data: string }>;
+  return rows.map(deserializeRequest);
+}
+
 export function getAllRequests(
   filters?: ProxyRequestFilters,
   pagination?: ProxyRequestPagination,
@@ -163,7 +173,9 @@ export function getAllRequests(
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const order = "ORDER BY timestamp DESC";
+  const orderDirection = pagination?.order === "asc" ? "ASC" : "DESC";
+  // 用 id 排序（主键索引），比 timestamp 更快
+  const order = `ORDER BY id ${orderDirection}`;
   const limitSql =
     pagination != null
       ? `LIMIT ${pagination.limit} OFFSET ${(pagination.page - 1) * pagination.limit}`

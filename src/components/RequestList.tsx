@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Inbox,
@@ -245,10 +245,13 @@ const NEW_REQUEST_WINDOW_SEC = 10;
 export function RequestList() {
   const {
     requests,
+    totalCount,
     loading,
+    pageLoading,
     pagesParam,
     setPagesParam,
     pageSize,
+    loadPages,
     filterMethod,
     filterStatus,
     filterUrl,
@@ -315,29 +318,38 @@ export function RequestList() {
 
   // Pagination - 使用新的多页分页系统
   const itemsPerPage = pageSize || DEFAULT_PAGE_SIZE;
-  const totalPages = Math.ceil(filteredRequests.length / itemsPerPage);
+  const totalPages = Math.ceil(totalCount / itemsPerPage);
   const pagination = useMultiPagePagination({
     totalPages,
     pagesParam,
     onPagesChange: setPagesParam,
   });
 
-  // 根据页码范围获取要显示的请求（可能包含多页）
-  const paginatedRequests = useMemo(() => {
-    const { pages } = pagination.pageRange;
-    const totalItems = filteredRequests.length;
-    // pages 是降序的（如 [4, 3]），第4页（较新）在第3页（较旧）上面
-    // 数据结构：filteredRequests 中最新的在 index 0
-    // 分页逻辑：第1页 = 最老的数据（数组末尾），第N页 = 最新的数据（数组开头）
-    const result: RequestData[] = [];
-    for (const page of pages) {
-      const pageEndFromStart = totalItems - (page - 1) * itemsPerPage;
-      const pageStartFromStart = Math.max(0, pageEndFromStart - itemsPerPage);
-      const pageItems = filteredRequests.slice(pageStartFromStart, pageEndFromStart);
-      result.push(...pageItems);
+  // 当页码范围变化时，加载对应页的数据
+  const { pages: currentPages } = pagination.pageRange;
+  const pagesKey = currentPages.join(",");
+  const prevPagesKeyRef = useRef<string>("");
+  const hasLoadedRef = useRef(false);
+  
+  useEffect(() => {
+    // 只在以下情况触发加载：
+    // 1. 页码变化（用户切换页面）
+    // 2. 初次加载（hasLoaded=false 且 totalCount > 0）
+    const pagesChanged = pagesKey !== prevPagesKeyRef.current;
+    const needsInitialLoad = !hasLoadedRef.current && totalCount > 0 && currentPages.length > 0;
+    
+    if (pagesChanged || needsInitialLoad) {
+      prevPagesKeyRef.current = pagesKey;
+      hasLoadedRef.current = true;
+      loadPages(currentPages);
     }
-    return result;
-  }, [filteredRequests, pagination.pageRange, itemsPerPage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pagesKey, totalCount]);
+
+  // 过滤后的请求（在已加载的数据上做前端过滤）
+  const paginatedRequests = useMemo(() => {
+    return filteredRequests;
+  }, [filteredRequests]);
 
   // 格式化时间戳
   const formatTimestamp = (timestamp: string) => {
@@ -364,9 +376,15 @@ export function RequestList() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      {/* 顶部加载进度条（页面切换时显示） */}
+      {pageLoading && (
+        <div className="h-1 w-full bg-muted overflow-hidden">
+          <div className="h-full bg-primary animate-pulse w-full" />
+        </div>
+      )}
       {/* Request Table */}
       <div className="flex-1 overflow-auto">
-        {loading ? (
+        {loading && paginatedRequests.length === 0 ? (
           <Empty>
             <EmptyHeader>
               <EmptyMedia variant="icon">

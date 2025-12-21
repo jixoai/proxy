@@ -26,6 +26,7 @@ import {
   getAllRequests as dbGetAllRequests,
   getProxyRequestById,
   getRequestsAfterId,
+  getRequestsByIdRange,
   getRequestsCount,
   clearAllRequests as dbClearAllRequests,
   deleteProxyRequest as dbDeleteProxyRequest,
@@ -759,6 +760,13 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       },
 
       // ========== 请求日志 API ==========
+      // 只获取请求总数（用于初始化分页）
+      "/api/requests/count": {
+        async GET() {
+          const total = getRequestsCount();
+          return Response.json({ total });
+        },
+      },
       "/api/requests": {
         async GET(req) {
           const url = new URL(req.url);
@@ -768,6 +776,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           const urlPattern = url.searchParams.get("url_pattern");
           const pageParam = url.searchParams.get("page");
           const limitParam = url.searchParams.get("limit");
+          const orderParam = url.searchParams.get("order") as "asc" | "desc" | null;
 
           const filters: {
             forward_name?: string | null;
@@ -798,7 +807,8 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
           if (page !== undefined && limit !== undefined && page > 0 && limit > 0) {
             // 分页模式：返回 { items, total, page, limit }
-            const pagination = { page, limit };
+            const order = orderParam === "asc" ? "asc" : "desc";
+            const pagination = { page, limit, order };
             const hasFilters = Object.keys(filters).length > 0;
             const requests = hasFilters
               ? getAllRequestsFiltered(filters, pagination)
@@ -810,6 +820,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
               total,
               page,
               limit,
+              order,
               totalPages: Math.ceil(total / limit),
             });
           }
@@ -818,6 +829,24 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           const requests =
             Object.keys(filters).length > 0 ? getAllRequestsFiltered(filters) : getAllRequests();
           return Response.json(requests);
+        },
+      },
+      // 按 ID 范围获取请求（用于填充缺失数据）
+      "/api/requests/range": {
+        async GET(req) {
+          const url = new URL(req.url);
+          const startId = parseInt(url.searchParams.get("start") ?? "");
+          const endId = parseInt(url.searchParams.get("end") ?? "");
+          
+          if (isNaN(startId) || isNaN(endId) || startId > endId) {
+            return Response.json(
+              { error: "Invalid range parameters. Required: start <= end" },
+              { status: 400 },
+            );
+          }
+          
+          const requests = getRequestsByIdRange(startId, endId);
+          return Response.json(requests.map(formatProxyRequest));
         },
       },
       "/api/requests/:id": {
