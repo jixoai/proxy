@@ -8,7 +8,8 @@ const requestsSearchSchema = z
   .object({
     requestId: z.string().min(1).optional(),
     dialog: z.enum(["json"]).optional(),
-    page: z.coerce.number().int().min(1).optional(),
+    /** 分页参数，格式：anchor,count（如 "-1,2" 或 "4,2"） */
+    pages: z.string().optional(),
     filterMethod: z.string().optional(),
     filterStatus: z.string().optional(),
     filterUrl: z.string().optional(),

@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type ReactNode,
-  type SetStateAction,
 } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { sanitizePluginUiPayload, type PluginUiRecord } from "@/lib/plugin-ui";
@@ -134,8 +133,10 @@ export interface RequestData {
 interface ProxyViewerContextValue {
   requests: RequestData[];
   loading: boolean;
-  currentPage: number;
-  setCurrentPage: (value: SetStateAction<number>, options?: { replace?: boolean }) => void;
+  /** 多页分页参数，格式：anchor,count（如 "-1,2" 或 "4,2"） */
+  pagesParam: string | undefined;
+  /** 更新多页分页参数 */
+  setPagesParam: (value: string) => void;
 
   livePush: boolean;
   setLivePush: (enabled: boolean) => void;
@@ -197,7 +198,8 @@ const ProxyViewerContext = createContext<ProxyViewerContextValue | null>(null);
 type SearchParams = {
   requestId?: string;
   dialog?: "json";
-  page?: number;
+  /** 多页分页参数，格式：anchor,count */
+  pages?: string;
   filterMethod?: string;
   filterStatus?: string;
   filterUrl?: string;
@@ -280,11 +282,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const [detailNotFound, setDetailNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [currentPage, setCurrentPageState] = useState(1);
-  const currentPageRef = useRef(1);
-  useEffect(() => {
-    currentPageRef.current = currentPage;
-  }, [currentPage]);
+  const [pagesParam, setPagesParamState] = useState<string | undefined>(undefined);
   const [livePush, setLivePush] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -361,7 +359,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
         setRequests([]);
         setSelectedId(null);
         setSelectedDetail(null);
-        setCurrentPage(1);
+        setPagesParamState(undefined); // 重置分页
         unsubscribeAllPluginUiStreams();
       }
     } catch (error) {
@@ -489,18 +487,16 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     setControlFocusForwardName(null);
   }, []);
 
-  const setCurrentPage = useCallback(
-    (value: SetStateAction<number>, options?: { replace?: boolean }) => {
-      setCurrentPageState(value);
-      const resolved = typeof value === "function" ? value(currentPageRef.current) : value;
-      // Only update URL when on the home page to avoid unexpected navigation from other routes
+  const setPagesParam = useCallback(
+    (value: string) => {
+      setPagesParamState(value);
       if (!applyingSearchRef.current && window.location.pathname === "/") {
         updateSearch(
           (prev) => ({
             ...prev,
-            page: resolved,
+            pages: value,
           }),
-          { replace: options?.replace },
+          { replace: true },
         );
       }
     },
@@ -520,12 +516,12 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const setFilterMethod = useCallback(
     (method: string) => {
       setFilterMethodState(method);
-      setCurrentPageState(1);
+      setPagesParamState(undefined); // 重置分页到动态模式
       if (!applyingSearchRef.current) {
         updateSearch((prev) => ({
           ...prev,
           filterMethod: method || undefined,
-          page: 1,
+          pages: undefined,
         }));
       }
     },
@@ -535,12 +531,12 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const setFilterStatus = useCallback(
     (status: string) => {
       setFilterStatusState(status);
-      setCurrentPageState(1);
+      setPagesParamState(undefined);
       if (!applyingSearchRef.current) {
         updateSearch((prev) => ({
           ...prev,
           filterStatus: status || undefined,
-          page: 1,
+          pages: undefined,
         }));
       }
     },
@@ -550,12 +546,12 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const setFilterUrl = useCallback(
     (url: string) => {
       setFilterUrlState(url);
-      setCurrentPageState(1);
+      setPagesParamState(undefined);
       if (!applyingSearchRef.current) {
         updateSearch((prev) => ({
           ...prev,
           filterUrl: url || undefined,
-          page: 1,
+          pages: undefined,
         }));
       }
     },
@@ -565,12 +561,12 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const setFilterRule = useCallback(
     (rule: string) => {
       setFilterRuleState(rule);
-      setCurrentPageState(1);
+      setPagesParamState(undefined);
       if (!applyingSearchRef.current) {
         updateSearch((prev) => ({
           ...prev,
           filterRule: rule || undefined,
-          page: 1,
+          pages: undefined,
         }));
       }
     },
@@ -588,8 +584,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const applySearchState = useCallback(
     (search: SearchParams) => {
       applyingSearchRef.current = true;
-      const nextPage = search.page ?? 1;
-      setCurrentPageState(nextPage);
+      setPagesParamState(search.pages);
       setFilterMethodState(search.filterMethod ?? "");
       setFilterStatusState(search.filterStatus ?? "");
       setFilterUrlState(search.filterUrl ?? "");
@@ -709,7 +704,6 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
             setRequests((prev) => [normalized, ...prev]);
             const records = normalized.metadata.pluginUi?.records;
             if (records) subscribePluginUiStreams(records);
-            setCurrentPage(1);
           } else if (message.type === "update-request" && message.data) {
             const updatedId = String(message.id);
             const normalized = normalizeIncomingRequest(message.data as RequestData);
@@ -734,7 +728,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
             setRequests([]);
             setSelectedId(null);
             setSelectedDetail(null);
-            setCurrentPage(1);
+            setPagesParamState(undefined); // 重置分页
             unsubscribeAllPluginUiStreams();
           } else if (message.type === "config-changed") {
             // 全局开关语义：只有当前页面开着 autoPull，才会响应 config-changed 并拉取最新配置。
@@ -807,8 +801,8 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const value: ProxyViewerContextValue = {
     requests,
     loading,
-    currentPage,
-    setCurrentPage,
+    pagesParam,
+    setPagesParam,
     livePush,
     setLivePush,
     wsConnected,
