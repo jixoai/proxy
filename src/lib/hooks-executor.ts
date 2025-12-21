@@ -8,7 +8,7 @@ import type { HookConfig, HooksConfig, HookLayer } from "../types/proxy";
 const debug = createDebug("proxy:hooks");
 
 /** 私有 header：记录处理过该请求的插件列表 */
-const HEADER_PLUGIN_PROCESSED = "x-jixo-proxy-plugin-processed";
+const HEADER_PLUGIN_PROCESSED = "-x-jixo-proxy-plugin-processed";
 
 /** 从 HookConfig 提取插件名称 */
 function getPluginName(config: HookConfig): string {

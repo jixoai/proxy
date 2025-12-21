@@ -9,7 +9,11 @@
  */
 
 import { SessionManager } from "./session-manager";
-import { PrivateHeaders } from "@jixo/proxy-plugin";
+import {
+  PrivateHeaders,
+  buildPluginUiHeaderKey,
+  buildPluginUiStreamHeaderKey,
+} from "@jixo/proxy-plugin";
 import jmespath from "jmespath";
 import type {
   SessionState,
@@ -18,8 +22,11 @@ import type {
   PingResult,
   Message,
   SkipPingMatcher,
+  SkipPingMatcherMap,
 } from "./types";
 import { DEFAULT_SKIP_PING_MATCHERS } from "./types";
+import { pingStatusStreamUrl, pingStatusUiPayload } from "./ping-status-client";
+import { pingStatusStore } from "./ping-status-server";
 
 const DEFAULT_MAX_KEEP_ALIVE_DURATION_MS = 60 * 60 * 1000; // 60 分钟
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟，Anthropic 官方值
@@ -36,7 +43,7 @@ export class AnthropicPingMiddleware {
   private readonly idleThresholdMs: number;
   private readonly pollingIntervalMs: number;
   private readonly debug: boolean;
-  private readonly skipPingMatchers: SkipPingMatcher[];
+  private readonly skipPingMatchers: ActiveSkipPingMatcher[];
   private readonly onPing?: (sessionId: string, pingCount: number) => void;
   private readonly onExpire?: (sessionId: string, reason: "timeout" | "manual") => void;
 
@@ -45,7 +52,7 @@ export class AnthropicPingMiddleware {
     this.idleThresholdMs = options.idleThresholdMs ?? DEFAULT_IDLE_THRESHOLD_MS;
     this.pollingIntervalMs = options.pollingIntervalMs ?? DEFAULT_POLLING_INTERVAL_MS;
     this.debug = options.debug ?? false;
-    this.skipPingMatchers = options.skipPingMatchers ?? DEFAULT_SKIP_PING_MATCHERS;
+    this.skipPingMatchers = this.normalizeSkipPingMatchers(options.skipPingMatchers);
     this.onPing = options.onPing;
     this.onExpire = options.onExpire;
   }
@@ -77,7 +84,7 @@ export class AnthropicPingMiddleware {
     targetUrl: string
   ): { sessionId: string | null; isNew: boolean; shouldReturn204: boolean; clearedCount: number } {
     // 1. 检查是否是结束消息
-    if (this.isEndMessage(body)) {
+    if (this.isEndMessage(headers, body)) {
       const clearedIds = this.sessionManager.clearPrefixSessions(body);
       this.log(`End message received, cleared ${clearedIds.length} sessions`);
       for (const id of clearedIds) {
@@ -120,15 +127,24 @@ export class AnthropicPingMiddleware {
    * 检查是否是结束保活的消息
    * 使用 JMESPath 查询 body，如果任意规则返回 truthy 则认为是结束消息
    */
-  private isEndMessage(body: AnthropicRequestBody): boolean {
-    if (!body.messages || body.messages.length === 0) return false;
+  private isEndMessage(headers: Record<string, string>, body: AnthropicRequestBody): boolean {
     if (this.skipPingMatchers.length === 0) return false;
 
     // 预处理 messages，将 content 数组转换为纯文本以便 JMESPath 查询
     const normalizedBody = this.normalizeBodyForQuery(body);
+    const requestContext = this.buildRequestContext(headers, normalizedBody);
 
     // 检查是否匹配任意规则
-    return this.skipPingMatchers.some((matcher) => this.matchWithJMESPath(normalizedBody, matcher));
+    return this.skipPingMatchers.some((matcher) => {
+      switch (matcher.target) {
+        case "requestBody":
+          return this.matchJMESPath(normalizedBody, matcher.matcher);
+        case "request":
+          return this.matchJMESPath(requestContext, matcher.matcher);
+        default:
+          return false;
+      }
+    });
   }
 
   /**
@@ -144,6 +160,13 @@ export class AnthropicPingMiddleware {
     }));
 
     return { ...body, messages: normalizedMessages };
+  }
+
+  private buildRequestContext(
+    headers: Record<string, string>,
+    body: AnthropicRequestBody
+  ): { headers: Record<string, string>; body: AnthropicRequestBody } {
+    return { headers, body };
   }
 
   /**
@@ -167,32 +190,22 @@ export class AnthropicPingMiddleware {
     return "";
   }
 
-  /**
-   * 检查匹配器是否是 JMESPath 类型
-   */
-  private isJMESPathMatcher(matcher: SkipPingMatcher): matcher is string | { jmespath: string } {
-    if (typeof matcher === "string") return true;
-    return "jmespath" in matcher;
-  }
-
-  /**
-   * 检查匹配器是否是响应状态码类型
-   */
-  private isResponseStatusMatcher(matcher: SkipPingMatcher): matcher is { responseStatus: number | number[] } {
-    return typeof matcher === "object" && "responseStatus" in matcher;
+  private normalizeSkipPingMatchers(
+    overrides: SkipPingMatcherMap | undefined
+  ): ActiveSkipPingMatcher[] {
+    const merged: SkipPingMatcherMap = {
+      ...DEFAULT_SKIP_PING_MATCHERS,
+      ...(overrides ?? {}),
+    };
+    return Object.values(merged).filter(isActiveSkipPingMatcher);
   }
 
   /**
    * 使用 JMESPath 查询匹配
    */
-  private matchWithJMESPath(body: AnthropicRequestBody, matcher: SkipPingMatcher): boolean {
-    // 跳过非 JMESPath 匹配器
-    if (!this.isJMESPathMatcher(matcher)) return false;
-
-    const expression = typeof matcher === "string" ? matcher : matcher.jmespath;
-    
+  private matchJMESPath(target: unknown, expression: string): boolean {
     try {
-      const result = jmespath.search(body, expression);
+      const result = jmespath.search(target, expression);
       // truthy 判断：非 null、非 undefined、非空字符串、非 false
       return Boolean(result);
     } catch (error) {
@@ -202,20 +215,19 @@ export class AnthropicPingMiddleware {
   }
 
   /**
-   * 检查响应状态码是否匹配 skipPingMatchers 中的 responseStatus 规则
+   * 检查响应是否匹配 skipPingMatchers 中的 response/responseBody 规则
    */
-  private shouldStopOnResponseStatus(statusCode: number): boolean {
-    for (const matcher of this.skipPingMatchers) {
-      if (this.isResponseStatusMatcher(matcher)) {
-        const { responseStatus } = matcher;
-        if (Array.isArray(responseStatus)) {
-          if (responseStatus.includes(statusCode)) return true;
-        } else {
-          if (responseStatus === statusCode) return true;
-        }
+  private shouldStopOnResponse(responseContext: ResponseContext, responseBody: unknown): boolean {
+    return this.skipPingMatchers.some((matcher) => {
+      switch (matcher.target) {
+        case "response":
+          return this.matchJMESPath(responseContext, matcher.matcher);
+        case "responseBody":
+          return this.matchJMESPath(responseBody, matcher.matcher);
+        default:
+          return false;
       }
-    }
-    return false;
+    });
   }
 
   /**
@@ -303,6 +315,10 @@ export class AnthropicPingMiddleware {
       const pingBody = this.buildPingPayload(latestContextPayload);
       this.log(`Sending ping for session ${sessionId} (count: ${state.pingCount + 1}) to ${pingUrl}`);
 
+      const uiPayloadObj = pingStatusUiPayload(sessionId, false);
+      const uiPayload = JSON.stringify(uiPayloadObj);
+      const streamUrl = pingStatusStreamUrl(pingUrl, sessionId);
+
       // 添加私有 headers 标记这是一个心跳请求
       const pingHeaders: Record<string, string> = {
         ...headers,
@@ -310,6 +326,8 @@ export class AnthropicPingMiddleware {
         [PrivateHeaders.REQUEST_TYPE]: "ping",
         [PrivateHeaders.SESSION_ID]: sessionId,
         [PrivateHeaders.PING_COUNT]: String(state.pingCount + 1),
+        [buildPluginUiHeaderKey("anthropic-ping")]: uiPayload,
+        [buildPluginUiStreamHeaderKey("anthropic-ping")]: streamUrl,
       };
 
       const response = await fetch(pingUrl, {
@@ -318,20 +336,29 @@ export class AnthropicPingMiddleware {
         body: JSON.stringify(pingBody),
       });
 
-      // 检查是否应该因为响应状态码而停止 ping
-      if (this.shouldStopOnResponseStatus(response.status)) {
-        this.log(`Stopping ping for session ${sessionId} due to response status ${response.status}`);
+      pingStatusStore.set(sessionId, uiPayloadObj);
+
+      const responseText = await response.text().catch(() => "");
+      const responseBody = this.parseResponseBody(responseText);
+      const responseContext = this.buildResponseContext(response);
+
+      // 检查是否应该因为响应内容而停止 ping
+      if (this.shouldStopOnResponse(responseContext, responseBody)) {
+        this.log(`Stopping ping for session ${sessionId} due to response matcher (status ${response.status})`);
         this.sessionManager.delete(sessionId);
         this.onExpire?.(sessionId, "manual");
-        return { success: false, sessionId, pingCount: state.pingCount, error: `Stopped due to status ${response.status}` };
+        pingStatusStore.set(sessionId, pingStatusUiPayload(sessionId, true));
+        return {
+          success: false,
+          sessionId,
+          pingCount: state.pingCount,
+          error: `Stopped due to response matcher (status ${response.status})`,
+        };
       }
 
       if (!response.ok) {
-        const errorText = await response.text().catch(() => "");
-        throw new Error(`HTTP ${response.status}: ${errorText.slice(0, 200)}`);
+        throw new Error(`HTTP ${response.status}: ${responseText.slice(0, 200)}`);
       }
-
-      await response.text();
 
       state.pingCount++;
       state.lastActiveTime = Date.now();
@@ -442,4 +469,45 @@ export class AnthropicPingMiddleware {
       this.sessionManager.delete(sessionId);
     }
   }
+
+  private buildResponseContext(response: Response): ResponseContext {
+    return {
+      status: response.status,
+      ok: response.ok,
+      statusText: response.statusText,
+      url: response.url,
+      headers: this.headersToRecord(response.headers),
+    };
+  }
+
+  private headersToRecord(headers: Headers): Record<string, string> {
+    const record: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      record[key] = value;
+    });
+    return record;
+  }
+
+  private parseResponseBody(text: string): unknown {
+    if (!text) return "";
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+}
+
+type ResponseContext = {
+  status: number;
+  ok: boolean;
+  statusText: string;
+  url: string;
+  headers: Record<string, string>;
+};
+
+type ActiveSkipPingMatcher = Exclude<SkipPingMatcher, { type: "skip" }>;
+
+function isActiveSkipPingMatcher(matcher: SkipPingMatcher): matcher is ActiveSkipPingMatcher {
+  return matcher.type !== "skip";
 }

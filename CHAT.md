@@ -1238,21 +1238,20 @@ server.use(
 
 ---
 
-
 1. 清理 ping任务 算法
-    1. 遍历messages:`hash=''`
-    2. `hash=hashify(hash+remove_cache_control(messages[0]))`
-    3. `clear_ping_task_by_hash(hash)`
-    4. `hash=hashify(hash+remove_cache_control(messages[1]))`
-    5. `clear_ping_task_by_hash(hash)`
-    6. ...循环到所有消息都结束
+   1. 遍历messages:`hash=''`
+   2. `hash=hashify(hash+remove_cache_control(messages[0]))`
+   3. `clear_ping_task_by_hash(hash)`
+   4. `hash=hashify(hash+remove_cache_control(messages[1]))`
+   5. `clear_ping_task_by_hash(hash)`
+   6. ...循环到所有消息都结束
 2. 发起 ping任务 的算法
-    1. `have_cache_messages = messages.slice(0,messages.findLastOwnCacheControlMessageIndex())`
-    2. `have_cache_messages.length == 0?return`
-    1. 遍历have_cache_messages:`hash=''`
-    2. `hash=hashify(hash+remove_cache_control(have_cache_messages[0]))`
-    4. `hash=hashify(hash+remove_cache_control(have_cache_messages[1]))`
-    6. taskMap.set(hash,startPingTask(hash))
+   1. `have_cache_messages = messages.slice(0,messages.findLastOwnCacheControlMessageIndex())`
+   2. `have_cache_messages.length == 0?return`
+   3. 遍历have_cache_messages:`hash=''`
+   4. `hash=hashify(hash+remove_cache_control(have_cache_messages[0]))`
+   5. `hash=hashify(hash+remove_cache_control(have_cache_messages[1]))`
+   6. taskMap.set(hash,startPingTask(hash))
 
 ---
 
@@ -1261,4 +1260,71 @@ server.use(
 
 ---
 
+帮我内置四种默认方案:
+
+1. user-message+first-message+startsWith:"A previous instance of Droid has summarized the conversation thus far as follows:"
+2. user-message+last-message+startsWith:"jixo:proxy-ping-end"||"jixo:proxy-stop-ping"
+3. response-status-code:400
+4. user-message+last-message+startsWith:"Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions."
+
+---
+
 我在上游做了请求取消,但是我们代理侧的好像没收到取消的指令,还是在继续发送请求? 请你看一下是哪里的问题,是我的发请求的客户端没有做abort的问题?还是它abort了,但是我们没有正确处理?
+
+---
+
+1. 利用我们的插件可以写入私有头的特性:对于那种停止心跳的请求, 在requestlist或者requestDetail中,显示出类似“🖤”的特殊标志,意味着保活停止.
+2. 利用我们的插件可以写入私有头的特性:我们在请求头部记录保活的hash,与保活检查API, 这样我们可以在前端通过请求这个API(基于SSE)来实时获取保活的情况,并渲染出来. 对应的保活请求也应该显示出它来自哪个hash
+
+以上这个功能不要只针对“保活”去定制开发,而是具有一定的通用性,让其它所有的插件都能利用这个功能来实现一些UI定制.
+
+---
+
+我的建议是重构成:
+
+1. 把`-x-jixo-proxy-`作为一种前缀,然后 `-x-jixo-proxy-${plugin-name}`这种方式去扩展,这样每个插件都能独立,不会互相干扰.
+2. 这些插件对于界面的影响有两方面: 预览+备注.
+   1. 预览:可以理解成类似tray的技术,就是在界面上显示一个“icon”,这个icon可以是emoji字符,也可以是我们内置的一些特殊icon,通过`:KEY:`这样的语法,但我想通用emoji应该已经足够了,最多可以有3个icon. 预览还支持自定义的description, 在hover图标的时候, 可以显示这个`description`信息: 单行markdown格式, 且不超过200个字符(或者64个token,如果有非常低成本的token计算技术的话,或者就是32em\*2lh,超过两行就直接截断).
+   2. 备注:requestList在插件这一列会显示一个“生效了N个插件”这样的效果, 在hover的时候,会显示tooltip,这里就会逐个按顺序显示基于markdown格式的的“备注信息”,同时会讲预览的内容也显示出来:
+
+   ```md
+   ## ${plugin1.name}
+
+   - ${plugin1.tray[0].icon}: {$plugin1.tray[0].description}
+   - ${plugin1.tray[1].icon}: {$plugin1.tray[1].description}
+   - ${plugin1.tray[2].icon}: {$plugin1.tray[2].description}
+
+   ${plugin1.remark}
+
+   ---
+
+   ## ${plugin2.name}
+
+   - ${plugin2.tray[0].icon}: {$plugin2.tray[0].description}
+   - ${plugin2.tray[1].icon}: {$plugin2.tray[1].description}
+   - ${plugin2.tray[2].icon}: {$plugin2.tray[2].description}
+
+   ${plugin2.remark}
+   ```
+
+3. 对于这些信息, 有两种提供方式:
+   1. 静态配置: 本质上就是一个json对象
+   2. 动态配置: 本质上就是一个url, 使用sse格式,每一次event-data都会返回一份静态对象
+   - 动静结合, 可以同时配置静态和动态,先显示静态,再去尝试请求动态,如果有返回,才会成功显示
+
+---
+
+1. 可以, 我以为 http-header可以`-`开头,如果这是非法会被过滤,那就算了,否则就是`-`开头,因为这些信息是不会被上传到远端的,这是我们内部系统使用的一个传递、存储数据的地方
+2. 允许跨域, 这个URL是插件自己动态监听某个端口的来的,所以肯定是随机的链接,
+3. plugin-processed 顺序 理论上 等效于 header 解析顺序,因为每个我们是hooks-exector去办这些插件注入头部信息的,所以当然. 但是要注意,一个插件理论上可以有两次注入的机会: 一次是req,一次是res,但是只会有一次生效, 在注入res的时候,是能读取到req,在req的基础上进行修改的
+4. 理论上不用内置key,目前用emoji即可, 但是你可以随便哪一组icon:比如一些AI公司的产品icon(你自己去搜索下载)
+
+---
+
+BUG: 我在翻页的时候, 发现如果有新的请求进来,就会立刻跳转成第一页.
+对于翻页功能, 我们需要重构:
+
+1. 现在默认不是显示“第一页”,而是显示最后一页,也就是说,最新的数据其实是显示在最后一页的
+2. 页面上默认同时显示两页的信息,类似`< [3,2],1 >`, 就是上下显示第三页和第二页. 如果此时数据累计到出现第四页了,那么此时自动跳转到`< [4,3],2,1 >`
+3. `< [4,3],2,1 >` 此时到url链接其实是 `pages=-1,2`, 意味着:“始终锚定最后一页,显示两页”
+4. `< [4,3],2,1 >` 旁边有一个pin/unpin图标,默认是unpin. 如果打开了pin,那么url会变成:`pages=4,2`,意味着:“锚定在第4页,显示两页”. 这是两种url模式,unpin-url是一种动态的效果,pin-url是一种静态的效果

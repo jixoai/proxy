@@ -35,7 +35,6 @@ export function HeaderBar() {
     setFilterStatus,
     filterUrl,
     setFilterUrl,
-    setCurrentPage,
     loadRequests,
     handleClearAll,
     availableRules,
@@ -117,7 +116,6 @@ export function HeaderBar() {
           value={filterMethod || "all"}
           onValueChange={(value) => {
             setFilterMethod(value === "all" ? "" : value);
-            setCurrentPage(1);
           }}
         >
           <SelectTrigger className="w-[140px]" size="sm">
@@ -137,7 +135,6 @@ export function HeaderBar() {
           value={filterStatus || "all"}
           onValueChange={(value) => {
             setFilterStatus(value === "all" ? "" : value);
-            setCurrentPage(1);
           }}
         >
           <SelectTrigger className="w-[130px]" size="sm">
@@ -163,7 +160,6 @@ export function HeaderBar() {
           value={activeRuleName || "all"}
           onValueChange={(value) => {
             setActiveRuleName(value === "all" ? null : value);
-            setCurrentPage(1);
           }}
         >
           <SelectTrigger className="w-[160px]" size="sm">
@@ -189,7 +185,6 @@ export function HeaderBar() {
           value={filterUrl}
           onChange={(e) => {
             setFilterUrl(e.target.value);
-            setCurrentPage(1);
           }}
         />
 
@@ -202,7 +197,6 @@ export function HeaderBar() {
               setFilterStatus("");
               setFilterUrl("");
               setActiveRuleName(null);
-              setCurrentPage(1);
             }}
           >
             <X className="mr-1 h-4 w-4" />

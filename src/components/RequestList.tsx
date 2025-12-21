@@ -46,14 +46,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Pagination,
-  PaginationContent,
-  PaginationItem,
-  PaginationPrevious,
-  PaginationNext,
-} from "@/components/ui/pagination";
+  MultiPagePagination,
+  useMultiPagePagination,
+} from "@/components/ui/multi-page-pagination";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AddForwardFromRequestDialog } from "@/components/AddForwardFromRequestDialog";
+import { PluginUiBadge } from "@/components/PluginUiBadge";
 
 const ITEMS_PER_PAGE = 50;
 
@@ -241,11 +239,21 @@ function DurationDisplay({
   return <span>-</span>;
 }
 
+/** 高亮动画持续时间（秒），需与 CSS 动画时间一致 */
+const HIGHLIGHT_DURATION_SEC = 3;
+
+/** 判断请求是否是最近的（基于时间戳） */
+function isRecentRequest(timestamp: string): boolean {
+  const requestTime = new Date(timestamp).getTime();
+  const now = Date.now();
+  return now - requestTime < HIGHLIGHT_DURATION_SEC * 1000;
+}
+
 export function RequestList() {
   const {
     requests,
-    currentPage,
-    setCurrentPage,
+    pagesParam,
+    setPagesParam,
     filterMethod,
     filterStatus,
     filterUrl,
@@ -310,12 +318,29 @@ export function RequestList() {
     });
   }, [requests, activeInstanceName, activeRuleName, filterMethod, filterStatus, filterUrl]);
 
-  // Pagination
+  // Pagination - 使用新的多页分页系统
   const totalPages = Math.ceil(filteredRequests.length / ITEMS_PER_PAGE);
+  const pagination = useMultiPagePagination({
+    totalPages,
+    pagesParam,
+    onPagesChange: setPagesParam,
+  });
+
+  // 根据页码范围获取要显示的请求（可能包含多页）
   const paginatedRequests = useMemo(() => {
-    const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-    return filteredRequests.slice(startIndex, startIndex + ITEMS_PER_PAGE);
-  }, [filteredRequests, currentPage]);
+    const { pages } = pagination.pageRange;
+    // pages 是降序的（如 [4, 3]）
+    // 数据结构：最新的在 index 0，第 1 页 = 最新数据
+    // 渲染顺序：第 4 页（较新）应该在第 3 页（较旧）上面
+    // 所以直接用降序遍历，先取第 4 页再取第 3 页
+    const result: RequestData[] = [];
+    for (const page of pages) {
+      const startIndex = (page - 1) * ITEMS_PER_PAGE;
+      const pageItems = filteredRequests.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+      result.push(...pageItems);
+    }
+    return result;
+  }, [filteredRequests, pagination.pageRange]);
 
   // 格式化时间戳
   const formatTimestamp = (timestamp: string) => {
@@ -368,7 +393,7 @@ export function RequestList() {
                     <TableRow
                       data-state={selectedId === req.id ? "selected" : undefined}
                       onClick={() => selectRequest(req.id)}
-                      className={`cursor-pointer ${contextMenuOpenId === req.id ? "bg-accent ring-2 ring-primary/50" : ""}`}
+                      className={`cursor-pointer ${contextMenuOpenId === req.id ? "bg-accent ring-2 ring-primary/50" : ""} ${isRecentRequest(req.metadata.timestamp) ? "animate-highlight" : ""}`}
                     >
                       <TableCell className="font-mono text-xs">
                         {formatTimestamp(req.metadata.timestamp)}
@@ -393,7 +418,12 @@ export function RequestList() {
                         <StatusBadge status={req.metadata.status} />
                       </TableCell>
                       <TableCell>
-                        <PluginBadge pluginInfo={req.metadata.pluginInfo} />
+                        <div className="space-y-1">
+                          <PluginBadge pluginInfo={req.metadata.pluginInfo} />
+                          {req.metadata.pluginUi?.records?.length ? (
+                            <PluginUiBadge key={req.metadata.pluginUi.version} records={req.metadata.pluginUi.records} />
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell>
                         {req.metadata.response?.statusCode ? (
@@ -528,39 +558,7 @@ export function RequestList() {
       {/* Pagination */}
       {totalPages > 1 && (
         <div className="border-t p-4">
-          <Pagination>
-            <PaginationContent>
-              <PaginationItem>
-                <PaginationPrevious
-                  onClick={() => {
-                    if (currentPage > 1) {
-                      setCurrentPage((p: number) => p - 1);
-                    }
-                  }}
-                  className={
-                    currentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"
-                  }
-                />
-              </PaginationItem>
-              <PaginationItem>
-                <span className="text-muted-foreground px-4 text-sm">
-                  Page {currentPage} of {totalPages}
-                </span>
-              </PaginationItem>
-              <PaginationItem>
-                <PaginationNext
-                  onClick={() => {
-                    if (currentPage < totalPages) {
-                      setCurrentPage((p: number) => p + 1);
-                    }
-                  }}
-                  className={
-                    currentPage === totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"
-                  }
-                />
-              </PaginationItem>
-            </PaginationContent>
-          </Pagination>
+          <MultiPagePagination pagination={pagination} />
         </div>
       )}
     </div>

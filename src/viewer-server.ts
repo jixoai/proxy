@@ -50,46 +50,19 @@ import {
   getDataDir,
 } from "./lib/runtime-paths";
 import type { StoreChangeEvent } from "./lib/store/base-store";
+import { parsePrivateHeaders } from "@jixo/proxy-plugin";
+import { parsePluginUiFromHeaders } from "./lib/plugin-ui";
+import { pingStatusStore } from "../packages/proxy-anthropic-ping/src/ping-status-server";
 
-/** 私有 header 前缀 */
-const PRIVATE_HEADER_PREFIX = "x-jixo-proxy-";
-
-/** 从 headers 中解析插件信息 */
-function parsePluginInfo(headers: Record<string, string | string[]> | undefined): {
-  pluginOrigin?: string;
-  pluginsProcessed?: string[];
-  requestType?: string;
-  sessionId?: string;
-  pingCount?: number;
-} | undefined {
-  if (!headers) return undefined;
-
-  const getValue = (key: string): string | undefined => {
-    const v = headers[key];
-    if (!v) return undefined;
-    return Array.isArray(v) ? v[0] : v;
-  };
-
-  const pluginOrigin = getValue(`${PRIVATE_HEADER_PREFIX}plugin-origin`);
-  const pluginsProcessedStr = getValue(`${PRIVATE_HEADER_PREFIX}plugin-processed`);
-  const requestType = getValue(`${PRIVATE_HEADER_PREFIX}request-type`);
-  const sessionId = getValue(`${PRIVATE_HEADER_PREFIX}session-id`);
-  const pingCountStr = getValue(`${PRIVATE_HEADER_PREFIX}ping-count`);
-
-  // 如果没有任何插件信息，返回 undefined
-  if (!pluginOrigin && !pluginsProcessedStr && !requestType) {
-    return undefined;
-  }
-
-  return {
-    pluginOrigin,
-    pluginsProcessed: pluginsProcessedStr ? pluginsProcessedStr.split(",").filter(Boolean) : undefined,
-    requestType,
-    sessionId,
-    pingCount: pingCountStr ? parseInt(pingCountStr, 10) : undefined,
-  };
+function parsePluginInfo(
+  requestHeaders: Record<string, string | string[]> | undefined,
+  responseHeaders: Record<string, string | string[]> | undefined,
+) {
+  return parsePrivateHeaders({
+    ...(requestHeaders ?? {}),
+    ...(responseHeaders ?? {}),
+  });
 }
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const log = createLogger("proxy:viewer");
@@ -182,11 +155,30 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
           }
         : undefined,
       responseHookLayers: req.responseHookLayers,
-      // 解析私有 headers 中的插件信息（合并原始 headers 和 hooked headers）
-      pluginInfo: parsePluginInfo({
-        ...req.request.headers,
-        ...req.hookedRequest?.headers,
-      }),
+      // 解析私有 headers 中的插件信息（响应优先）
+      pluginInfo: parsePluginInfo(
+        {
+          ...req.request.headers,
+          ...req.hookedRequest?.headers,
+        },
+        {
+          ...req.response?.headers,
+          ...req.hookedResponse?.headers,
+        },
+      ),
+      pluginUi: (() => {
+        const mergedRequestHeaders = {
+          ...req.request.headers,
+          ...req.hookedRequest?.headers,
+        };
+        const mergedResponseHeaders = {
+          ...req.response?.headers,
+          ...req.hookedResponse?.headers,
+        };
+        const processed = parsePrivateHeaders(mergedRequestHeaders).pluginsProcessed;
+        const parsed = parsePluginUiFromHeaders(mergedRequestHeaders, mergedResponseHeaders, processed);
+        return parsed ? { ...parsed, version: Date.now() } : undefined;
+      })(),
     },
   };
 }
@@ -921,6 +913,53 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
+
+
+      "/api/ping-status/stream": {
+        async GET(req) {
+          const session = req.query.session;
+          if (!session) {
+            return new Response("Missing session", { status: 400 });
+          }
+
+          const encoder = new TextEncoder();
+          const stream = new ReadableStream({
+            start(controller) {
+              const send = (payload) => {
+                const data = JSON.stringify(payload);
+                controller.enqueue(encoder.encode("data: " + data + "\n\n"));
+              };
+
+              const current = pingStatusStore.get(String(session));
+              if (current) {
+                send(current.payload);
+              }
+
+              const unsubscribe = pingStatusStore.subscribe(String(session), (event) => {
+                send(event.payload);
+              });
+
+              const keepAlive = setInterval(() => {
+                controller.enqueue(encoder.encode(": ping\n\n"));
+              }, 20000);
+
+              return () => {
+                clearInterval(keepAlive);
+                unsubscribe();
+              };
+            },
+          });
+
+          return new Response(stream, {
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              Connection: "keep-alive",
+            },
+          });
+        },
+      },
+
       "/api/clear": {
         async POST() {
           try {

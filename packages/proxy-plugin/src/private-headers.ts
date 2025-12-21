@@ -1,32 +1,32 @@
 /**
  * 私有 Headers 工具
  *
- * 私有 Headers 以 `x-jixo-proxy-` 为前缀，仅用于代理服务器内部通信：
+ * 私有 Headers 以 `-x-jixo-proxy-` 为前缀，仅用于代理服务器内部通信：
  * - 这些 headers 会被记录到数据库
  * - 但不会被转发到远程服务器
  *
  * 命名约定：
- * - x-jixo-proxy-plugin-origin: 请求的发起插件（如心跳请求）
- * - x-jixo-proxy-plugin-processed: 处理过该请求的插件列表（逗号分隔）
- * - x-jixo-proxy-session-id: 会话标识
- * - x-jixo-proxy-ping-count: 心跳计数
+ * - -x-jixo-proxy-plugin-origin: 请求的发起插件（如心跳请求）
+ * - -x-jixo-proxy-plugin-processed: 处理过该请求的插件列表（逗号分隔）
+ * - -x-jixo-proxy-session-id: 会话标识
+ * - -x-jixo-proxy-ping-count: 心跳计数
  */
 
-export const PRIVATE_HEADER_PREFIX = "x-jixo-proxy-";
+export const PRIVATE_HEADER_PREFIX = "-x-jixo-proxy-";
 
 export const PrivateHeaders = {
   /** 请求的发起插件 */
-  PLUGIN_ORIGIN: "x-jixo-proxy-plugin-origin",
+  PLUGIN_ORIGIN: "-x-jixo-proxy-plugin-origin",
   /** 处理过该请求的插件列表（逗号分隔） */
-  PLUGIN_PROCESSED: "x-jixo-proxy-plugin-processed",
+  PLUGIN_PROCESSED: "-x-jixo-proxy-plugin-processed",
   /** 会话标识 */
-  SESSION_ID: "x-jixo-proxy-session-id",
+  SESSION_ID: "-x-jixo-proxy-session-id",
   /** 心跳计数 */
-  PING_COUNT: "x-jixo-proxy-ping-count",
+  PING_COUNT: "-x-jixo-proxy-ping-count",
   /** 请求类型：normal, ping, prefetch 等 */
-  REQUEST_TYPE: "x-jixo-proxy-request-type",
+  REQUEST_TYPE: "-x-jixo-proxy-request-type",
   /** 原始 Proxy URL（用于插件发起回环请求，如心跳） */
-  PROXY_URL: "x-jixo-proxy-url",
+  PROXY_URL: "-x-jixo-proxy-url",
 } as const;
 
 export type PrivateHeaderKey = (typeof PrivateHeaders)[keyof typeof PrivateHeaders];
