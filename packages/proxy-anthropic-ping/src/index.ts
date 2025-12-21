@@ -25,7 +25,7 @@ export { AnthropicPingMiddleware } from "./ping-middleware";
 export { SessionManager } from "./session-manager";
 export { createAnthropicPingPlugin, type AnthropicPingPluginOptions } from "./plugin";
 export { DEFAULT_SKIP_PING_MATCHERS } from "./types";
-export type { SkipPingMatcher } from "./types";
+export type { SkipPingMatcher, SkipPingMatcherMap } from "./types";
 export type {
   SessionState,
   AnthropicRequestBody,

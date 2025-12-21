@@ -456,9 +456,14 @@ describe("AnthropicPingMiddleware - Ping Payload", () => {
 describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
   it("should use starts_with matcher", () => {
     const mw = new AnthropicPingMiddleware({
-      skipPingMatchers: [
-        "messages[?role=='user'] | [-1] | starts_with(content, 'A previous instance of Droid')",
-      ],
+      skipPingMatchers: {
+        customStartWith: {
+          type: "jmespath",
+          matcher:
+            "messages[?role=='user'] | [-1] | starts_with(content, 'A previous instance of Droid')",
+          target: "requestBody",
+        },
+      },
     });
 
     // Create a session first
@@ -491,9 +496,13 @@ describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
 
   it("should not match starts_with when pattern is in middle", () => {
     const mw = new AnthropicPingMiddleware({
-      skipPingMatchers: [
-        "messages[?role=='user'] | [-1] | starts_with(content, 'STOP_PING')",
-      ],
+      skipPingMatchers: {
+        customStopPing: {
+          type: "jmespath",
+          matcher: "messages[?role=='user'] | [-1] | starts_with(content, 'STOP_PING')",
+          target: "requestBody",
+        },
+      },
     });
 
     mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
@@ -520,10 +529,18 @@ describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
 
   it("should support multiple matchers (OR logic)", () => {
     const mw = new AnthropicPingMiddleware({
-      skipPingMatchers: [
-        "messages[?role=='user'] | [-1] | starts_with(content, 'STOP:')",
-        "messages[?role=='user'] | [-1] | contains(content, 'jixo:proxy_ping_end')",
-      ],
+      skipPingMatchers: {
+        stopPrefix: {
+          type: "jmespath",
+          matcher: "messages[?role=='user'] | [-1] | starts_with(content, 'STOP:')",
+          target: "requestBody",
+        },
+        stopContains: {
+          type: "jmespath",
+          matcher: "messages[?role=='user'] | [-1] | contains(content, 'jixo:proxy_ping_end')",
+          target: "requestBody",
+        },
+      },
     });
 
     // Test starts_with matcher
@@ -561,9 +578,11 @@ describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
     mw.destroy();
   });
 
-  it("should not match anything when skipPingMatchers is empty", () => {
+  it("should not match anything when all defaults are skipped", () => {
     const mw = new AnthropicPingMiddleware({
-      skipPingMatchers: [],
+      skipPingMatchers: Object.fromEntries(
+        Object.keys(DEFAULT_SKIP_PING_MATCHERS).map((key) => [key, { type: "skip" }])
+      ),
     });
 
     mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
@@ -588,11 +607,15 @@ describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
     mw.destroy();
   });
 
-  it("should support object format { jmespath: '...' }", () => {
+  it("should support object format { type: 'jmespath', matcher: '...' }", () => {
     const mw = new AnthropicPingMiddleware({
-      skipPingMatchers: [
-        { jmespath: "messages[?role=='user'] | [-1] | contains(content, 'END_SESSION')" },
-      ],
+      skipPingMatchers: {
+        endSession: {
+          type: "jmespath",
+          matcher: "messages[?role=='user'] | [-1] | contains(content, 'END_SESSION')",
+          target: "requestBody",
+        },
+      },
     });
 
     mw.intercept(sampleHeaders, sampleRequestBody, PROXY_URL, TARGET_URL);
@@ -617,9 +640,9 @@ describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
 
   it("should handle invalid JMESPath gracefully", () => {
     const mw = new AnthropicPingMiddleware({
-      skipPingMatchers: [
-        "invalid[[[syntax",
-      ],
+      skipPingMatchers: {
+        invalidSyntax: { type: "jmespath", matcher: "invalid[[[syntax", target: "requestBody" },
+      },
       debug: false,
     });
 
@@ -723,10 +746,10 @@ describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
     mw.destroy();
   });
 
-  it("should have responseStatus matcher in defaults", () => {
-    // Verify DEFAULT_SKIP_PING_MATCHERS includes responseStatus: 400
-    const hasResponseStatusMatcher = DEFAULT_SKIP_PING_MATCHERS.some(
-      (m) => typeof m === "object" && "responseStatus" in m && m.responseStatus === 400
+  it("should have response matcher for status 400 in defaults", () => {
+    // Verify DEFAULT_SKIP_PING_MATCHERS includes response matcher for status 400
+    const hasResponseStatusMatcher = Object.values(DEFAULT_SKIP_PING_MATCHERS).some(
+      (m) => m.target === "response" && m.matcher.includes("status == `400`")
     );
     expect(hasResponseStatusMatcher).toBe(true);
   });

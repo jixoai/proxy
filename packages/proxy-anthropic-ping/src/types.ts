@@ -34,49 +34,71 @@ export type AnthropicRequestBody = {
   [key: string]: unknown;
 };
 
+export type SkipPingMatcherTarget = "request" | "response" | "requestBody" | "responseBody";
+
 /**
  * 跳过 ping 的匹配规则
  *
- * 支持两种匹配类型：
- * 1. JMESPath - 查询请求体，结果为 truthy 则跳过
- * 2. responseStatus - 当 ping 响应状态码匹配时停止该会话的 ping
- *
  * @example
  * // JMESPath: 最后一条 user 消息以指定前缀开头
- * "messages[?role=='user'] | [-1] | starts_with(content, 'jixo:proxy-ping-end')"
+ * { type: "jmespath", matcher: "messages[?role=='user'] | [-1] | starts_with(content, 'jixo:proxy-ping-end')", target: "requestBody" }
  *
- * // JMESPath: 对象格式
- * { jmespath: "messages[?role=='user'] | [0] | starts_with(content, 'A previous')" }
+ * // JMESPath: 请求对象（包含 headers + body）
+ * { type: "jmespath", matcher: "headers.authorization != null", target: "request" }
  *
- * // 响应状态码匹配
- * { responseStatus: 400 }
- * { responseStatus: [400, 401, 403] }
+ * // JMESPath: 响应状态码匹配
+ * { type: "jmespath", matcher: "status == `400`", target: "response" }
+ *
+ * // 跳过内置规则
+ * { type: "skip" }
  *
  * @see https://jmespath.org/
  */
 export type SkipPingMatcher =
-  | string // JMESPath 简写
-  | { jmespath: string } // JMESPath 明确格式
-  | { responseStatus: number | number[] }; // 响应状态码
+  | {
+      type: "jmespath";
+      matcher: string;
+      target: SkipPingMatcherTarget;
+    }
+  | {
+      type: "skip";
+    };
+
+export type SkipPingMatcherMap = Record<string, SkipPingMatcher>;
 
 /**
  * 默认的 skip ping 匹配器
  *
  * 1. 第一条 user 消息以 Droid 会话摘要开头（恢复会话场景）
- * 2. 最后一条 user 消息以 jixo:proxy-ping-end 或 jixo:proxy-stop-ping 开头
+ * 2. 最后一条 user 消息以 jixo:proxy-ping-end / jixo:proxy-stop-ping / jixo:proxy-end-ping / jixo:proxy-ping-stop 开头
  * 3. ping 响应状态码为 400（通常表示请求格式错误，无需继续）
  * 4. 最后一条 user 消息以压缩提示开头（触发压缩场景）
  */
-export const DEFAULT_SKIP_PING_MATCHERS: SkipPingMatcher[] = [
+export const DEFAULT_SKIP_PING_MATCHERS: SkipPingMatcherMap = {
   // 1. Droid 恢复会话摘要
-  "messages[?role=='user'] | [0] | starts_with(content, 'A previous instance of Droid has summarized the conversation thus far as follows:')",
+  droidSessionSummary: {
+    type: "jmespath",
+    matcher:
+      "messages[?role=='user'] | [0] | starts_with(content, 'A previous instance of Droid has summarized the conversation thus far as follows:')",
+    target: "requestBody",
+  },
   // 2. 显式停止 ping 指令
-  "messages[?role=='user'] | [-1] | starts_with(content, 'jixo:proxy-ping-end') || starts_with(content, 'jixo:proxy-stop-ping')",
+  stopPingCommands: {
+    type: "jmespath",
+    matcher:
+      "messages[?role=='user'] | [-1] | starts_with(content, 'jixo:proxy-ping-end') || starts_with(content, 'jixo:proxy-stop-ping') || starts_with(content, 'jixo:proxy-end-ping') || starts_with(content, 'jixo:proxy-ping-stop')",
+    target: "requestBody",
+  },
   // 3. 响应 400 错误时停止
-  { responseStatus: 400 },
+  responseStatus400: { type: "jmespath", matcher: "status == `400`", target: "response" },
   // 4. Claude Code 压缩摘要提示
-  "messages[?role=='user'] | [-1] | starts_with(content, 'Your task is to create a detailed summary of the conversation so far, paying close attention to the user')",
-];
+  compressionPrompt: {
+    type: "jmespath",
+    matcher:
+      "messages[?role=='user'] | [-1] | starts_with(content, 'Your task is to create a detailed summary of the conversation so far, paying close attention to the user')",
+    target: "requestBody",
+  },
+};
 
 export interface SessionState {
   sessionId: string;
@@ -102,14 +124,14 @@ export interface PingPluginOptions {
   /**
    * 跳过 ping 的匹配规则列表
    *
-   * 支持两种匹配类型：
-   * - JMESPath: 查询请求体，匹配时立即返回 204
-   * - responseStatus: ping 响应状态码匹配时停止该会话
+   * 支持两种类型：
+   * - jmespath: 查询 request/requestBody/response/responseBody
+   * - skip: 禁用对应 key 的内置规则
    *
    * @default DEFAULT_SKIP_PING_MATCHERS
    * @see https://jmespath.org/
    */
-  skipPingMatchers?: SkipPingMatcher[];
+  skipPingMatchers?: SkipPingMatcherMap;
   onPing?: (sessionId: string, pingCount: number) => void;
   onExpire?: (sessionId: string, reason: "timeout" | "manual") => void;
 }
