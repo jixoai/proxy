@@ -1,0 +1,912 @@
+/**
+ * Claude Messages SSE → Codex Responses SSE 响应转换器
+ */
+
+import type {
+  ClaudeSSEEvent,
+  ClaudeSSEMessageStart,
+  ClaudeSSEContentBlockStart,
+  ClaudeSSEContentBlockDelta,
+  ClaudeSSEContentBlockStop,
+  ClaudeSSEMessageDelta,
+  ConverterState,
+} from "./types";
+
+import { TOOL_NAME_TO_CODEX, generateId } from "./constants";
+
+/**
+ * 创建初始转换器状态
+ */
+export function createConverterState(): ConverterState {
+  return {
+    sequenceNumber: 0,
+    outputIndex: 0,
+    currentBlockType: null,
+    currentBlockIndex: -1,
+    currentToolId: "",
+    currentToolName: "",
+    currentReasoningId: "",
+    currentMessageId: "",
+    currentMessageItem: null,
+    thinkingContent: "",
+    thinkingSignature: "",
+    toolArguments: "",
+    textContent: "",
+    responseId: "",
+    model: "",
+    createdAt: Math.floor(Date.now() / 1000),
+    outputItems: [],
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    },
+  };
+}
+
+/**
+ * 转换消息 ID: msg_xxx → resp_xxx
+ */
+function convertMessageId(msgId: string): string {
+  if (msgId.startsWith("msg_")) {
+    return "resp_" + msgId.slice(4);
+  }
+  return "resp_" + msgId;
+}
+
+/**
+ * 转换工具 ID: toolu_xxx → call_xxx
+ */
+function convertToolId(toolId: string): string {
+  if (toolId.startsWith("toolu_")) {
+    return "call_" + toolId.slice(6);
+  }
+  return toolId;
+}
+
+/**
+ * 映射工具名称: Claude → Codex
+ */
+function mapToolNameToCodex(name: string): string {
+  return TOOL_NAME_TO_CODEX[name] || name;
+}
+
+/**
+ * 转换工具参数: Claude → Codex
+ * 例如: Bash 的 { command: "..." } → exec_command 的 { cmd: "..." }
+ */
+function convertToolArguments(claudeName: string, args: Record<string, unknown>): Record<string, unknown> {
+  // Bash → exec_command: command → cmd
+  if (claudeName === "Bash" || claudeName === "Execute") {
+    const result: Record<string, unknown> = { ...args };
+    if ("command" in result) {
+      result.cmd = result.command;
+      delete result.command;
+    }
+    // timeout → yield_time_ms (秒转毫秒)
+    if ("timeout" in result && typeof result.timeout === "number") {
+      result.yield_time_ms = result.timeout * 1000;
+      delete result.timeout;
+    }
+    // cwd → workdir
+    if ("cwd" in result) {
+      result.workdir = result.cwd;
+      delete result.cwd;
+    }
+    return result;
+  }
+
+  // WebSearch: query 保持不变
+  // FileEdit/Edit/Create: 参数格式不同，需要特殊处理
+  // 其他工具：直接返回原参数
+  return args;
+}
+
+
+
+/**
+ * 处理 message_start 事件
+ */
+function handleMessageStart(
+  state: ConverterState,
+  event: ClaudeSSEMessageStart
+): string[] {
+  const msg = event.message;
+  state.responseId = convertMessageId(msg.id);
+  // Use model name as-is from Claude response (no mapping)
+  state.model = msg.model;
+  state.usage.inputTokens = msg.usage.input_tokens || 0;
+  state.usage.outputTokens = msg.usage.output_tokens || 0;
+  state.usage.cacheReadTokens = msg.usage.cache_read_input_tokens || 0;
+  state.usage.cacheCreationTokens = msg.usage.cache_creation_input_tokens || 0;
+
+  const created = {
+    type: "response.created",
+    sequence_number: state.sequenceNumber++,
+    response: {
+      id: state.responseId,
+      object: "response",
+      created_at: state.createdAt,
+      status: "in_progress",
+      background: false,
+      model: state.model,
+      output: [],
+      parallel_tool_calls: true,
+      reasoning: { effort: "xhigh", summary: "detailed" },
+      tools: [],
+    },
+  };
+
+  const inProgress = {
+    type: "response.in_progress",
+    sequence_number: state.sequenceNumber++,
+    response: created.response,
+  };
+
+  return [formatSSE("response.created", created), formatSSE("response.in_progress", inProgress)];
+}
+
+/**
+ * 处理 content_block_start 事件
+ */
+function handleContentBlockStart(
+  state: ConverterState,
+  event: ClaudeSSEContentBlockStart
+): string[] {
+  const block = event.content_block;
+  state.currentBlockIndex = event.index;
+
+  if (block.type === "thinking") {
+    state.currentBlockType = "thinking";
+    state.currentReasoningId = generateId("rs_");
+    state.thinkingContent = "";
+    state.thinkingSignature = block.signature || "";
+    
+    // Create reasoning item and add to outputItems (like we do for tool_use)
+    const reasoningItem = {
+      id: state.currentReasoningId,
+      type: "reasoning",
+      status: "in_progress",
+      summary: [] as { type: string; text: string }[],
+      encrypted_content: state.thinkingSignature,
+    };
+    state.outputItems.push(reasoningItem);
+    
+    // Emit output_item.added event for reasoning
+    const added = {
+      type: "response.output_item.added",
+      sequence_number: state.sequenceNumber++,
+      output_index: state.outputIndex,
+      item: reasoningItem,
+    };
+    
+    // Emit reasoning_summary_part.added event
+    const summaryPartAdded = {
+      type: "response.reasoning_summary_part.added",
+      sequence_number: state.sequenceNumber++,
+      item_id: state.currentReasoningId,
+      output_index: state.outputIndex,
+      summary_index: 0,
+      part: {
+        type: "summary_text",
+        text: "",
+      },
+    };
+    
+    state.outputIndex++;
+    
+    return [
+      formatSSE("response.output_item.added", added),
+      formatSSE("response.reasoning_summary_part.added", summaryPartAdded),
+    ];
+  }
+
+  if (block.type === "tool_use") {
+    state.currentBlockType = "tool_use";
+    state.currentToolId = block.id;
+    state.currentToolName = block.name;
+    state.toolArguments = "";
+
+    const item = {
+      id: generateId("fc_"),
+      type: "function_call",
+      status: "in_progress",
+      arguments: "",
+      call_id: convertToolId(block.id),
+      name: mapToolNameToCodex(block.name),
+    };
+
+    state.outputItems.push(item);
+
+    const added = {
+      type: "response.output_item.added",
+      sequence_number: state.sequenceNumber++,
+      output_index: state.outputIndex,
+      item,
+    };
+
+    state.outputIndex++;
+
+    return [formatSSE("response.output_item.added", added)];
+  }
+
+  if (block.type === "text") {
+    state.currentBlockType = "text";
+    state.textContent = "";
+    state.currentMessageId = generateId("msg_");
+
+    // 创建 message item
+    state.currentMessageItem = {
+      id: state.currentMessageId,
+      type: "message",
+      status: "in_progress",
+      content: [],
+      role: "assistant",
+    };
+
+    // 发出 output_item.added 事件
+    const itemAdded = {
+      type: "response.output_item.added",
+      sequence_number: state.sequenceNumber++,
+      output_index: state.outputIndex,
+      item: state.currentMessageItem,
+    };
+
+    // 发出 content_part.added 事件
+    const contentPartAdded = {
+      type: "response.content_part.added",
+      sequence_number: state.sequenceNumber++,
+      item_id: state.currentMessageId,
+      output_index: state.outputIndex,
+      content_index: 0,
+      part: {
+        type: "output_text",
+        annotations: [],
+        logprobs: [],
+        text: "",
+      },
+    };
+
+    return [
+      formatSSE("response.output_item.added", itemAdded),
+      formatSSE("response.content_part.added", contentPartAdded),
+    ];
+  }
+
+  return [];
+}
+
+/**
+ * 处理 content_block_delta 事件
+ */
+function handleContentBlockDelta(
+  state: ConverterState,
+  event: ClaudeSSEContentBlockDelta
+): string[] {
+  const delta = event.delta;
+
+  if (delta.type === "thinking_delta") {
+    state.thinkingContent += delta.thinking;
+
+    const reasoningDelta = {
+      type: "response.reasoning_summary_text.delta",
+      sequence_number: state.sequenceNumber++,
+      item_id: state.currentReasoningId,
+      output_index: state.outputIndex - 1,
+      summary_index: 0,
+      delta: delta.thinking,
+    };
+
+    return [formatSSE("response.reasoning_summary_text.delta", reasoningDelta)];
+  }
+
+  if (delta.type === "input_json_delta") {
+    state.toolArguments += delta.partial_json;
+
+    const currentItem = state.outputItems[state.outputItems.length - 1] as {
+      id: string;
+    };
+
+    const argsDelta = {
+      type: "response.function_call_arguments.delta",
+      sequence_number: state.sequenceNumber++,
+      item_id: currentItem?.id || "",
+      output_index: state.outputIndex - 1,
+      delta: delta.partial_json,
+    };
+
+    return [formatSSE("response.function_call_arguments.delta", argsDelta)];
+  }
+
+  if (delta.type === "text_delta") {
+    state.textContent += delta.text;
+
+    const textDelta = {
+      type: "response.output_text.delta",
+      sequence_number: state.sequenceNumber++,
+      item_id: state.currentMessageId,
+      output_index: state.outputIndex,
+      content_index: 0,
+      delta: delta.text,
+      logprobs: [],
+    };
+
+    return [formatSSE("response.output_text.delta", textDelta)];
+  }
+
+  // Handle signature_delta - Claude sends signature at the end of thinking block
+  if (delta.type === "signature_delta") {
+    state.thinkingSignature += delta.signature;
+    
+    // Update the reasoning item's encrypted_content
+    const reasoningItem = state.outputItems.find(
+      (item) => (item as { id?: string }).id === state.currentReasoningId
+    ) as { encrypted_content?: string } | undefined;
+    
+    if (reasoningItem) {
+      reasoningItem.encrypted_content = state.thinkingSignature;
+    }
+    
+    // No Codex event for signature, just accumulate it
+    return [];
+  }
+
+  return [];
+}
+
+/**
+ * 处理 content_block_stop 事件
+ */
+function handleContentBlockStop(
+  state: ConverterState,
+  _event: ClaudeSSEContentBlockStop
+): string[] {
+  const results: string[] = [];
+
+  if (state.currentBlockType === "tool_use") {
+    const currentItem = state.outputItems[state.outputItems.length - 1] as {
+      id: string;
+      arguments: string;
+      status: string;
+    };
+
+    if (currentItem) {
+      // 转换工具参数: Claude → Codex (例如 command → cmd)
+      let finalArguments = state.toolArguments;
+      try {
+        const parsedArgs = JSON.parse(state.toolArguments) as Record<string, unknown>;
+        const convertedArgs = convertToolArguments(state.currentToolName, parsedArgs);
+        finalArguments = JSON.stringify(convertedArgs);
+      } catch {
+        // 解析失败，保持原样
+      }
+
+      currentItem.arguments = finalArguments;
+      currentItem.status = "completed";
+
+      const argsDone = {
+        type: "response.function_call_arguments.done",
+        sequence_number: state.sequenceNumber++,
+        item_id: currentItem.id,
+        output_index: state.outputIndex - 1,
+        arguments: finalArguments,
+      };
+
+      const itemDone = {
+        type: "response.output_item.done",
+        sequence_number: state.sequenceNumber++,
+        output_index: state.outputIndex - 1,
+        item: currentItem,
+      };
+
+      results.push(
+        formatSSE("response.function_call_arguments.done", argsDone),
+        formatSSE("response.output_item.done", itemDone)
+      );
+    }
+
+    state.toolArguments = "";
+  }
+
+  if (state.currentBlockType === "thinking") {
+    // Find the reasoning item we created in handleContentBlockStart
+    const reasoningItem = state.outputItems.find(
+      (item) => (item as { id?: string }).id === state.currentReasoningId
+    ) as {
+      id: string;
+      type: string;
+      status: string;
+      summary: { type: string; text: string }[];
+      encrypted_content: string;
+    } | undefined;
+
+    if (reasoningItem) {
+      // Update the reasoning item with content
+      reasoningItem.summary = [{ type: "summary_text", text: state.thinkingContent }];
+      reasoningItem.status = "completed";
+
+      // Emit reasoning_summary_text.done event
+      const reasoningDone = {
+        type: "response.reasoning_summary_text.done",
+        sequence_number: state.sequenceNumber++,
+        item_id: state.currentReasoningId,
+        output_index: state.outputIndex - 1,
+        summary_index: 0,
+        text: state.thinkingContent,
+      };
+
+      // Emit reasoning_summary_part.done event
+      const summaryPartDone = {
+        type: "response.reasoning_summary_part.done",
+        sequence_number: state.sequenceNumber++,
+        item_id: state.currentReasoningId,
+        output_index: state.outputIndex - 1,
+        summary_index: 0,
+        part: {
+          type: "summary_text",
+          text: state.thinkingContent,
+        },
+      };
+
+      // Emit output_item.done event for reasoning
+      const itemDone = {
+        type: "response.output_item.done",
+        sequence_number: state.sequenceNumber++,
+        output_index: state.outputIndex - 1,
+        item: reasoningItem,
+      };
+
+      results.push(
+        formatSSE("response.reasoning_summary_text.done", reasoningDone),
+        formatSSE("response.reasoning_summary_part.done", summaryPartDone),
+        formatSSE("response.output_item.done", itemDone)
+      );
+    }
+
+    state.thinkingContent = "";
+    state.thinkingSignature = "";
+  }
+
+  if (state.currentBlockType === "text" && state.currentMessageItem) {
+    // 更新 message item 的 content
+    const contentPart = {
+      type: "output_text",
+      annotations: [],
+      logprobs: [],
+      text: state.textContent,
+    };
+    state.currentMessageItem.content = [contentPart];
+    state.currentMessageItem.status = "completed";
+
+    // 发出 output_text.done 事件
+    const textDone = {
+      type: "response.output_text.done",
+      sequence_number: state.sequenceNumber++,
+      item_id: state.currentMessageId,
+      output_index: state.outputIndex,
+      content_index: 0,
+      text: state.textContent,
+      logprobs: [],
+    };
+
+    // 发出 content_part.done 事件
+    const contentPartDone = {
+      type: "response.content_part.done",
+      sequence_number: state.sequenceNumber++,
+      item_id: state.currentMessageId,
+      output_index: state.outputIndex,
+      content_index: 0,
+      part: contentPart,
+    };
+
+    // 发出 output_item.done 事件
+    const itemDone = {
+      type: "response.output_item.done",
+      sequence_number: state.sequenceNumber++,
+      output_index: state.outputIndex,
+      item: state.currentMessageItem,
+    };
+
+    // 添加到 outputItems
+    state.outputItems.push(state.currentMessageItem);
+    state.outputIndex++;
+
+    results.push(
+      formatSSE("response.output_text.done", textDone),
+      formatSSE("response.content_part.done", contentPartDone),
+      formatSSE("response.output_item.done", itemDone)
+    );
+
+    // 清理状态
+    state.textContent = "";
+    state.currentMessageId = "";
+    state.currentMessageItem = null;
+  }
+
+  state.currentBlockType = null;
+  return results;
+}
+
+/**
+ * 处理 message_delta 事件
+ */
+function handleMessageDelta(
+  state: ConverterState,
+  event: ClaudeSSEMessageDelta
+): string[] {
+  state.usage.outputTokens = event.usage.output_tokens || state.usage.outputTokens;
+  return [];
+}
+
+/**
+ * 处理 message_stop 事件
+ */
+function handleMessageStop(state: ConverterState): string[] {
+  const completed = {
+    type: "response.completed",
+    sequence_number: state.sequenceNumber++,
+    response: {
+      id: state.responseId,
+      object: "response",
+      created_at: state.createdAt,
+      status: "completed",
+      model: state.model,
+      output: state.outputItems,
+      usage: {
+        input_tokens:
+          state.usage.inputTokens +
+          state.usage.cacheReadTokens +
+          state.usage.cacheCreationTokens,
+        output_tokens: state.usage.outputTokens,
+        total_tokens:
+          state.usage.inputTokens +
+          state.usage.cacheReadTokens +
+          state.usage.cacheCreationTokens +
+          state.usage.outputTokens,
+        input_tokens_details: {
+          cached_tokens: state.usage.cacheReadTokens,
+        },
+        output_tokens_details: {
+          reasoning_tokens: 0,
+        },
+      },
+    },
+  };
+
+  return [formatSSE("response.completed", completed)];
+}
+
+/**
+ * 检测是否为 Claude 上下文过长错误 (SSE 事件中的错误)
+ * Claude 返回的错误消息可能包含：
+ * - "prompt is too long"
+ * - "request too large"
+ * - "maximum context length"
+ */
+function isClaudeContextLengthError(error: { type?: string; message?: string; code?: number | string }): boolean {
+  const message = error.message?.toLowerCase() || "";
+  return (
+    message.includes("prompt is too long") ||
+    message.includes("request too large") ||
+    message.includes("maximum context length") ||
+    message.includes("too many tokens") ||
+    message.includes("context length exceeded") ||
+    message.includes("input is too long")
+  );
+}
+
+/**
+ * 检测是否为上游请求失败错误 (SSE 事件中的错误)
+ */
+function isUpstreamError(error: { type?: string; message?: string; code?: number | string }): boolean {
+  const code = error.code;
+  return (
+    (code === 400 || code === "400") &&
+    error.type === "server_error" &&
+    error.message === "Upstream request failed"
+  );
+}
+
+/**
+ * 检测是否需要转换为 context_length_exceeded (SSE)
+ */
+function shouldConvertErrorToContextLength(error: { type?: string; message?: string; code?: number | string }): boolean {
+  return isClaudeContextLengthError(error) || isUpstreamError(error);
+}
+
+/**
+ * 构建 Codex 格式的 context_length_exceeded 错误
+ * 这个格式能被 Codex CLI 识别并触发 auto-compact
+ */
+function buildContextLengthExceededError(
+  state: ConverterState,
+  originalMessage: string
+): object {
+  return {
+    type: "response.failed",
+    sequence_number: state.sequenceNumber++,
+    response: {
+      id: state.responseId || `resp_${Date.now()}`,
+      object: "response",
+      status: "failed",
+      error: {
+        type: "invalid_request_error",
+        code: "context_length_exceeded",
+        message: `context length exceeded: ${originalMessage}`,
+      },
+    },
+  };
+}
+
+/**
+ * 处理 error 事件
+ * 特别处理上下文过长错误和上游请求失败错误，转换为 Codex 能识别的格式以触发 auto-compact
+ */
+function handleError(
+  state: ConverterState,
+  event: { error: { type?: string; message?: string; code?: number | string } }
+): string[] {
+  // 检测是否需要转换为 context_length_exceeded (包括上下文过长和上游请求失败)
+  if (shouldConvertErrorToContextLength(event.error)) {
+    const contextError = buildContextLengthExceededError(state, event.error.message || "Upstream request failed");
+    return [formatSSE("response.failed", contextError)];
+  }
+
+  // 其他错误正常处理
+  const failed = {
+    type: "response.failed",
+    sequence_number: state.sequenceNumber++,
+    response: {
+      id: state.responseId || `resp_${Date.now()}`,
+      object: "response",
+      status: "failed",
+      error: {
+        type: event.error.type,
+        message: event.error.message,
+      },
+    },
+  };
+
+  return [formatSSE("response.failed", failed)];
+}
+
+/**
+ * 格式化 SSE 事件
+ * 注意：使用 "event:xxx" 格式（无空格），与原生 Codex 响应保持一致
+ */
+function formatSSE(event: string, data: unknown): string {
+  return `event:${event}\ndata:${JSON.stringify(data)}\n\n`;
+}
+
+/**
+ * 解析 SSE 行
+ */
+export function parseSSELine(line: string): { event?: string; data?: string } | null {
+  if (line.startsWith("event:")) {
+    return { event: line.slice(6).trim() };
+  }
+  if (line.startsWith("data:")) {
+    return { data: line.slice(5).trim() };
+  }
+  return null;
+}
+
+/**
+ * 处理单个 Claude SSE 事件
+ */
+export function processClaudeEvent(
+  state: ConverterState,
+  eventType: string,
+  eventData: ClaudeSSEEvent
+): string[] {
+  switch (eventType) {
+    case "message_start":
+      return handleMessageStart(state, eventData as ClaudeSSEMessageStart);
+
+    case "content_block_start":
+      return handleContentBlockStart(state, eventData as ClaudeSSEContentBlockStart);
+
+    case "content_block_delta":
+      return handleContentBlockDelta(state, eventData as ClaudeSSEContentBlockDelta);
+
+    case "content_block_stop":
+      return handleContentBlockStop(state, eventData as ClaudeSSEContentBlockStop);
+
+    case "message_delta":
+      return handleMessageDelta(state, eventData as ClaudeSSEMessageDelta);
+
+    case "message_stop":
+      return handleMessageStop(state);
+
+    case "error":
+      return handleError(state, eventData as { error: { type: string; message: string } });
+
+    case "ping":
+      return [];
+
+    default:
+      return [];
+  }
+}
+
+/**
+ * SSE 流转换器
+ */
+export class SSEStreamConverter {
+  private state: ConverterState;
+  private buffer: string = "";
+  private currentEvent: string = "";
+
+  constructor() {
+    this.state = createConverterState();
+  }
+
+  /**
+   * 处理 SSE 数据块
+   * @returns 转换后的 Codex SSE 事件
+   */
+  processChunk(chunk: string): string {
+    this.buffer += chunk;
+    const lines = this.buffer.split("\n");
+    this.buffer = lines.pop() || "";
+
+    let output = "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      if (trimmed === "") {
+        continue;
+      }
+
+      if (trimmed.startsWith("event:")) {
+        this.currentEvent = trimmed.slice(6).trim();
+        continue;
+      }
+
+      if (trimmed.startsWith("data:")) {
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === "[DONE]") continue;
+
+        try {
+          const data = JSON.parse(dataStr) as ClaudeSSEEvent;
+          const eventType = this.currentEvent || data.type;
+          const events = processClaudeEvent(this.state, eventType, data);
+          output += events.join("");
+        } catch {
+          // 忽略解析错误
+        }
+
+        this.currentEvent = "";
+      }
+    }
+
+    return output;
+  }
+
+  /**
+   * 完成转换，处理剩余缓冲
+   */
+  finish(): string {
+    if (this.buffer.trim()) {
+      return this.processChunk("\n");
+    }
+    return "";
+  }
+}
+
+/**
+ * 转换完整的 SSE 响应体
+ */
+export function convertSSEResponse(claudeSSE: string): string {
+  const converter = new SSEStreamConverter();
+  let result = converter.processChunk(claudeSSE);
+  result += converter.finish();
+  return result;
+}
+
+// ============================================================================
+// 错误响应处理 (非 SSE 格式)
+// ============================================================================
+
+/**
+ * 检测是否为 Claude 上下文过长错误 (JSON 响应)
+ */
+export function isContextLengthError(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const err = body as { type?: string; error?: { type?: string; message?: string } };
+  
+  if (err.type !== "error" || !err.error?.message) return false;
+  
+  const message = err.error.message.toLowerCase();
+  return (
+    message.includes("prompt is too long") ||
+    message.includes("request too large") ||
+    message.includes("maximum context length") ||
+    message.includes("too many tokens") ||
+    message.includes("context length exceeded") ||
+    message.includes("input is too long")
+  );
+}
+
+/**
+ * 检测是否为上游请求失败错误
+ * Claude 有时会返回这种格式的错误，需要转换为 context_length_exceeded 以触发 auto-compact
+ * 
+ * 错误格式:
+ * {
+ *   "type": "error",
+ *   "error": {
+ *     "code": 400,
+ *     "type": "server_error",
+ *     "message": "Upstream request failed"
+ *   }
+ * }
+ */
+export function isUpstreamRequestFailedError(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const err = body as { type?: string; error?: { code?: number | string; type?: string; message?: string } };
+  
+  if (err.type !== "error") return false;
+  if (!err.error) return false;
+  
+  const upstreamError = err.error;
+  const upstreamCode = upstreamError.code;
+  
+  // code 必须是 400 (数字或字符串)
+  if (upstreamCode !== 400 && upstreamCode !== "400") return false;
+  // type 必须是 server_error
+  if (upstreamError.type !== "server_error") return false;
+  // message 必须是 "Upstream request failed"
+  if (upstreamError.message !== "Upstream request failed") return false;
+  
+  return true;
+}
+
+/**
+ * 检测是否需要转换为 context_length_exceeded 错误
+ * 包括：上下文过长错误 + 上游请求失败错误
+ */
+export function shouldConvertToContextLengthError(body: unknown): boolean {
+  return isContextLengthError(body) || isUpstreamRequestFailedError(body);
+}
+
+/**
+ * 构建 Codex 格式的 context_length_exceeded JSON 响应
+ * 用于非 SSE 格式的错误响应转换
+ */
+export function buildCodexContextLengthError(originalMessage?: string): object {
+  return {
+    type: "error",
+    message: "context length exceeded",
+    error: {
+      type: "invalid_request_error",
+      code: "context_length_exceeded",
+      message: originalMessage || "context length exceeded",
+    },
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    },
+  };
+}
+
+/**
+ * 转换 Claude 错误响应为 Codex 格式
+ * 处理两种情况：
+ * 1. 上下文过长错误 (prompt is too long 等)
+ * 2. 上游请求失败错误 (Upstream request failed)
+ * 
+ * @returns 转换后的响应体，如果不需要转换则返回 null
+ */
+export function convertErrorResponse(claudeError: unknown): object | null {
+  if (!shouldConvertToContextLengthError(claudeError)) {
+    return null;
+  }
+  
+  const err = claudeError as { error?: { message?: string } };
+  return buildCodexContextLengthError(err.error?.message);
+}
