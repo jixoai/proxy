@@ -459,10 +459,15 @@ async function main(argv: string[]) {
     const abortController = new AbortController();
     const { signal: abortSignal } = abortController;
     let isClientDisconnected = false;
+    let didStreamResponseToClient = false;
 
     // 监听上游客户端断开连接
     const handleClientClose = () => {
       if (!res.writableEnded && !isClientDisconnected) {
+        // 如果是用户主动 abort 导致的下游关闭，不应被视为 client_disconnect
+        if (abortSignal.aborted && getAbortReasonFromSignal(abortSignal) === USER_ABORT) {
+          return;
+        }
         isClientDisconnected = true;
         abortController.abort(CLIENT_DISCONNECT);
         log.info(`[Abort] Client disconnected for request #${requestId}`);
@@ -523,17 +528,23 @@ async function main(argv: string[]) {
       "trailers",
       "transfer-encoding",
       "upgrade",
-      "content-length",
     ];
 
-    const sanitizeResponseHeaders = (
+    const sanitizeResponseHeadersForStreaming = (
       headers: http.IncomingHttpHeaders,
-      bodyLength: number,
     ): http.OutgoingHttpHeaders => {
       const clean: http.OutgoingHttpHeaders = { ...headers };
       for (const key of hopByHopKeys) {
         delete (clean as Record<string, unknown>)[key as string];
       }
+      return clean;
+    };
+
+    const sanitizeResponseHeadersForBuffered = (
+      headers: http.IncomingHttpHeaders,
+      bodyLength: number,
+    ): http.OutgoingHttpHeaders => {
+      const clean = sanitizeResponseHeadersForStreaming(headers);
       clean["content-length"] = bodyLength;
       return clean;
     };
@@ -733,6 +744,13 @@ async function main(argv: string[]) {
             let statusCode = proxyRes.statusCode || 502;
             let statusMessage = proxyRes.statusMessage || "";
 
+            // 如果存在 hooks，则必须缓存完整响应以支持修改，因此不允许直接流式写回客户端
+            const allowStreamingToClient = hooksExecutor?.hasResponseHooks !== true;
+            const isFailureStatus = statusCode >= 400 && statusCode <= 599;
+            const hasMoreCandidates = i < candidateIndexes.length - 1;
+            const shouldRetryOnFailure = isFailureStatus && hasMoreCandidates;
+            const shouldStreamToClient = allowStreamingToClient && !shouldRetryOnFailure;
+
             // 流式进度更新（每秒最多更新一次）
             let totalReceivedBytes = 0;
             let lastProgressUpdate = 0;
@@ -756,6 +774,14 @@ async function main(argv: string[]) {
                 dbNotifier.notify("update", "proxy_requests", dbRecordId);
               }
             });
+
+            // 只在确定不会 failover，且不需要 response hooks 时，才把上游响应流式写回客户端
+            if (shouldStreamToClient && !didStreamResponseToClient && !isClientDisconnected) {
+              didStreamResponseToClient = true;
+              const streamingHeaders = sanitizeResponseHeadersForStreaming(responseHeaders);
+              res.writeHead(statusCode, statusMessage, streamingHeaders);
+              proxyRes.pipe(res);
+            }
 
             proxyRes.on("end", async () => {
               const bodyMs = Date.now() - responseStartTime;
@@ -800,7 +826,7 @@ async function main(argv: string[]) {
                 }
               }
 
-              const cleanedHeaders = sanitizeResponseHeaders(responseHeaders, bodyBuffer.length);
+              const cleanedHeaders = sanitizeResponseHeadersForBuffered(responseHeaders, bodyBuffer.length);
 
               resolve({
                 statusCode,
@@ -830,6 +856,10 @@ async function main(argv: string[]) {
                   message: error.message,
                 }),
               );
+              // 如果已经开始流式写回，则无法再发送一个 502 body，只能直接断开下游连接
+              if (didStreamResponseToClient && !res.writableEnded) {
+                res.destroy(error);
+              }
               resolve({
                 statusCode: 502,
                 statusMessage: "Bad Gateway",
@@ -880,6 +910,10 @@ async function main(argv: string[]) {
           const abortReason = getAbortReasonFromSignal(abortSignal);
           proxyReq.destroy();
           proxyResRef?.destroy();
+          // 如果已经开始写回给客户端，需要及时关闭下游连接，避免悬挂
+          if (didStreamResponseToClient && !res.writableEnded) {
+            res.destroy();
+          }
           cleanup();
           reject(new ProxyRequestAbortedError(abortReason));
         };
@@ -1012,6 +1046,11 @@ async function main(argv: string[]) {
 
     // 如果已经被中断，不再发送响应
     if (isClientDisconnected) {
+      return;
+    }
+
+    // 如果上游响应已经在请求过程中被流式写回，则这里不再重复发送
+    if (didStreamResponseToClient) {
       return;
     }
 
