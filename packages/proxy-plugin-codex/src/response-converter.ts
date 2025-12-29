@@ -28,6 +28,7 @@ export function createConverterState(): ConverterState {
     currentToolInput: null,
     currentReasoningId: "",
     currentMessageId: "",
+    currentMessageOutputIndex: -1,
     currentMessageItem: null,
     thinkingContent: "",
     thinkingSignature: "",
@@ -70,6 +71,10 @@ function isCustomToolName(name: string): boolean {
   return name === "apply_patch";
 }
 
+function isServerToolName(name: string): boolean {
+  return name === "web_search";
+}
+
 function generateObfuscationToken(): string {
   // 与 Codex SSE 中的 obfuscation 字段保持“像随机串”的外观即可（CLI 不应依赖其语义）
   return Math.random().toString(36).slice(2, 14);
@@ -83,6 +88,105 @@ function chunkString(text: string, chunkSize: number): string[] {
     chunks.push(text.slice(i, i + size));
   }
   return chunks;
+}
+
+function finalizePendingTextMessage(state: ConverterState): string[] {
+  if (!state.currentMessageItem) return [];
+
+  const contentPart = {
+    type: "output_text",
+    annotations: [],
+    logprobs: [],
+    text: state.textContent,
+  };
+
+  state.currentMessageItem.content = [contentPart];
+  state.currentMessageItem.status = "completed";
+
+  const outputIndex = state.currentMessageOutputIndex;
+
+  const textDone = {
+    type: "response.output_text.done",
+    sequence_number: state.sequenceNumber++,
+    item_id: state.currentMessageId,
+    output_index: outputIndex,
+    content_index: 0,
+    text: state.textContent,
+    logprobs: [],
+  };
+
+  const contentPartDone = {
+    type: "response.content_part.done",
+    sequence_number: state.sequenceNumber++,
+    item_id: state.currentMessageId,
+    output_index: outputIndex,
+    content_index: 0,
+    part: contentPart,
+  };
+
+  const itemDone = {
+    type: "response.output_item.done",
+    sequence_number: state.sequenceNumber++,
+    output_index: outputIndex,
+    item: state.currentMessageItem,
+  };
+
+  state.textContent = "";
+  state.currentMessageId = "";
+  state.currentMessageOutputIndex = -1;
+  state.currentMessageItem = null;
+
+  return [
+    formatSSE("response.output_text.done", textDone),
+    formatSSE("response.content_part.done", contentPartDone),
+    formatSSE("response.output_item.done", itemDone),
+  ];
+}
+
+function ensureTextMessageStarted(state: ConverterState): string[] {
+  if (state.currentMessageItem) return [];
+
+  state.currentMessageId = generateId("msg_");
+  state.currentMessageOutputIndex = state.outputIndex;
+  state.textContent = "";
+
+  state.currentMessageItem = {
+    id: state.currentMessageId,
+    type: "message",
+    status: "in_progress",
+    content: [],
+    role: "assistant",
+  };
+
+  state.outputItems.push(state.currentMessageItem);
+
+  const itemAdded = {
+    type: "response.output_item.added",
+    sequence_number: state.sequenceNumber++,
+    output_index: state.currentMessageOutputIndex,
+    item: state.currentMessageItem,
+  };
+
+  const contentPartAdded = {
+    type: "response.content_part.added",
+    sequence_number: state.sequenceNumber++,
+    item_id: state.currentMessageId,
+    output_index: state.currentMessageOutputIndex,
+    content_index: 0,
+    part: {
+      type: "output_text",
+      annotations: [],
+      logprobs: [],
+      text: "",
+    },
+  };
+
+  state.outputIndex += 1;
+
+  return [
+    formatSSE("response.output_item.added", itemAdded),
+    formatSSE("response.content_part.added", contentPartAdded),
+  ];
 }
 
 /**
@@ -134,8 +238,15 @@ function handleContentBlockStart(
   state: ConverterState,
   event: ClaudeSSEContentBlockStart
 ): string[] {
+  const results: string[] = [];
   const block = event.content_block;
   state.currentBlockIndex = event.index;
+
+  // Claude 会把输出拆成多个 text blocks；如果下一个 block 不是 text，
+  // 说明上一段文本已结束：在这里把 pending 的文本 message 一次性 done，避免 UI 被切成几十段。
+  if (block.type !== "text") {
+    results.push(...finalizePendingTextMessage(state));
+  }
 
   if (block.type === "thinking") {
     state.currentBlockType = "thinking";
@@ -175,11 +286,42 @@ function handleContentBlockStart(
     };
     
     state.outputIndex++;
-    
-    return [
+
+    results.push(
       formatSSE("response.output_item.added", added),
       formatSSE("response.reasoning_summary_part.added", summaryPartAdded),
-    ];
+    );
+
+    return results;
+  }
+
+  if (block.type === "server_tool_use" && isServerToolName(block.name)) {
+    state.currentBlockType = "server_tool_use";
+    state.currentToolId = block.id;
+    state.currentToolName = block.name;
+    state.currentToolInput = block.input ?? null;
+    state.toolArguments = "";
+
+    const item = {
+      id: generateId("ws_"),
+      type: "web_search_call",
+      status: "in_progress",
+      action: { type: "search" },
+    };
+
+    state.outputItems.push(item);
+
+    const added = {
+      type: "response.output_item.added",
+      sequence_number: state.sequenceNumber++,
+      output_index: state.outputIndex,
+      item,
+    };
+
+    state.outputIndex++;
+
+    results.push(formatSSE("response.output_item.added", added));
+    return results;
   }
 
   if (block.type === "tool_use") {
@@ -221,53 +363,19 @@ function handleContentBlockStart(
 
     state.outputIndex++;
 
-    return [formatSSE("response.output_item.added", added)];
+    results.push(formatSSE("response.output_item.added", added));
+    return results;
   }
 
   if (block.type === "text") {
     state.currentBlockType = "text";
-    state.textContent = "";
-    state.currentMessageId = generateId("msg_");
 
-    // 创建 message item
-    state.currentMessageItem = {
-      id: state.currentMessageId,
-      type: "message",
-      status: "in_progress",
-      content: [],
-      role: "assistant",
-    };
-
-    // 发出 output_item.added 事件
-    const itemAdded = {
-      type: "response.output_item.added",
-      sequence_number: state.sequenceNumber++,
-      output_index: state.outputIndex,
-      item: state.currentMessageItem,
-    };
-
-    // 发出 content_part.added 事件
-    const contentPartAdded = {
-      type: "response.content_part.added",
-      sequence_number: state.sequenceNumber++,
-      item_id: state.currentMessageId,
-      output_index: state.outputIndex,
-      content_index: 0,
-      part: {
-        type: "output_text",
-        annotations: [],
-        logprobs: [],
-        text: "",
-      },
-    };
-
-    return [
-      formatSSE("response.output_item.added", itemAdded),
-      formatSSE("response.content_part.added", contentPartAdded),
-    ];
+    const started = ensureTextMessageStarted(state);
+    results.push(...started);
+    return results;
   }
 
-  return [];
+  return results;
 }
 
 /**
@@ -280,6 +388,7 @@ function handleContentBlockDelta(
   const delta = event.delta;
 
   if (delta.type === "thinking_delta") {
+    if (state.currentBlockType !== "thinking") return [];
     state.thinkingContent += delta.thinking;
 
     const reasoningDelta = {
@@ -295,11 +404,29 @@ function handleContentBlockDelta(
   }
 
   if (delta.type === "input_json_delta") {
+    if (
+      state.currentBlockType !== "custom_tool_call" &&
+      state.currentBlockType !== "tool_use" &&
+      state.currentBlockType !== "server_tool_use"
+    ) {
+      return [];
+    }
+
     state.toolArguments += delta.partial_json;
 
     // 自定义工具 (apply_patch) 在 stop 阶段做最终转换，
     // 这里不直接透传 partial_json，避免输出与最终 input 不一致。
     if (state.currentBlockType === "custom_tool_call") {
+      return [];
+    }
+
+    // Anthropic server tools are executed server-side; Codex CLI should not run them locally.
+    // We only expose a lightweight web_search_call item (done in content_block_stop).
+    if (state.currentBlockType === "server_tool_use") {
+      return [];
+    }
+
+    if (state.currentBlockType !== "tool_use") {
       return [];
     }
 
@@ -319,13 +446,14 @@ function handleContentBlockDelta(
   }
 
   if (delta.type === "text_delta") {
+    if (state.currentBlockType !== "text") return [];
     state.textContent += delta.text;
 
     const textDelta = {
       type: "response.output_text.delta",
       sequence_number: state.sequenceNumber++,
       item_id: state.currentMessageId,
-      output_index: state.outputIndex,
+      output_index: state.currentMessageOutputIndex,
       content_index: 0,
       delta: delta.text,
       logprobs: [],
@@ -336,6 +464,7 @@ function handleContentBlockDelta(
 
   // Handle signature_delta - Claude sends signature at the end of thinking block
   if (delta.type === "signature_delta") {
+    if (state.currentBlockType !== "thinking") return [];
     state.thinkingSignature += delta.signature;
     
     // Update the reasoning item's encrypted_content
@@ -490,6 +619,45 @@ function handleContentBlockStop(
     state.currentToolInput = null;
   }
 
+  if (state.currentBlockType === "server_tool_use") {
+    const currentItem = state.outputItems[state.outputItems.length - 1] as {
+      id: string;
+      type: string;
+      status: string;
+      action: Record<string, unknown>;
+    };
+
+    if (currentItem) {
+      let rawInput: Record<string, unknown> | null = null;
+      if (state.toolArguments) {
+        try {
+          rawInput = JSON.parse(state.toolArguments) as Record<string, unknown>;
+        } catch {
+          rawInput = null;
+        }
+      } else if (state.currentToolInput && typeof state.currentToolInput === "object") {
+        rawInput = state.currentToolInput as Record<string, unknown>;
+      }
+
+      const query = rawInput && typeof rawInput.query === "string" ? rawInput.query : undefined;
+
+      currentItem.action = query ? { type: "search", query } : { type: "search" };
+      currentItem.status = "completed";
+
+      const itemDone = {
+        type: "response.output_item.done",
+        sequence_number: state.sequenceNumber++,
+        output_index: state.outputIndex - 1,
+        item: currentItem,
+      };
+
+      results.push(formatSSE("response.output_item.done", itemDone));
+    }
+
+    state.toolArguments = "";
+    state.currentToolInput = null;
+  }
+
   if (state.currentBlockType === "thinking") {
     // Find the reasoning item we created in handleContentBlockStart
     const reasoningItem = state.outputItems.find(
@@ -549,61 +717,7 @@ function handleContentBlockStop(
     state.thinkingSignature = "";
   }
 
-  if (state.currentBlockType === "text" && state.currentMessageItem) {
-    // 更新 message item 的 content
-    const contentPart = {
-      type: "output_text",
-      annotations: [],
-      logprobs: [],
-      text: state.textContent,
-    };
-    state.currentMessageItem.content = [contentPart];
-    state.currentMessageItem.status = "completed";
-
-    // 发出 output_text.done 事件
-    const textDone = {
-      type: "response.output_text.done",
-      sequence_number: state.sequenceNumber++,
-      item_id: state.currentMessageId,
-      output_index: state.outputIndex,
-      content_index: 0,
-      text: state.textContent,
-      logprobs: [],
-    };
-
-    // 发出 content_part.done 事件
-    const contentPartDone = {
-      type: "response.content_part.done",
-      sequence_number: state.sequenceNumber++,
-      item_id: state.currentMessageId,
-      output_index: state.outputIndex,
-      content_index: 0,
-      part: contentPart,
-    };
-
-    // 发出 output_item.done 事件
-    const itemDone = {
-      type: "response.output_item.done",
-      sequence_number: state.sequenceNumber++,
-      output_index: state.outputIndex,
-      item: state.currentMessageItem,
-    };
-
-    // 添加到 outputItems
-    state.outputItems.push(state.currentMessageItem);
-    state.outputIndex++;
-
-    results.push(
-      formatSSE("response.output_text.done", textDone),
-      formatSSE("response.content_part.done", contentPartDone),
-      formatSSE("response.output_item.done", itemDone)
-    );
-
-    // 清理状态
-    state.textContent = "";
-    state.currentMessageId = "";
-    state.currentMessageItem = null;
-  }
+  // text block: do not finalize message here; we merge consecutive text blocks into a single message item.
 
   state.currentBlockType = null;
   return results;
@@ -624,6 +738,8 @@ function handleMessageDelta(
  * 处理 message_stop 事件
  */
 function handleMessageStop(state: ConverterState): string[] {
+  const flushedText = finalizePendingTextMessage(state);
+
   const completed = {
     type: "response.completed",
     sequence_number: state.sequenceNumber++,
@@ -655,7 +771,7 @@ function handleMessageStop(state: ConverterState): string[] {
     },
   };
 
-  return [formatSSE("response.completed", completed)];
+  return [...flushedText, formatSSE("response.completed", completed)];
 }
 
 /**

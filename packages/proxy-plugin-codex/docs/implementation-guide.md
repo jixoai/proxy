@@ -66,6 +66,8 @@ Codex CLI
     { "type": "reasoning", "summary": [...], "encrypted_content": "..." },
     { "type": "function_call", "name": "exec_command", "arguments": "...", "call_id": "..." },
     { "type": "function_call_output", "call_id": "...", "output": "..." }
+    // 或者（截图等工具返回多模态 content items）:
+    // { "type": "function_call_output", "call_id": "...", "output": [{ "type":"input_text","text":"..." }, { "type":"input_image","image_url":"data:image/png;base64,..." }] }
   ],
   "tools": [...],
   "reasoning": { "effort": "xhigh", "summary": "auto" },
@@ -83,9 +85,9 @@ Codex CLI
     { "type": "text", "text": "<codex-system-context>...</codex-system-context>", "cache_control": { "type": "ephemeral" } }
   ],
   "messages": [
-    { "role": "user", "content": [{ "type": "text", "text": "..." }] },
-    { "role": "assistant", "content": [{ "type": "thinking", ... }, { "type": "tool_use", ... }] },
-    { "role": "user", "content": [{ "type": "tool_result", ... }] }
+    { "role": "user", "content": [{ "type": "text", "text": "...", "cache_control": { "type": "ephemeral" } }] },
+    { "role": "assistant", "content": [{ "type": "thinking", ... }, { "type": "tool_use", ..., "cache_control": { "type": "ephemeral" } }] },
+    { "role": "user", "content": [{ "type": "tool_result", ..., "cache_control": { "type": "ephemeral" } }] }
   ],
   "tools": [...],
   "thinking": { "type": "enabled", "budget_tokens": 32768 },
@@ -148,27 +150,14 @@ export function mapModel(model: string, targetModelFromHeader?: string): string 
 
 ### 3.2 Instructions 转换
 
-将 Codex 的 GPT 身份描述替换为 Claude Code 身份：
+为减少对原始请求语义的干预，默认不做文案替换，只做轻量 trim。
+Claude Code 身份通过 system[0] 注入。
 
 ```typescript
 const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 export function convertInstructions(instructions: string): string {
-  let result = instructions;
-  
-  // 移除 GPT 身份描述（包括整个句子）
-  result = result.replace(
-    /You are GPT-[\d.]+ running in the Codex CLI[^.]*\.\s*/g,
-    ""
-  );
-  
-  // 替换 OpenAI 相关描述
-  result = result.replace(
-    /Codex CLI is an open source project led by OpenAI/g,
-    "Codex CLI is an open source project"
-  );
-  
-  return result.trim();
+  return instructions.trim();
 }
 ```
 
@@ -190,6 +179,20 @@ export function buildSystemBlocks(instructions: string): SystemBlock[] {
     },
   ];
 }
+```
+
+### 3.3.1 Prompt Caching（Like Droid）
+
+Claude 限制每个请求最多 4 个 cache breakpoints。
+当前实现与 proxy-plugin-droid 的行为对齐：system 使用 1 个 breakpoint，messages 再补足最多 3 个，优先选择工具边界并“预热”最新 user 文本，形成滑动缓存。
+
+```typescript
+applyPromptCachingLikeDroid(messages);
+// Priority:
+// 1) last assistant tool_use block
+// 2) last user tool_result block
+// 3) last user text block (warm cache for next turn)
+// Fallbacks: last assistant text, first user text
 ```
 
 ### 3.4 Input Items 转换
@@ -224,11 +227,11 @@ function inferRole(item: CodexResponseItem): "user" | "assistant" {
 
 | Codex 类型 | Claude 类型 | 说明 |
 |-----------|------------|------|
-| `message` | `text` | 提取 input_text/output_text |
+| `message` | `text` / `image` | 保留文本与图片（多模态 content items） |
 | `reasoning` (有 signature) | `thinking` | 保留 signature |
 | `reasoning` (无 signature) | `text` | 转为 `[Reasoning: ...]` |
 | `function_call` | `tool_use` | 解析 arguments JSON |
-| `function_call_output` | `tool_result` | 直接映射 |
+| `function_call_output` | `tool_result` | `output` 为 string 时透传；为 content items 时映射为 Claude `text`/`image` blocks |
 | `custom_tool_call` | `tool_use` | apply_patch 等 |
 | `local_shell_call` | `tool_use` (exec_command) | command 数组 join |
 | `compaction` | `thinking` | 保留 encrypted_content |
@@ -307,6 +310,9 @@ metadata: {
 | `content_block_delta` (signature_delta) | (内部保存，不输出事件) |
 | `content_block_stop` | `response.output_item.done` + (arguments/input done events) |
 | `message_stop` | `response.completed` |
+
+**注意：** Claude 可能会把最终回答拆成很多个 `text` content blocks（例如每段一块）。
+为避免 Codex CLI 输出被切成几十段（严重影响 Markdown 表格/段落可读性），本插件会把**连续的 text blocks 合并为同一个 Codex `message` output item**，并在遇到下一个非 text block 或 `message_stop` 时一次性 `done`。
 
 ### 4.2 Signature 处理（关键！）
 
@@ -527,7 +533,7 @@ claude-code-20250219,interleaved-thinking-2025-05-14
 
 - Codex `function` 工具：工具名/参数 schema 直通到 Claude tools
 - Codex `custom` 工具（包括 `apply_patch`）：在 Claude tools 中暴露为 `{ input: string }`；响应侧输出为 `custom_tool_call` + `custom_tool_call_input.*`
-- OpenAI 内置 `web_search`：不作为工具暴露；`web_search_call` 历史转换为文本上下文
+- OpenAI 内置 `web_search`：映射为 Claude server-side `web_search`（`web_search_20250305`）；响应侧将 `server_tool_use(name=web_search)` 透出为 Codex `web_search_call`（不需要本地执行），`web_search_tool_result` 由 Claude 内部消化并产出最终文本；`web_search_call` 历史仍转换为文本上下文
 
 ---
 
@@ -635,7 +641,7 @@ type CodexResponseItem =
   | { type: "message"; role: "user" | "assistant"; content: CodexContentItem[] }
   | { type: "reasoning"; summary: CodexReasoningSummary[]; encrypted_content?: string }
   | { type: "function_call"; name: string; arguments: string; call_id: string }
-  | { type: "function_call_output"; call_id: string; output: string }
+  | { type: "function_call_output"; call_id: string; output: string | CodexContentItem[] }
   | { type: "custom_tool_call"; name: string; input: string; call_id: string }
   | { type: "custom_tool_call_output"; call_id: string; output: string }
   | { type: "web_search_call"; action: { type: "search"; query?: string } }
@@ -650,12 +656,13 @@ type CodexResponseItem =
 ```typescript
 type ClaudeContentBlock =
   | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
   | { type: "thinking"; thinking: string; signature: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; tool_use_id: string; content: string };
+  | { type: "tool_result"; tool_use_id: string; content: string | ClaudeContentBlock[] };
 ```
 
 ---
 
-*文档版本: 1.0.0*
-*最后更新: 2025-12-28*
+*文档版本: 1.0.1*
+*最后更新: 2025-12-29*

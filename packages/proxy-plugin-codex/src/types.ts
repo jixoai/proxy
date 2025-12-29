@@ -44,7 +44,7 @@ export type CodexResponseItem =
   | {
       type: "function_call_output";
       call_id: string;
-      output: string;
+      output: string | CodexContentItem[];
     }
   | {
       type: "custom_tool_call";
@@ -136,7 +136,7 @@ export interface CodexRequest {
 // ============================================================================
 
 export type ClaudeContentBlock =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; cache_control?: { type: "ephemeral"; ttl?: string } }
   | {
       type: "image";
       source: {
@@ -144,23 +144,27 @@ export type ClaudeContentBlock =
         media_type: string;
         data: string;
       };
+      cache_control?: { type: "ephemeral"; ttl?: string };
     }
   | {
       type: "tool_use";
       id: string;
       name: string;
       input: Record<string, unknown>;
+      cache_control?: { type: "ephemeral"; ttl?: string };
     }
   | {
       type: "tool_result";
       tool_use_id: string;
       content: string | ClaudeContentBlock[];
       is_error?: boolean;
+      cache_control?: { type: "ephemeral"; ttl?: string };
     }
   | {
       type: "thinking";
       thinking: string;
       signature: string;
+      cache_control?: { type: "ephemeral"; ttl?: string };
     };
 
 export interface ClaudeMessage {
@@ -168,11 +172,26 @@ export interface ClaudeMessage {
   content: ClaudeContentBlock[] | string;
 }
 
-export interface ClaudeTool {
+export interface ClaudeClientTool {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
 }
+
+/**
+ * Anthropic server-side tool definitions (e.g. web_search, web_fetch).
+ *
+ * These tools are executed by Anthropic and do not use input_schema.
+ * We keep the shape open-ended to avoid frequent type churn when Anthropic
+ * adds new server tools or parameters.
+ */
+export interface ClaudeServerTool {
+  type: string;
+  name: string;
+  [key: string]: unknown;
+}
+
+export type ClaudeTool = ClaudeClientTool | ClaudeServerTool;
 
 export interface ClaudeThinking {
   type: "enabled";
@@ -220,7 +239,10 @@ export interface ClaudeSSEContentBlockStart {
   content_block:
     | { type: "thinking"; thinking: string; signature: string }
     | { type: "text"; text: string }
-    | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
+    | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+    | { type: "server_tool_use"; id: string; name: string; input: Record<string, unknown> }
+    | { type: "web_search_tool_result"; tool_use_id: string; content: unknown }
+    | { type: "web_search_tool_result_error"; tool_use_id: string; error_code?: string; content?: unknown };
 }
 
 export interface ClaudeSSEContentBlockDelta {
@@ -285,13 +307,14 @@ export type ClaudeSSEEvent =
 export interface ConverterState {
   sequenceNumber: number;
   outputIndex: number;
-  currentBlockType: "thinking" | "tool_use" | "custom_tool_call" | "text" | null;
+  currentBlockType: "thinking" | "tool_use" | "custom_tool_call" | "server_tool_use" | "text" | null;
   currentBlockIndex: number;
   currentToolId: string;
   currentToolName: string;
   currentToolInput: Record<string, unknown> | null;
   currentReasoningId: string;
   currentMessageId: string;
+  currentMessageOutputIndex: number;
   currentMessageItem: {
     id: string;
     type: "message";

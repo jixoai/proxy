@@ -9,18 +9,20 @@
 
 Claude Code 使用 Anthropic Messages API，以下是其工具的精确定义（来自 `sdk-tools.d.ts`）：
 
+> 说明：本文件是 Claude Code（Anthropic）侧工具/协议的参考。`@jixo/proxy-plugin-codex` 当前实现默认**不做 Claude Code 工具名映射**（例如不把 `exec_command` 变成 `Bash`、不把 `update_plan` 变成 `TodoWrite`），而是尽量保持工具名/参数直通；仅对 Codex 内置 `web_search` 做 server-side 映射到 Anthropic `web_search_20250305`。
+
 ### 1.1 核心工具列表
 
-| 工具名 | 对应 Codex 工具 | 说明 |
-|--------|----------------|------|
-| `Bash` | `exec_command` / `shell_command` | 执行命令 |
+| 工具名 | 对应/参考 | 说明 |
+|--------|----------|------|
+| `Bash` | `exec_command` / `shell_command`（参考） | 执行命令 |
 | `FileRead` | - | 读取文件 |
 | `FileWrite` | - | 写入文件 |
-| `FileEdit` | `apply_patch` (部分) | 编辑文件 |
+| `FileEdit` | `apply_patch`（参考） | 编辑文件 |
 | `Glob` | - | 文件匹配 |
 | `Grep` | - | 搜索内容 |
 | `TodoWrite` | - | 任务列表 |
-| `WebSearch` | `web_search` | 网页搜索 |
+| `WebSearch` | `web_search`（参考） | 网页搜索 |
 | `WebFetch` | - | 获取网页 |
 | `Agent` | - | 子代理 |
 | `TaskOutput` | - | 后台任务输出 |
@@ -209,6 +211,11 @@ Claude Code 处理以下 SSE 事件：
   text: ''
 }
 
+// NOTE:
+// Claude 可能会把最终回答拆成很多个 text blocks（段落级切分）。
+// 在 Codex CLI 侧如果逐块映射成独立 message，会导致输出被切成很多段，破坏 Markdown 可读性。
+// proxy-plugin-codex 会把连续的 text blocks 合并为同一个 Codex message output item。
+
 // tool_use block
 {
   type: 'tool_use',
@@ -220,57 +227,12 @@ Claude Code 处理以下 SSE 事件：
 
 ---
 
-## 四、工具映射对照表
+## 四、proxy-plugin-codex 的工具策略（当前实现）
 
-### 4.1 Codex → Claude Code 工具映射
-
-| Codex 工具 | Claude Code 工具 | 转换说明 |
-|-----------|-----------------|---------|
-| `exec_command` | `Bash` | `cmd` → `command`, 需要 join |
-| `shell_command` | `Bash` | 直接映射 command |
-| `apply_patch` (CustomToolCall) | `FileEdit` | 解析 patch 格式 |
-| `web_search` | `WebSearch` | 直接映射 |
-| `view_image` | (内嵌图片) | 转为 image content block |
-| `mcp__server__tool` | `Mcp` | 保持 MCP 调用格式 |
-
-### 4.2 工具参数转换
-
-**exec_command → Bash:**
-```javascript
-// Codex
-{
-  name: "exec_command",
-  arguments: "{\"cmd\":\"ls -la\",\"yield_time_ms\":100000}"
-}
-
-// Claude Code
-{
-  name: "Bash",
-  input: {
-    command: "ls -la",
-    timeout: 100000
-  }
-}
-```
-
-**apply_patch → FileEdit:**
-```javascript
-// Codex (CustomToolCall)
-{
-  name: "apply_patch",
-  input: "*** Begin Patch\n*** Update File: /path/file.ts\n@@\n context\n-old\n+new\n context\n*** End Patch"
-}
-
-// Claude Code
-{
-  name: "FileEdit",
-  input: {
-    file_path: "/path/file.ts",
-    old_string: "old",
-    new_string: "new"
-  }
-}
-```
+- 工具名：默认透传（不做 `Bash` / `FileEdit` / `TodoWrite` 等 Claude Code 工具名映射）。
+- `function` 工具：`parameters` → Claude `input_schema`（保持 `name` 不变）。
+- `custom` 工具（含 `apply_patch`）：默认包装为 `{ input: string }`（保持 `name` 不变）。
+- Codex 内置 `web_search`：映射为 Anthropic server-side `web_search`（`type: web_search_20250305`）。
 
 ---
 
@@ -296,7 +258,8 @@ Codex Responses API Request
 ├─────────────────────────────────────┤
 │  4. tools 格式转换                   │
 │     - parameters → input_schema     │
-│     - 工具名映射                     │
+│     - 工具名默认透传                 │
+│     - web_search → web_search_20250305 │
 ├─────────────────────────────────────┤
 │  5. reasoning → thinking            │
 │     effort: xhigh → budget: 32768   │
@@ -427,22 +390,7 @@ class ClaudeToCodexConverter {
 ### 7.2 工具名映射表
 
 ```typescript
-const TOOL_NAME_MAP = {
-  // Codex → Claude Code
-  'exec_command': 'Bash',
-  'shell_command': 'Bash', 
-  'apply_patch': 'FileEdit',
-  'web_search': 'WebSearch',
-  
-  // Claude Code → Codex (反向)
-  'Bash': 'exec_command',
-  'FileEdit': 'apply_patch',
-  'FileRead': 'exec_command',  // 转为 cat 命令
-  'FileWrite': 'apply_patch',  // 转为 patch 格式
-  'Glob': 'exec_command',      // 转为 find 命令
-  'Grep': 'exec_command',      // 转为 grep 命令
-  'WebSearch': 'web_search',
-};
+// 备注：当前 @jixo/proxy-plugin-codex 不再维护工具名映射表，尽量保持工具名直通。
 ```
 
 ---

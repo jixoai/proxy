@@ -5,6 +5,7 @@
 import type {
   CodexRequest,
   CodexResponseItem,
+  CodexContentItem,
   CodexTool,
   ClaudeRequest,
   ClaudeMessage,
@@ -76,6 +77,8 @@ export type SystemBlock = {
   cache_control?: { type: "ephemeral" };
 };
 
+const DEFAULT_CACHE_CONTROL: { type: "ephemeral" } = { type: "ephemeral" };
+
 /**
  * 转换 instructions
  *
@@ -92,7 +95,8 @@ export function convertInstructions(instructions: string): string {
  * 1. 第一个块: Claude Code 身份标识（短文本，不缓存）
  * 2. 第二个块: 转换后的 instructions（长文本，使用 ephemeral 缓存）
  * 
- * 注意: Claude 限制每个请求最多 4 个 cache breakpoints
+ * 注意: Claude 限制每个请求最多 4 个 cache breakpoints。
+ * 本插件默认在 system 使用 1 个，并在 messages 中补足最多 3 个（见 applyPromptCachingLikeDroid）。
  */
 export function buildSystemBlocks(instructions: string): SystemBlock[] {
   const convertedInstructions = convertInstructions(instructions);
@@ -158,16 +162,115 @@ export function convertCallId(callId: string): string {
   return callId;
 }
 
+function isCodexContentItem(value: unknown): value is CodexContentItem {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Partial<CodexContentItem> & Record<string, unknown>;
+  if (v.type === "input_text" || v.type === "output_text") {
+    return typeof (v as { text?: unknown }).text === "string";
+  }
+  if (v.type === "input_image") {
+    return typeof (v as { image_url?: unknown }).image_url === "string";
+  }
+  return false;
+}
+
+function convertCodexImageUrlToClaudeBlock(imageUrl: string): ClaudeContentBlock {
+  const match = /^data:([^;]+);base64,([\s\S]+)$/.exec(imageUrl);
+  if (match) {
+    const mediaType = match[1];
+    const data = match[2];
+    return {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: mediaType,
+        data,
+      },
+    };
+  }
+
+  return {
+    type: "text",
+    text: `[image] ${imageUrl}`,
+  };
+}
+
+function mergeConsecutiveTextBlocks(blocks: ClaudeContentBlock[]): ClaudeContentBlock[] {
+  const merged: ClaudeContentBlock[] = [];
+
+  for (const block of blocks) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.type === "text" && block.type === "text") {
+      prev.text = `${prev.text}\n${block.text}`;
+      continue;
+    }
+    merged.push(block);
+  }
+
+  return merged;
+}
+
+function convertCodexContentItemToClaudeBlock(item: CodexContentItem): ClaudeContentBlock | null {
+  switch (item.type) {
+    case "input_text":
+    case "output_text":
+      return { type: "text", text: item.text };
+    case "input_image":
+      return convertCodexImageUrlToClaudeBlock(item.image_url);
+    default:
+      return null;
+  }
+}
+
+function convertCodexContentItemsToClaudeBlocks(items: CodexContentItem[]): ClaudeContentBlock[] {
+  const blocks = items
+    .map(convertCodexContentItemToClaudeBlock)
+    .filter((b): b is ClaudeContentBlock => Boolean(b));
+
+  return mergeConsecutiveTextBlocks(blocks);
+}
+
+function convertCodexToolOutputToClaudeContent(output: unknown): string | ClaudeContentBlock[] {
+  if (typeof output === "string") return output;
+
+  if (Array.isArray(output)) {
+    const blocks: ClaudeContentBlock[] = [];
+
+    for (const el of output) {
+      if (isCodexContentItem(el)) {
+        const b = convertCodexContentItemToClaudeBlock(el);
+        if (b) blocks.push(b);
+        continue;
+      }
+
+      if (typeof el === "string") {
+        blocks.push({ type: "text", text: el });
+        continue;
+      }
+
+      try {
+        blocks.push({ type: "text", text: JSON.stringify(el) });
+      } catch {
+        blocks.push({ type: "text", text: String(el) });
+      }
+    }
+
+    return mergeConsecutiveTextBlocks(blocks);
+  }
+
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
+}
+
 /** 将单个 Codex item 转换为 Claude content block */
 function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | null {
   switch (item.type) {
-    case "message": {
-      const textParts = item.content
-        .filter((c) => c.type === "input_text" || c.type === "output_text")
-        .map((c) => (c as { text: string }).text);
-      if (textParts.length === 0) return null;
-      return { type: "text", text: textParts.join("\n") };
-    }
+    case "message":
+      // message items are handled in convertInputToMessages (may include images)
+      return null;
 
     case "reasoning": {
       // If no encrypted_content (signature), skip this thinking block
@@ -210,7 +313,7 @@ function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | nu
       return {
         type: "tool_result",
         tool_use_id: convertCallId(item.call_id),
-        content: item.output,
+        content: convertCodexToolOutputToClaudeContent(item.output),
       };
     }
 
@@ -301,31 +404,27 @@ function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | nu
 }
 
 /**
- * 将 Codex input[] 合并转换为 Claude messages[]
- * 确保 user/assistant 严格交替
+ * 将 Codex input[] 转换为 Claude messages[]
+ *
+ * 与 proxy-plugin-droid 的风格保持一致：尽量保留“逐条消息”的结构，
+ * 避免把大量 assistant message 合并成单条 message（会导致 content blocks 过多，且不利于缓存断点选择）。
  */
-export function mergeInputToMessages(input: CodexResponseItem[]): ClaudeMessage[] {
+export function convertInputToMessages(input: CodexResponseItem[]): ClaudeMessage[] {
   const messages: ClaudeMessage[] = [];
-  let current: { role: "user" | "assistant"; content: ClaudeContentBlock[] } | null = null;
 
   for (const item of input) {
+    if (item.type === "message") {
+      const blocks = convertCodexContentItemsToClaudeBlocks(item.content);
+      if (blocks.length === 0) continue;
+      messages.push({ role: item.role, content: blocks });
+      continue;
+    }
+
     const role = inferRole(item);
     const block = convertToContentBlock(item);
 
     if (!block) continue;
-
-    if (!current || current.role !== role) {
-      if (current && current.content.length > 0) {
-        messages.push(current);
-      }
-      current = { role, content: [] };
-    }
-
-    current.content.push(block);
-  }
-
-  if (current && current.content.length > 0) {
-    messages.push(current);
+    messages.push({ role, content: [block] });
   }
 
   // 确保以 user 消息开头
@@ -338,6 +437,69 @@ export function mergeInputToMessages(input: CodexResponseItem[]): ClaudeMessage[
 }
 
 /**
+ * Apply prompt caching breakpoints like proxy-plugin-droid (max 4 total).
+ *
+ * We already use 1 breakpoint in system (instructions), so we add up to 3 in messages:
+ * - Prefer tool boundaries (tool_use / tool_result), matching droid behavior.
+ * - Then prefer the latest user text (warm cache for next turn).
+ * - Fall back to assistant/user text when no tools exist.
+ */
+export function applyPromptCachingLikeDroid(messages: ClaudeMessage[]): void {
+  if (!Array.isArray(messages) || messages.length === 0) return;
+
+  const existing = messages.reduce((count, msg) => {
+    if (!msg || !Array.isArray(msg.content)) return count;
+    return count + msg.content.filter((b) => Boolean((b as { cache_control?: unknown }).cache_control)).length;
+  }, 0);
+
+  let remaining = Math.max(0, 3 - existing);
+
+  const maybeSet = (block: ClaudeContentBlock | undefined): void => {
+    if (remaining <= 0) return;
+    if (!block) return;
+    if (block.cache_control) return;
+    block.cache_control = DEFAULT_CACHE_CONTROL;
+    remaining -= 1;
+  };
+
+  const findLastBlock = (params: {
+    role: "user" | "assistant";
+    type: ClaudeContentBlock["type"];
+  }): ClaudeContentBlock | undefined => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      if (!msg || msg.role !== params.role || !Array.isArray(msg.content)) continue;
+      for (let j = msg.content.length - 1; j >= 0; j -= 1) {
+        const block = msg.content[j];
+        if (block?.type !== params.type) continue;
+        return block;
+      }
+    }
+    return undefined;
+  };
+
+  const findFirstText = (role: "user" | "assistant"): ClaudeContentBlock | undefined => {
+    for (const msg of messages) {
+      if (!msg || msg.role !== role || !Array.isArray(msg.content)) continue;
+      const block = msg.content.find((b) => b.type === "text" && typeof (b as { text?: unknown }).text === "string");
+      if (block) return block;
+    }
+    return undefined;
+  };
+
+  // Prefer tool boundaries (most common in droid traffic)
+  maybeSet(findLastBlock({ role: "assistant", type: "tool_use" }));
+  maybeSet(findLastBlock({ role: "user", type: "tool_result" }));
+
+  // Warm the latest user text for the next turn
+  maybeSet(findLastBlock({ role: "user", type: "text" }));
+
+  // Fallbacks for no-tool conversations
+  maybeSet(findLastBlock({ role: "assistant", type: "text" }));
+  maybeSet(findFirstText("user"));
+}
+
+/**
  * 转换工具定义
  */
 export function convertTools(tools?: CodexTool[]): ClaudeTool[] | undefined {
@@ -347,8 +509,14 @@ export function convertTools(tools?: CodexTool[]): ClaudeTool[] | undefined {
 
   for (const tool of tools) {
     if (tool.type === "web_search") {
-      // OpenAI 内置 web_search 无法在 Claude Messages API 中作为“本地工具”执行；
-      // 为避免 Claude 生成不可执行的 tool_use，这里不向 Claude 暴露该工具。
+      // OpenAI 的 web_search 是 server-side 工具；Codex CLI 本地并不会执行它。
+      // 对 Claude 来说也可以用 server-side web_search 工具实现等价能力。
+      //
+      // Docs: https://docs.claude.com/en/docs/agents-and-tools/tool-use/web-search-tool
+      result.push({
+        type: "web_search_20250305",
+        name: "web_search",
+      });
       continue;
     }
 
@@ -397,11 +565,15 @@ export interface ConvertRequestOptions {
  */
 export function convertRequest(codex: CodexRequest, options: ConvertRequestOptions = {}): ClaudeRequest {
   const { targetModel, userId } = options;
+
+  const messages = convertInputToMessages(codex.input);
+  applyPromptCachingLikeDroid(messages);
+
   return {
     model: mapModel(codex.model, targetModel),
     max_tokens: codex.max_output_tokens || DEFAULT_MAX_TOKENS,
     system: buildSystemBlocks(codex.instructions),
-    messages: mergeInputToMessages(codex.input),
+    messages,
     tools: convertTools(codex.tools),
     tool_choice:
       codex.tool_choice && codex.tool_choice !== "auto"

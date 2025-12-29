@@ -97,7 +97,10 @@ tools: [{type:"function"}]   →    tools: [{name,input_schema}]
 
 - Tool names are preserved (e.g. `exec_command`, `write_stdin`, `update_plan`, `mcp__*`).
 - Custom tools (including `apply_patch`) are exposed to Claude as JSON input: `{ "input": "..." }` (Codex uses a freeform string input).
-- OpenAI server-side `web_search` is not exposed as an executable tool; `web_search_call` history is converted to text context.
+- Tool outputs (`function_call_output`) can be either a string or Codex content items (e.g. screenshots as `input_image`); these are converted into valid Claude `tool_result` content blocks (`text`/`image`) so upstream requests don’t fail.
+- OpenAI built-in `web_search` is mapped to Anthropic server-side `web_search` (`web_search_20250305`); response-side `server_tool_use(name=web_search)` is surfaced as a Codex `web_search_call` item (no local execution), while the upstream `web_search_tool_result` is used by Claude to produce final text.
+- Claude often splits final answers into many `text` blocks; the response converter merges consecutive text blocks into a single Codex `message` item so Markdown stays readable in Codex CLI.
+- Prompt caching: uses 1 cache breakpoint in `system` plus up to 3 in `messages`, preferring the latest `tool_use` / `tool_result` boundaries and the latest user `text` (with fallbacks), matching Droid-like sliding cache behavior.
 
 ## Documentation
 
