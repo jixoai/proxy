@@ -77,29 +77,12 @@ export type SystemBlock = {
 };
 
 /**
- * 转换 instructions，将 Codex/GPT 相关描述替换为 Claude Code 相关描述
- * 
- * 保持与 proxy-plugin-droid 一致的身份标识:
- * "You are Claude Code, Anthropic's official CLI for Claude."
+ * 转换 instructions
+ *
+ * 为减少对原始请求语义的干预，这里默认不做文本替换，只做轻量 trim。
  */
 export function convertInstructions(instructions: string): string {
-  let result = instructions;
-  
-  // 移除 GPT 身份描述及其后续描述（我们会单独添加 Claude Code 身份）
-  // 原文: "You are GPT-5.2 running in the Codex CLI, a terminal-based coding assistant."
-  // 需要移除整个句子直到句号
-  result = result.replace(
-    /You are GPT-[\d.]+ running in the Codex CLI[^.]*\.\s*/g,
-    ""
-  );
-  
-  // 替换 OpenAI 相关描述
-  result = result.replace(
-    /Codex CLI is an open source project led by OpenAI/g,
-    "Codex CLI is an open source project"
-  );
-  
-  return result.trim();
+  return instructions.trim();
 }
 
 /**
@@ -123,11 +106,6 @@ export function buildSystemBlocks(instructions: string): SystemBlock[] {
       type: "text",
       text: `<codex-system-context>\n${convertedInstructions}\n</codex-system-context>`,
       cache_control: { type: "ephemeral" },
-    },
-    {
-      type: "text",
-      text:
-        "Planning reminder: Maintain a task plan via update_plan (preferred) or TodoWrite (alias).\n\n- update_plan input: { plan: [{ step: string, status: \"pending\"|\"in_progress\"|\"completed\" }] }\n- TodoWrite input: { todos: \"1. [pending] ...\\n2. [in_progress] ...\\n3. [completed] ...\" }\n\nFor any non-trivial or multi-step task, call one of these tools once before starting work and again whenever the plan changes. Keep at most one in_progress item.",
     },
   ];
 }
@@ -187,9 +165,7 @@ export function mapToolName(name: string): string {
   return name;
 }
 
-/**
- * 将单个 Codex item 转换为 Claude content block
- */
+/** 将单个 Codex item 转换为 Claude content block */
 function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | null {
   switch (item.type) {
     case "message": {
@@ -248,15 +224,6 @@ function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | nu
     }
 
     case "custom_tool_call": {
-      if (item.name === "apply_patch") {
-        return {
-          type: "tool_use",
-          id: convertCallId(item.call_id),
-          name: mapToolName(item.name),
-          input: { patch: item.input },
-        };
-      }
-
       return {
         type: "tool_use",
         id: convertCallId(item.call_id),
@@ -386,16 +353,6 @@ export function convertTools(tools?: CodexTool[]): ClaudeTool[] | undefined {
   if (!tools || tools.length === 0) return undefined;
 
   const result: ClaudeTool[] = [];
-  const planToolHint =
-    "Use this tool proactively for non-trivial or multi-step work (3+ distinct actions). Keep at most one in_progress item at a time.";
-  const todoWriteDescription =
-    "Use this tool to draft and maintain a structured todo list for the current session.\n\n" +
-    "Input Format (numbered multi-line string):\n" +
-    "1. [completed] First task that is done\n" +
-    "2. [in_progress] Currently working on this\n" +
-    "3. [pending] Not started yet\n\n" +
-    "Status markers: [completed], [in_progress], [pending].\n\n" +
-    planToolHint;
 
   for (const tool of tools) {
     if (tool.type === "web_search") {
@@ -404,54 +361,30 @@ export function convertTools(tools?: CodexTool[]): ClaudeTool[] | undefined {
       continue;
     }
 
-    if (tool.type === "custom" && tool.name === "apply_patch") {
-      result.push({
-        name: "apply_patch",
-        description: tool.description || "Apply a patch in the project patch format",
-        input_schema: {
-          type: "object",
-          properties: {
-            patch: {
-              type: "string",
-              description: "Patch content starting with '*** Begin Patch' and ending with '*** End Patch'",
-            },
-          },
-          required: ["patch"],
-          additionalProperties: false,
-        },
-      });
-      continue;
-    }
-
     if (tool.type === "function" && tool.name) {
-      if (tool.name === "update_plan") {
-        // 同时提供 update_plan（与 Codex 系统提示一致）与 TodoWrite（Claude Code 生态常见别名）。响应侧会将 TodoWrite 映射回 update_plan。
-        result.push({
-          name: "update_plan",
-          description: [tool.description || "", planToolHint].filter(Boolean).join("\n\n"),
-          input_schema: tool.parameters || { type: "object", properties: {}, additionalProperties: false },
-        });
-
-        result.push({
-          name: "TodoWrite",
-          description: [tool.description || "", todoWriteDescription].filter(Boolean).join("\n\n"),
-          input_schema: {
-            type: "object",
-            properties: {
-              todos: { type: "string", description: "The updated todo list" },
-            },
-            required: ["todos"],
-            additionalProperties: false,
-          },
-        });
-        continue;
-      }
-
       result.push({
         name: mapToolName(tool.name),
         description: tool.description || "",
         input_schema: tool.parameters || { type: "object", properties: {}, additionalProperties: false },
       });
+      continue;
+    }
+
+    if (tool.type === "custom" && tool.name) {
+      result.push({
+        name: tool.name,
+        description: tool.description || "",
+        input_schema:
+          tool.parameters || {
+            type: "object",
+            properties: {
+              input: { type: "string", description: "Tool input string" },
+            },
+            required: ["input"],
+            additionalProperties: false,
+          },
+      });
+      continue;
     }
   }
 

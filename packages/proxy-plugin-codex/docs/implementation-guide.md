@@ -264,7 +264,7 @@ case "reasoning": {
 为避免与 Codex CLI 的系统提示/工具定义产生不一致，本插件 **保留 Codex 工具名与参数结构**：
 
 - `function_call.arguments` (JSON string) → `tool_use.input` (object): `JSON.parse` 直通
-- `custom_tool_call`（`apply_patch`） → `tool_use.input`: `{ patch: "<freeform patch>" }`
+- `custom_tool_call`（`apply_patch`） → `tool_use.input`: `{ input: "<freeform patch>" }`
 - OpenAI 内置 `web_search_call` 不是本地可执行工具：转换为文本块保留上下文（不暴露为 tool）
 
 ### 3.7 ID 格式转换
@@ -361,7 +361,6 @@ reasoningItem.encrypted_content = state.thinkingSignature;  // 此时有值
 ### 4.4 工具名处理
 
 - 默认 **不做工具名重写**（保持与 Codex CLI tools 定义一致）
-- 仅支持 `TodoWrite` → `update_plan` 的别名映射（便于 Claude 生态模型产出计划工具调用）
 - `apply_patch` 在 Codex 侧以 `custom_tool_call` 输出（通过 `custom_tool_call_input.*` 事件流传输 patch）
 
 ### 4.5 ID 反向转换
@@ -527,8 +526,7 @@ claude-code-20250219,interleaved-thinking-2025-05-14
 ## 7. 工具处理
 
 - Codex `function` 工具：工具名/参数 schema 直通到 Claude tools
-- Codex `custom` 工具 `apply_patch`：在 Claude tools 中暴露为 `{ patch: string }`；响应侧输出为 `custom_tool_call` + `custom_tool_call_input.*`
-- Claude `TodoWrite`：响应侧映射为 Codex `update_plan`，并将 `todos` 文本解析为 `plan[]`
+- Codex `custom` 工具（包括 `apply_patch`）：在 Claude tools 中暴露为 `{ input: string }`；响应侧输出为 `custom_tool_call` + `custom_tool_call_input.*`
 - OpenAI 内置 `web_search`：不作为工具暴露；`web_search_call` 历史转换为文本上下文
 
 ---

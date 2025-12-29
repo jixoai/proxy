@@ -3,7 +3,7 @@ import { convertRequest, mergeInputToMessages } from "../request-converter";
 import type { CodexRequest, CodexResponseItem, CodexTool } from "../types";
 
 describe("request-converter", () => {
-  it("converts tools: wraps apply_patch, adds TodoWrite alias, omits web_search", () => {
+  it("converts tools: preserves tool names, omits web_search, wraps custom tools with input:string", () => {
     const tools: CodexTool[] = [
       { type: "custom", name: "apply_patch", description: "Apply a patch" },
       { type: "web_search" },
@@ -47,11 +47,10 @@ describe("request-converter", () => {
 
     expect(toolNames).toContain("apply_patch");
     expect(toolNames).toContain("update_plan");
-    expect(toolNames).toContain("TodoWrite");
     expect(toolNames).not.toContain("WebSearch");
 
     const applyPatchTool = claude.tools?.find((t) => t.name === "apply_patch");
-    expect((applyPatchTool?.input_schema as any)?.properties?.patch).toBeDefined();
+    expect((applyPatchTool?.input_schema as any)?.properties?.input).toBeDefined();
   });
 
   it("does not set tool_choice even for multi-step prompts", () => {
@@ -126,7 +125,7 @@ describe("request-converter", () => {
     expect(claude.tool_choice).toBeUndefined();
   });
 
-  it("converts input items: apply_patch → tool_use.patch, web_search_call → text context", () => {
+  it("converts input items: apply_patch → tool_use.input, web_search_call → text context", () => {
     const patch = "*** Begin Patch\n*** End Patch";
 
     const input: CodexResponseItem[] = [
@@ -155,7 +154,7 @@ describe("request-converter", () => {
     const toolUse = assistantBlocks.find((b) => b.type === "tool_use");
     expect(toolUse).toBeDefined();
     expect((toolUse as { name?: string }).name).toBe("apply_patch");
-    expect((toolUse as { input?: unknown }).input).toEqual({ patch });
+    expect((toolUse as { input?: unknown }).input).toEqual({ input: patch });
 
     const webSearchText = assistantBlocks.find((b) => b.type === "text" && "text" in b && b.text.includes("[web_search]"));
     expect(webSearchText).toBeDefined();

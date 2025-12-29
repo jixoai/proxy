@@ -60,7 +60,7 @@ describe("response-converter", () => {
         data: {
           type: "content_block_delta",
           index: 0,
-          delta: { type: "input_json_delta", partial_json: JSON.stringify({ patch }) },
+          delta: { type: "input_json_delta", partial_json: JSON.stringify({ input: patch }) },
         },
       },
       { event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
@@ -80,8 +80,11 @@ describe("response-converter", () => {
     expect(done?.data?.item?.input).toBe(patch);
   });
 
-  it("converts TodoWrite tool_use → update_plan function_call with converted arguments", () => {
-    const todos = ["1. [in_progress] Step A", "2. [pending] Step B"].join("\n");
+  it("passes through update_plan tool_use → function_call arguments", () => {
+    const plan = [
+      { step: "Step A", status: "in_progress" },
+      { step: "Step B", status: "pending" },
+    ];
 
     const claudeSse = encodeClaudeSse([
       {
@@ -105,7 +108,7 @@ describe("response-converter", () => {
         data: {
           type: "content_block_start",
           index: 0,
-          content_block: { type: "tool_use", id: "toolu_todo", name: "TodoWrite", input: {} },
+          content_block: { type: "tool_use", id: "toolu_plan", name: "update_plan", input: {} },
         },
       },
       {
@@ -113,7 +116,7 @@ describe("response-converter", () => {
         data: {
           type: "content_block_delta",
           index: 0,
-          delta: { type: "input_json_delta", partial_json: JSON.stringify({ todos }) },
+          delta: { type: "input_json_delta", partial_json: JSON.stringify({ plan }) },
         },
       },
       { event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
@@ -128,10 +131,6 @@ describe("response-converter", () => {
 
     const argsDone = events.find((e) => e.event === "response.function_call_arguments.done");
     const args = JSON.parse(argsDone?.data?.arguments ?? "{}");
-    expect(args.plan).toEqual([
-      { step: "Step A", status: "in_progress" },
-      { step: "Step B", status: "pending" },
-    ]);
+    expect(args.plan).toEqual(plan);
   });
 });
-

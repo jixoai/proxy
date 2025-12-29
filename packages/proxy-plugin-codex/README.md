@@ -96,8 +96,7 @@ tools: [{type:"function"}]   →    tools: [{name,input_schema}]
 ## Tool Mappings
 
 - Tool names are preserved (e.g. `exec_command`, `write_stdin`, `update_plan`, `mcp__*`).
-- `apply_patch` is exposed to Claude as a JSON tool input: `{ "patch": "..." }` (Codex uses a freeform string input).
-- `TodoWrite` is provided as an alias tool and is converted back to Codex `update_plan`.
+- Custom tools (including `apply_patch`) are exposed to Claude as JSON input: `{ "input": "..." }` (Codex uses a freeform string input).
 - OpenAI server-side `web_search` is not exposed as an executable tool; `web_search_call` history is converted to text context.
 
 ## Documentation
