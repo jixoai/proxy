@@ -22,7 +22,6 @@ export {
   buildSystemBlocks,
   convertReasoning,
   convertCallId,
-  mapToolName,
   mergeInputToMessages,
   convertTools,
   convertRequest,

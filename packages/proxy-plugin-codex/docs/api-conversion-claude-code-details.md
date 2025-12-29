@@ -394,7 +394,7 @@ class CodexToClaudeConverter {
   // 工具转换
   convertTools(tools: CodexTool[]): ClaudeTool[] {
     return tools.map(tool => ({
-      name: this.mapToolName(tool.name),
+      name: tool.name,
       description: tool.description,
       input_schema: tool.parameters
     }));

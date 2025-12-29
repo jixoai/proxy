@@ -158,13 +158,6 @@ export function convertCallId(callId: string): string {
   return callId;
 }
 
-/**
- * 映射工具名称
- */
-export function mapToolName(name: string): string {
-  return name;
-}
-
 /** 将单个 Codex item 转换为 Claude content block */
 function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | null {
   switch (item.type) {
@@ -205,12 +198,10 @@ function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | nu
         input = {};
       }
 
-      const toolName = mapToolName(item.name);
-
       return {
         type: "tool_use",
         id: convertCallId(item.call_id),
-        name: toolName,
+        name: item.name,
         input,
       };
     }
@@ -227,7 +218,7 @@ function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | nu
       return {
         type: "tool_use",
         id: convertCallId(item.call_id),
-        name: mapToolName(item.name),
+        name: item.name,
         input: { input: item.input },
       };
     }
@@ -363,7 +354,7 @@ export function convertTools(tools?: CodexTool[]): ClaudeTool[] | undefined {
 
     if (tool.type === "function" && tool.name) {
       result.push({
-        name: mapToolName(tool.name),
+        name: tool.name,
         description: tool.description || "",
         input_schema: tool.parameters || { type: "object", properties: {}, additionalProperties: false },
       });
@@ -414,7 +405,7 @@ export function convertRequest(codex: CodexRequest, options: ConvertRequestOptio
     tools: convertTools(codex.tools),
     tool_choice:
       codex.tool_choice && codex.tool_choice !== "auto"
-        ? { type: "tool", name: mapToolName(codex.tool_choice) }
+        ? { type: "tool", name: codex.tool_choice }
         : undefined,
     thinking: convertReasoning(codex.reasoning),
     stream: codex.stream ?? true,
