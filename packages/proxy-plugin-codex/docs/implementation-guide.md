@@ -230,7 +230,7 @@ function inferRole(item: CodexResponseItem): "user" | "assistant" {
 | `function_call` | `tool_use` | 解析 arguments JSON |
 | `function_call_output` | `tool_result` | 直接映射 |
 | `custom_tool_call` | `tool_use` | apply_patch 等 |
-| `local_shell_call` | `tool_use` (Bash) | command 数组 join |
+| `local_shell_call` | `tool_use` (exec_command) | command 数组 join |
 | `compaction` | `thinking` | 保留 encrypted_content |
 | `ghost_snapshot` | (忽略) | 版本控制元数据 |
 
@@ -259,27 +259,13 @@ case "reasoning": {
 }
 ```
 
-### 3.6 工具参数转换
+### 3.6 工具输入处理
 
-**exec_command → Bash：**
+为避免与 Codex CLI 的系统提示/工具定义产生不一致，本插件 **保留 Codex 工具名与参数结构**：
 
-```typescript
-function convertToolInput(name: string, args: Record<string, unknown>): Record<string, unknown> {
-  const claudeName = mapToolName(name);
-
-  if (claudeName === "Bash") {
-    const result: Record<string, unknown> = {};
-    // Codex 可能使用 "cmd" 或 "command"
-    if (args.cmd) result.command = args.cmd;
-    else if (args.command) result.command = args.command;
-    if (args.yield_time_ms) result.timeout = Math.ceil((args.yield_time_ms as number) / 1000);
-    if (args.workdir) result.cwd = args.workdir;
-    return result;
-  }
-  
-  return args;
-}
-```
+- `function_call.arguments` (JSON string) → `tool_use.input` (object): `JSON.parse` 直通
+- `custom_tool_call`（`apply_patch`） → `tool_use.input`: `{ patch: "<freeform patch>" }`
+- OpenAI 内置 `web_search_call` 不是本地可执行工具：转换为文本块保留上下文（不暴露为 tool）
 
 ### 3.7 ID 格式转换
 
@@ -313,13 +299,13 @@ metadata: {
 |------------|-----------|
 | `message_start` | `response.created`, `response.in_progress` |
 | `content_block_start` (thinking) | `response.output_item.added` (reasoning) |
-| `content_block_start` (tool_use) | `response.output_item.added` (function_call) |
+| `content_block_start` (tool_use) | `response.output_item.added` (function_call / custom_tool_call) |
 | `content_block_start` (text) | `response.output_item.added` (message) |
 | `content_block_delta` (thinking_delta) | `response.reasoning_summary_text.delta` |
-| `content_block_delta` (input_json_delta) | `response.function_call_arguments.delta` |
+| `content_block_delta` (input_json_delta) | `response.function_call_arguments.delta`（部分工具在 stop 阶段生成一致的 delta/done） |
 | `content_block_delta` (text_delta) | `response.output_text.delta` |
 | `content_block_delta` (signature_delta) | (内部保存，不输出事件) |
-| `content_block_stop` | `response.output_item.done` |
+| `content_block_stop` | `response.output_item.done` + (arguments/input done events) |
 | `message_stop` | `response.completed` |
 
 ### 4.2 Signature 处理（关键！）
@@ -372,17 +358,11 @@ reasoningItem.status = "completed";
 reasoningItem.encrypted_content = state.thinkingSignature;  // 此时有值
 ```
 
-### 4.4 工具名反向映射
+### 4.4 工具名处理
 
-```typescript
-const TOOL_NAME_TO_CODEX: Record<string, string> = {
-  Bash: "exec_command",
-  Execute: "exec_command",
-  FileEdit: "apply_patch",
-  Edit: "apply_patch",
-  // ...
-};
-```
+- 默认 **不做工具名重写**（保持与 Codex CLI tools 定义一致）
+- 仅支持 `TodoWrite` → `update_plan` 的别名映射（便于 Claude 生态模型产出计划工具调用）
+- `apply_patch` 在 Codex 侧以 `custom_tool_call` 输出（通过 `custom_tool_call_input.*` 事件流传输 patch）
 
 ### 4.5 ID 反向转换
 
@@ -544,37 +524,12 @@ claude-code-20250219,interleaved-thinking-2025-05-14
 
 ---
 
-## 7. 工具映射
+## 7. 工具处理
 
-### 7.1 Codex → Claude
-
-```typescript
-const TOOL_NAME_TO_CLAUDE: Record<string, string> = {
-  exec_command: "Bash",
-  shell_command: "Bash",
-  apply_patch: "FileEdit",
-  web_search: "WebSearch",
-  view_image: "Read",
-};
-```
-
-### 7.2 Claude → Codex
-
-```typescript
-const TOOL_NAME_TO_CODEX: Record<string, string> = {
-  Bash: "exec_command",
-  Execute: "exec_command",
-  FileEdit: "apply_patch",
-  Edit: "apply_patch",
-  MultiEdit: "apply_patch",
-  Create: "apply_patch",
-  Read: "exec_command",
-  Glob: "exec_command",
-  Grep: "exec_command",
-  LS: "exec_command",
-  WebSearch: "web_search",
-};
-```
+- Codex `function` 工具：工具名/参数 schema 直通到 Claude tools
+- Codex `custom` 工具 `apply_patch`：在 Claude tools 中暴露为 `{ patch: string }`；响应侧输出为 `custom_tool_call` + `custom_tool_call_input.*`
+- Claude `TodoWrite`：响应侧映射为 Codex `update_plan`，并将 `todos` 文本解析为 `plan[]`
+- OpenAI 内置 `web_search`：不作为工具暴露；`web_search_call` 历史转换为文本上下文
 
 ---
 

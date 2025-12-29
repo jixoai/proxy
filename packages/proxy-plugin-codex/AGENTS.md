@@ -12,7 +12,7 @@ Codex CLI
 proxy-plugin-codex
     ├── request-converter.ts   (Codex → Claude)
     ├── response-converter.ts  (Claude SSE → Codex SSE)
-    ├── constants.ts           (Tool mappings)
+    ├── constants.ts           (Headers/budgets/ids)
     └── plugin.ts              (Hook entry)
     ↓ Messages API
 Claude API
@@ -24,7 +24,7 @@ Claude API
 |------|---------|
 | `src/request-converter.ts` | Request transformation |
 | `src/response-converter.ts` | SSE stream conversion |
-| `src/constants.ts` | Tool name mappings |
+| `src/constants.ts` | Shared constants |
 | `src/types.ts` | Type definitions |
 | `src/plugin.ts` | Plugin hooks |
 

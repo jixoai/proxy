@@ -12,7 +12,7 @@ import type {
   ConverterState,
 } from "./types";
 
-import { TOOL_NAME_TO_CODEX, generateId } from "./constants";
+import { generateId } from "./constants";
 
 /**
  * 创建初始转换器状态
@@ -25,6 +25,7 @@ export function createConverterState(): ConverterState {
     currentBlockIndex: -1,
     currentToolId: "",
     currentToolName: "",
+    currentToolInput: null,
     currentReasoningId: "",
     currentMessageId: "",
     currentMessageItem: null,
@@ -65,42 +66,75 @@ function convertToolId(toolId: string): string {
   return toolId;
 }
 
-/**
- * 映射工具名称: Claude → Codex
- */
-function mapToolNameToCodex(name: string): string {
-  return TOOL_NAME_TO_CODEX[name] || name;
+function mapClaudeToolNameToCodex(name: string): string {
+  // TodoWrite 是 Claude Code/Anthropic 生态常见的计划工具名：将其映射回 Codex 的 update_plan
+  if (name === "TodoWrite") return "update_plan";
+  return name;
 }
 
-/**
- * 转换工具参数: Claude → Codex
- * 例如: Bash 的 { command: "..." } → exec_command 的 { cmd: "..." }
- */
-function convertToolArguments(claudeName: string, args: Record<string, unknown>): Record<string, unknown> {
-  // Bash → exec_command: command → cmd
-  if (claudeName === "Bash" || claudeName === "Execute") {
-    const result: Record<string, unknown> = { ...args };
-    if ("command" in result) {
-      result.cmd = result.command;
-      delete result.command;
-    }
-    // timeout → yield_time_ms (秒转毫秒)
-    if ("timeout" in result && typeof result.timeout === "number") {
-      result.yield_time_ms = result.timeout * 1000;
-      delete result.timeout;
-    }
-    // cwd → workdir
-    if ("cwd" in result) {
-      result.workdir = result.cwd;
-      delete result.cwd;
-    }
-    return result;
+function isCustomToolName(name: string): boolean {
+  return name === "apply_patch";
+}
+
+function generateObfuscationToken(): string {
+  // 与 Codex SSE 中的 obfuscation 字段保持“像随机串”的外观即可（CLI 不应依赖其语义）
+  return Math.random().toString(36).slice(2, 14);
+}
+
+type PlanItemStatus = "pending" | "in_progress" | "completed";
+type PlanItem = { step: string; status: PlanItemStatus };
+
+function chunkString(text: string, chunkSize: number): string[] {
+  if (!text) return [];
+  const size = Math.max(1, chunkSize | 0);
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += size) {
+    chunks.push(text.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function normalizeTodoStatus(raw: string): PlanItemStatus | null {
+  const normalized = raw.trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (normalized === "pending" || normalized === "in_progress" || normalized === "completed") {
+    return normalized;
+  }
+  return null;
+}
+
+function parseTodoWriteTodos(todos: string): PlanItem[] {
+  const lines = todos.split(/\r?\n/).map((l) => l.trim());
+  const items: PlanItem[] = [];
+
+  for (const line of lines) {
+    if (!line) continue;
+
+    // Examples:
+    // 1. [pending] foo
+    // [in_progress] bar
+    // - [completed] baz
+    const m = line.match(/^(?:\d+\.)?\s*(?:[-*]\s*)?\[([^\]]+)\]\s*(.+)$/);
+    if (!m) continue;
+
+    const status = normalizeTodoStatus(m[1] || "");
+    const step = (m[2] || "").trim();
+    if (!status || !step) continue;
+
+    items.push({ status, step });
   }
 
-  // WebSearch: query 保持不变
-  // FileEdit/Edit/Create: 参数格式不同，需要特殊处理
-  // 其他工具：直接返回原参数
-  return args;
+  // Codex plan 约束：最多一个 in_progress
+  let seenInProgress = false;
+  for (const item of items) {
+    if (item.status !== "in_progress") continue;
+    if (!seenInProgress) {
+      seenInProgress = true;
+      continue;
+    }
+    item.status = "pending";
+  }
+
+  return items;
 }
 
 
@@ -203,19 +237,32 @@ function handleContentBlockStart(
   }
 
   if (block.type === "tool_use") {
-    state.currentBlockType = "tool_use";
+    const codexToolName = mapClaudeToolNameToCodex(block.name);
+    const isCustom = isCustomToolName(codexToolName);
+
+    state.currentBlockType = isCustom ? "custom_tool_call" : "tool_use";
     state.currentToolId = block.id;
     state.currentToolName = block.name;
+    state.currentToolInput = block.input ?? null;
     state.toolArguments = "";
 
-    const item = {
-      id: generateId("fc_"),
-      type: "function_call",
-      status: "in_progress",
-      arguments: "",
-      call_id: convertToolId(block.id),
-      name: mapToolNameToCodex(block.name),
-    };
+    const item = isCustom
+      ? {
+          id: generateId("ctc_"),
+          type: "custom_tool_call",
+          status: "in_progress",
+          input: "",
+          call_id: convertToolId(block.id),
+          name: codexToolName,
+        }
+      : {
+          id: generateId("fc_"),
+          type: "function_call",
+          status: "in_progress",
+          arguments: "",
+          call_id: convertToolId(block.id),
+          name: codexToolName,
+        };
 
     state.outputItems.push(item);
 
@@ -304,6 +351,12 @@ function handleContentBlockDelta(
   if (delta.type === "input_json_delta") {
     state.toolArguments += delta.partial_json;
 
+    // 自定义工具 (apply_patch) 与 TodoWrite → update_plan 映射需要在 stop 阶段做最终转换，
+    // 这里不直接透传 partial_json，避免输出与最终 arguments/input 不一致。
+    if (state.currentBlockType === "custom_tool_call" || state.currentToolName === "TodoWrite") {
+      return [];
+    }
+
     const currentItem = state.outputItems[state.outputItems.length - 1] as {
       id: string;
     };
@@ -372,14 +425,54 @@ function handleContentBlockStop(
     };
 
     if (currentItem) {
-      // 转换工具参数: Claude → Codex (例如 command → cmd)
-      let finalArguments = state.toolArguments;
+      // tool_use input 是 JSON object；在 Codex SSE 中对应 function_call.arguments（JSON string）
+      let rawInput: Record<string, unknown> | null = null;
+      if (state.toolArguments) {
+        try {
+          rawInput = JSON.parse(state.toolArguments) as Record<string, unknown>;
+        } catch {
+          rawInput = null;
+        }
+      } else if (state.currentToolInput && typeof state.currentToolInput === "object") {
+        rawInput = state.currentToolInput as Record<string, unknown>;
+      }
+
+      // TodoWrite → update_plan：将 todos 字符串解析为 plan[]
+      let finalArguments: string;
+      if (state.currentToolName === "TodoWrite") {
+        const todos = rawInput && typeof rawInput.todos === "string" ? rawInput.todos : "";
+        const plan = parseTodoWriteTodos(todos);
+
+        // 如果未能解析出结构化条目，尽量保留原始文本，避免空计划导致 UI 不更新
+        const normalizedPlan = plan.length > 0
+          ? plan
+          : todos.trim()
+            ? ([{ step: todos.trim(), status: "in_progress" }] satisfies PlanItem[])
+            : ([] satisfies PlanItem[]);
+
+        finalArguments = JSON.stringify({ plan: normalizedPlan });
+
+        // TodoWrite 的输入 JSON 与 update_plan 的 arguments 不同：这里生成一致的 delta 流
+        for (const chunk of chunkString(finalArguments, 64)) {
+          const argsDelta = {
+            type: "response.function_call_arguments.delta",
+            sequence_number: state.sequenceNumber++,
+            item_id: currentItem.id,
+            output_index: state.outputIndex - 1,
+            delta: chunk,
+          };
+          results.push(formatSSE("response.function_call_arguments.delta", argsDelta));
+        }
+      } else {
+        // 其他工具：透传输入对象
+        finalArguments = state.toolArguments || (rawInput ? JSON.stringify(rawInput) : "{}");
+      }
+
       try {
-        const parsedArgs = JSON.parse(state.toolArguments) as Record<string, unknown>;
-        const convertedArgs = convertToolArguments(state.currentToolName, parsedArgs);
-        finalArguments = JSON.stringify(convertedArgs);
+        // 验证 finalArguments 是 JSON
+        JSON.parse(finalArguments);
       } catch {
-        // 解析失败，保持原样
+        finalArguments = "{}";
       }
 
       currentItem.arguments = finalArguments;
@@ -407,6 +500,76 @@ function handleContentBlockStop(
     }
 
     state.toolArguments = "";
+    state.currentToolInput = null;
+  }
+
+  if (state.currentBlockType === "custom_tool_call") {
+    const currentItem = state.outputItems[state.outputItems.length - 1] as {
+      id: string;
+      input: string;
+      status: string;
+      name: string;
+    };
+
+    if (currentItem) {
+      let rawInput: Record<string, unknown> | null = null;
+      if (state.toolArguments) {
+        try {
+          rawInput = JSON.parse(state.toolArguments) as Record<string, unknown>;
+        } catch {
+          rawInput = null;
+        }
+      } else if (state.currentToolInput && typeof state.currentToolInput === "object") {
+        rawInput = state.currentToolInput as Record<string, unknown>;
+      }
+
+      const patch =
+        rawInput && typeof rawInput.patch === "string"
+          ? rawInput.patch
+          : rawInput && typeof rawInput.content === "string"
+            ? rawInput.content
+            : rawInput && typeof rawInput.input === "string"
+              ? rawInput.input
+              : "";
+
+      currentItem.input = patch;
+      currentItem.status = "completed";
+
+      for (const chunk of chunkString(patch, 32)) {
+        const inputDelta = {
+          type: "response.custom_tool_call_input.delta",
+          sequence_number: state.sequenceNumber++,
+          output_index: state.outputIndex - 1,
+          item_id: currentItem.id,
+          delta: chunk,
+          obfuscation: generateObfuscationToken(),
+        };
+        results.push(formatSSE("response.custom_tool_call_input.delta", inputDelta));
+      }
+
+      const inputDone = {
+        type: "response.custom_tool_call_input.done",
+        sequence_number: state.sequenceNumber++,
+        output_index: state.outputIndex - 1,
+        item_id: currentItem.id,
+        input: patch,
+      };
+
+      const itemDone = {
+        type: "response.output_item.done",
+        sequence_number: state.sequenceNumber++,
+        output_index: state.outputIndex - 1,
+        item: currentItem,
+      };
+
+      results.push(
+        formatSSE("response.custom_tool_call_input.done", inputDone),
+        formatSSE("response.output_item.done", itemDone)
+      );
+    }
+
+    state.toolArguments = "";
+    state.currentToolInput = null;
   }
 
   if (state.currentBlockType === "thinking") {

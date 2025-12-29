@@ -18,12 +18,10 @@ import {
   TARGET_MODEL_HEADER,
   EFFORT_TO_BUDGET,
   DEFAULT_BUDGET_TOKENS,
-  TOOL_NAME_TO_CLAUDE,
   ANTHROPIC_BETA_FEATURES,
   ANTHROPIC_VERSION,
   DEFAULT_MAX_TOKENS,
   DEFAULT_USER_ID,
-  generateId,
 } from "./constants";
 
 /**
@@ -126,6 +124,11 @@ export function buildSystemBlocks(instructions: string): SystemBlock[] {
       text: `<codex-system-context>\n${convertedInstructions}\n</codex-system-context>`,
       cache_control: { type: "ephemeral" },
     },
+    {
+      type: "text",
+      text:
+        "Planning reminder: Maintain a task plan via update_plan (preferred) or TodoWrite (alias).\n\n- update_plan input: { plan: [{ step: string, status: \"pending\"|\"in_progress\"|\"completed\" }] }\n- TodoWrite input: { todos: \"1. [pending] ...\\n2. [in_progress] ...\\n3. [completed] ...\" }\n\nFor any non-trivial or multi-step task, call one of these tools once before starting work and again whenever the plan changes. Keep at most one in_progress item.",
+    },
   ];
 }
 
@@ -181,30 +184,7 @@ export function convertCallId(callId: string): string {
  * 映射工具名称
  */
 export function mapToolName(name: string): string {
-  return TOOL_NAME_TO_CLAUDE[name] || name;
-}
-
-/**
- * 转换工具参数 (exec_command → Bash)
- */
-function convertToolInput(name: string, args: Record<string, unknown>): Record<string, unknown> {
-  const claudeName = mapToolName(name);
-
-  if (claudeName === "Bash") {
-    const result: Record<string, unknown> = {};
-    // Codex may use either "cmd" or "command" for the command field
-    if (args.cmd) result.command = args.cmd;
-    else if (args.command) result.command = args.command;
-    if (args.yield_time_ms) result.timeout = Math.ceil((args.yield_time_ms as number) / 1000);
-    if (args.workdir) result.cwd = args.workdir;
-    return result;
-  }
-
-  if (claudeName === "WebSearch") {
-    return { query: args.query || "" };
-  }
-
-  return args;
+  return name;
 }
 
 /**
@@ -248,11 +228,14 @@ function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | nu
       } catch {
         input = {};
       }
+
+      const toolName = mapToolName(item.name);
+
       return {
         type: "tool_use",
         id: convertCallId(item.call_id),
-        name: mapToolName(item.name),
-        input: convertToolInput(item.name, input),
+        name: toolName,
+        input,
       };
     }
 
@@ -265,13 +248,20 @@ function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | nu
     }
 
     case "custom_tool_call": {
-      // apply_patch 等自定义工具
-      // 暂时简单处理，返回原始内容
+      if (item.name === "apply_patch") {
+        return {
+          type: "tool_use",
+          id: convertCallId(item.call_id),
+          name: mapToolName(item.name),
+          input: { patch: item.input },
+        };
+      }
+
       return {
         type: "tool_use",
         id: convertCallId(item.call_id),
         name: mapToolName(item.name),
-        input: { content: item.input },
+        input: { input: item.input },
       };
     }
 
@@ -284,28 +274,41 @@ function convertToContentBlock(item: CodexResponseItem): ClaudeContentBlock | nu
     }
 
     case "web_search_call": {
-      // Web search 转换为工具调用
-      const query = item.action?.type === "search" ? (item.action as { query?: string }).query || "" : "";
-      return {
-        type: "tool_use",
-        id: generateId("toolu_ws_"),
-        name: "WebSearch",
-        input: { query },
-      };
+      // OpenAI 内置 web_search 不是 Codex CLI 本地可执行工具：
+      // 将其转换为文本，保留动作上下文，避免 Claude 生成不可执行的 tool_use。
+      const action = item.action as { type?: string; query?: string; url?: string; pattern?: string } | undefined;
+      const actionType = action?.type || "search";
+      if (actionType === "search") {
+        const query = action?.query || "";
+        return { type: "text", text: query ? `[web_search] ${query}` : "[web_search]" };
+      }
+      if (actionType === "open_page") {
+        const url = action?.url || "";
+        return { type: "text", text: url ? `[web_search.open_page] ${url}` : "[web_search.open_page]" };
+      }
+      if (actionType === "find_in_page") {
+        const url = action?.url || "";
+        const pattern = action?.pattern || "";
+        return {
+          type: "text",
+          text: `[web_search.find_in_page] url=${url || "(unknown)"} pattern=${pattern || "(unknown)"}`,
+        };
+      }
+
+      return { type: "text", text: `[web_search.${actionType}]` };
     }
 
     case "local_shell_call": {
-      // Local shell call 转换为 Bash 工具调用
       const action = item.action;
       const command = action?.command?.join(" ") || "";
       return {
         type: "tool_use",
         id: convertCallId(item.call_id || `call_ls_${Date.now()}`),
-        name: "Bash",
+        name: "exec_command",
         input: {
-          command,
-          ...(action?.timeout_ms ? { timeout: Math.ceil(action.timeout_ms / 1000) } : {}),
-          ...(action?.working_directory ? { cwd: action.working_directory } : {}),
+          cmd: command,
+          ...(action?.timeout_ms ? { yield_time_ms: action.timeout_ms } : {}),
+          ...(action?.working_directory ? { workdir: action.working_directory } : {}),
         },
       };
     }
@@ -383,60 +386,71 @@ export function convertTools(tools?: CodexTool[]): ClaudeTool[] | undefined {
   if (!tools || tools.length === 0) return undefined;
 
   const result: ClaudeTool[] = [];
+  const planToolHint =
+    "Use this tool proactively for non-trivial or multi-step work (3+ distinct actions). Keep at most one in_progress item at a time.";
+  const todoWriteDescription =
+    "Use this tool to draft and maintain a structured todo list for the current session.\n\n" +
+    "Input Format (numbered multi-line string):\n" +
+    "1. [completed] First task that is done\n" +
+    "2. [in_progress] Currently working on this\n" +
+    "3. [pending] Not started yet\n\n" +
+    "Status markers: [completed], [in_progress], [pending].\n\n" +
+    planToolHint;
 
   for (const tool of tools) {
     if (tool.type === "web_search") {
-      result.push({
-        name: "WebSearch",
-        description: "Performs a web search and returns results",
-        input_schema: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "Search query" },
-          },
-          required: ["query"],
-        },
-      });
+      // OpenAI 内置 web_search 无法在 Claude Messages API 中作为“本地工具”执行；
+      // 为避免 Claude 生成不可执行的 tool_use，这里不向 Claude 暴露该工具。
       continue;
     }
 
     if (tool.type === "custom" && tool.name === "apply_patch") {
       result.push({
-        name: "FileEdit",
-        description: tool.description || "Edit file contents",
+        name: "apply_patch",
+        description: tool.description || "Apply a patch in the project patch format",
         input_schema: {
           type: "object",
           properties: {
-            file_path: { type: "string", description: "Path to the file to edit" },
-            old_str: { type: "string", description: "Text to find and replace" },
-            new_str: { type: "string", description: "Replacement text" },
+            patch: {
+              type: "string",
+              description: "Patch content starting with '*** Begin Patch' and ending with '*** End Patch'",
+            },
           },
-          required: ["file_path", "old_str", "new_str"],
+          required: ["patch"],
+          additionalProperties: false,
         },
       });
       continue;
     }
 
     if (tool.type === "function" && tool.name) {
-      const claudeName = mapToolName(tool.name);
-      let inputSchema = tool.parameters || { type: "object", properties: {} };
+      if (tool.name === "update_plan") {
+        // 同时提供 update_plan（与 Codex 系统提示一致）与 TodoWrite（Claude Code 生态常见别名）。响应侧会将 TodoWrite 映射回 update_plan。
+        result.push({
+          name: "update_plan",
+          description: [tool.description || "", planToolHint].filter(Boolean).join("\n\n"),
+          input_schema: tool.parameters || { type: "object", properties: {}, additionalProperties: false },
+        });
 
-      // 特殊处理 exec_command → Bash
-      if (tool.name === "exec_command") {
-        inputSchema = {
-          type: "object",
-          properties: {
-            command: { type: "string", description: "The command to execute" },
-            timeout: { type: "number", description: "Timeout in seconds" },
+        result.push({
+          name: "TodoWrite",
+          description: [tool.description || "", todoWriteDescription].filter(Boolean).join("\n\n"),
+          input_schema: {
+            type: "object",
+            properties: {
+              todos: { type: "string", description: "The updated todo list" },
+            },
+            required: ["todos"],
+            additionalProperties: false,
           },
-          required: ["command"],
-        };
+        });
+        continue;
       }
 
       result.push({
-        name: claudeName,
+        name: mapToolName(tool.name),
         description: tool.description || "",
-        input_schema: inputSchema,
+        input_schema: tool.parameters || { type: "object", properties: {}, additionalProperties: false },
       });
     }
   }
@@ -465,6 +479,10 @@ export function convertRequest(codex: CodexRequest, options: ConvertRequestOptio
     system: buildSystemBlocks(codex.instructions),
     messages: mergeInputToMessages(codex.input),
     tools: convertTools(codex.tools),
+    tool_choice:
+      codex.tool_choice && codex.tool_choice !== "auto"
+        ? { type: "tool", name: mapToolName(codex.tool_choice) }
+        : undefined,
     thinking: convertReasoning(codex.reasoning),
     stream: codex.stream ?? true,
     metadata: {

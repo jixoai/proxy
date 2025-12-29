@@ -285,10 +285,11 @@ export type ClaudeSSEEvent =
 export interface ConverterState {
   sequenceNumber: number;
   outputIndex: number;
-  currentBlockType: "thinking" | "tool_use" | "text" | null;
+  currentBlockType: "thinking" | "tool_use" | "custom_tool_call" | "text" | null;
   currentBlockIndex: number;
   currentToolId: string;
   currentToolName: string;
+  currentToolInput: Record<string, unknown> | null;
   currentReasoningId: string;
   currentMessageId: string;
   currentMessageItem: {

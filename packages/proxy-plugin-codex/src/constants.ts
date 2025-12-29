@@ -18,42 +18,6 @@ export const EFFORT_TO_BUDGET: Record<string, number> = {
 /** 默认 budget tokens */
 export const DEFAULT_BUDGET_TOKENS = 16384;
 
-/** 工具名映射: Codex → Claude */
-export const TOOL_NAME_TO_CLAUDE: Record<string, string> = {
-  exec_command: "Bash",
-  shell_command: "Bash",
-  apply_patch: "FileEdit",
-  web_search: "WebSearch",
-  view_image: "Read",
-};
-
-/** 工具名映射: Claude → Codex */
-export const TOOL_NAME_TO_CODEX: Record<string, string> = {
-  Bash: "exec_command",
-  Execute: "exec_command",
-  FileEdit: "apply_patch",
-  Edit: "apply_patch",
-  MultiEdit: "apply_patch",
-  Create: "apply_patch",
-  FileRead: "exec_command",
-  Read: "exec_command",
-  FileWrite: "apply_patch",
-  Glob: "exec_command",
-  Grep: "exec_command",
-  LS: "exec_command",
-  WebSearch: "web_search",
-  WebFetch: "exec_command",
-  TodoWrite: "exec_command",
-};
-
-/** Stop reason 映射: Claude → Codex */
-export const STOP_REASON_MAP: Record<string, string> = {
-  end_turn: "stop",
-  tool_use: "tool_calls",
-  max_tokens: "length",
-  stop_sequence: "stop",
-};
-
 /** Anthropic API beta 特性 (顺序与 droid 保持一致: claude-code 在前) */
 export const ANTHROPIC_BETA_FEATURES = "claude-code-20250219,interleaved-thinking-2025-05-14";
 
