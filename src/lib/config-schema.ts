@@ -11,6 +11,7 @@ import { DEFAULT_DB_PATH_TEMPLATE } from "./runtime-paths";
 
 const httpHookSchema = z.object({
   type: z.literal("http"),
+  disabled: z.boolean().optional(),
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
   cwd: z.string().optional(),

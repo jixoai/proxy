@@ -145,7 +145,7 @@ export function EditForwardDialog({
             <DialogTitle>编辑转发规则</DialogTitle>
             <DialogDescription>修改转发配置</DialogDescription>
           </DialogHeader>
-          <ScrollArea className="max-h-[65vh] overflow-y-auto p-2!">
+          <ScrollArea className="max-h-[65vh] p-2!">
             <div className="space-y-4 p-2">
               <div className="space-y-2">
                 <Label htmlFor="edit-forward-name" className="flex items-center gap-2">

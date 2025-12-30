@@ -51,7 +51,9 @@ function addPluginProcessedHeader(
 /** 规范化 hooks 配置 */
 function normalizeHooksConfig(hooks: HooksConfig | null | undefined): HookConfig[] {
   if (!hooks) return [];
-  return Array.isArray(hooks) ? hooks : [hooks];
+  const list = Array.isArray(hooks) ? hooks : [hooks];
+  // disabled=true 的插件不参与执行
+  return list.filter((hook) => hook.disabled !== true);
 }
 
 export interface RequestHookParams {
@@ -140,7 +142,10 @@ function normalizeHeaders(
 
 /** 生成配置的hashid */
 function computeConfigHash(config: HookConfig): string {
-  const entries = Object.entries(config).sort(([a], [b]) => a.localeCompare(b));
+  // hookId 基于配置文件计算，但 disabled 仅用于启停开关，不应影响 hookId
+  const entries = Object.entries(config)
+    .filter(([key]) => key !== "disabled")
+    .sort(([a], [b]) => a.localeCompare(b));
   const normalized = JSON.stringify(entries);
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(normalized);

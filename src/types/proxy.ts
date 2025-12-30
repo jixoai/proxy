@@ -5,6 +5,8 @@ export interface ProxyForwardHeaders {
 /** http 类型的 hook 配置，通过子进程启动 http 服务并通过 HTTP 调用 */
 export interface HttpHookConfig {
   type: "http";
+  /** 是否禁用该 hook（禁用时不执行；且不参与 hookId 计算） */
+  disabled?: boolean;
   command: string;
   args?: string[];
   cwd?: string;
@@ -84,4 +86,3 @@ export interface ProxyConfigFile {
   settings?: ProxyGlobalSettings;
   instances: ProxyInstanceConfig[];
 }
-

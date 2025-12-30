@@ -114,7 +114,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated }: Create
             <DialogTitle>添加转发规则</DialogTitle>
             <DialogDescription>配置请求转发到目标服务器</DialogDescription>
           </DialogHeader>
-          <ScrollArea className="max-h-[65vh] overflow-y-auto p-2!">
+          <ScrollArea className="max-h-[65vh] p-2!">
             <div className="space-y-4 p-2">
               <div className="space-y-2">
                 <Label htmlFor="forward-name" className="flex items-center gap-2">

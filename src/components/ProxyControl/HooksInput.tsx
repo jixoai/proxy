@@ -1,71 +1,481 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { Info, ChevronDown, Zap } from "lucide-react";
-import type { HooksConfig } from "@/types/proxy";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Badge } from "@/components/ui/badge";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+  DragOverlay,
+  type UniqueIdentifier,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ChevronDown, ChevronRight, Code, GripVertical, Info, Plus, Trash2, Zap } from "lucide-react";
+import type { HookConfig, HooksConfig } from "@/types/proxy";
+import { getHookPluginName } from "@/lib/hooks-config";
 
 interface HooksInputProps {
-  value: string; // JSON string
+  value: string;
   onChange: (value: string) => void;
 }
 
-const EXAMPLE_HOOKS: HooksConfig = [
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function coerceHookConfig(value: unknown): HookConfig {
+  const obj = isRecord(value) ? value : {};
+  const type = "http" as const;
+  const command = typeof obj.command === "string" ? obj.command : "";
+  const args =
+    Array.isArray(obj.args) && obj.args.every((it) => typeof it === "string")
+      ? (obj.args as string[])
+      : undefined;
+  const cwd = typeof obj.cwd === "string" ? obj.cwd : undefined;
+  const disabled = obj.disabled === true ? true : undefined;
+  const config = isRecord(obj.config) ? obj.config : undefined;
+  return { type, command, args, cwd, disabled, config };
+}
+
+function coerceHooksConfigList(value: unknown): HookConfig[] {
+  if (!value) return [];
+  const list = Array.isArray(value) ? value : [value];
+  return list.map(coerceHookConfig);
+}
+
+/** 内部使用的hook结构，包含稳定ID */
+interface HookWithId extends HookConfig {
+  _id: number;
+}
+
+interface SortableHookItemProps {
+  id: string;
+  hook: HookWithId;
+  isExpanded: boolean;
+  configText: string;
+  configError: string | null;
+  onToggleExpand: () => void;
+  onUpdate: (updater: (prev: HookConfig) => HookConfig) => void;
+  onRemove: () => void;
+  onConfigTextChange: (text: string) => void;
+  onConfigErrorChange: (error: string | null) => void;
+}
+
+function SortableHookItem({
+  id,
+  hook,
+  isExpanded,
+  configText,
+  configError,
+  onToggleExpand,
+  onUpdate,
+  onRemove,
+  onConfigTextChange,
+  onConfigErrorChange,
+}: SortableHookItemProps) {
+  const disabled = hook.disabled === true;
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+  });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0 : 1,
+  };
+
+  const pluginName = getHookPluginName(hook);
+  const argsPreview = (hook.args ?? []).join(" ");
+  const displayTitle = argsPreview ? `${hook.command} ${argsPreview}` : hook.command || pluginName;
+  const [localArgsText, setLocalArgsText] = useState((hook.args ?? []).join("\n"));
+
+  // 同步外部变化
+  useEffect(() => {
+    setLocalArgsText((hook.args ?? []).join("\n"));
+  }, [hook.args]);
+
+  return (
+    <Collapsible open={isExpanded} onOpenChange={onToggleExpand}>
+      <div
+        ref={setNodeRef}
+        style={style}
+        className={`rounded border ${disabled ? "opacity-50 border-dashed bg-muted/5" : "bg-card/20"}`}
+      >
+        <div className="flex items-center gap-1.5 px-2 py-1.5">
+          <button
+            type="button"
+            className="cursor-grab text-muted-foreground hover:text-foreground touch-none"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </button>
+          <CollapsibleTrigger asChild>
+            <button type="button" className="text-muted-foreground hover:text-foreground">
+              {isExpanded ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex-1 text-left font-mono text-xs hover:underline truncate"
+              title={displayTitle}
+            >
+              {displayTitle}
+            </button>
+          </CollapsibleTrigger>
+          <Badge variant="secondary" className="text-[9px] px-1 py-0">
+            {hook.type}
+          </Badge>
+          <Switch
+            checked={!disabled}
+            onCheckedChange={(checked) => {
+              onUpdate((prev) => {
+                if (checked) {
+                  const { disabled: _, ...rest } = prev;
+                  return rest;
+                }
+                return { ...prev, disabled: true };
+              });
+            }}
+          />
+          <Button type="button" size="icon" variant="ghost" className="h-6 w-6" onClick={onRemove}>
+            <Trash2 className="h-3 w-3 text-destructive" />
+          </Button>
+        </div>
+        <CollapsibleContent>
+          <div className="border-t px-2 py-2 space-y-2">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Type</Label>
+                <Select value={hook.type} onValueChange={() => {}}>
+                  <SelectTrigger className="h-7 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="http">http</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Command</Label>
+                <Input
+                  value={hook.command}
+                  onChange={(e) => onUpdate((prev) => ({ ...prev, command: e.target.value }))}
+                  placeholder="bunx"
+                  className="h-7 font-mono text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">CWD</Label>
+                <Input
+                  value={hook.cwd ?? ""}
+                  onChange={(e) =>
+                    onUpdate((prev) => {
+                      const cwd = e.target.value.trim();
+                      return { ...prev, cwd: cwd || undefined };
+                    })
+                  }
+                  placeholder="/path/to/dir"
+                  className="h-7 font-mono text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Args (每行一个)</Label>
+                <Textarea
+                  value={localArgsText}
+                  onChange={(e) => setLocalArgsText(e.target.value)}
+                  onBlur={() => {
+                    const lines = localArgsText
+                      .split("\n")
+                      .map((l) => l.trim())
+                      .filter((l) => l.length > 0);
+                    onUpdate((prev) => ({
+                      ...prev,
+                      args: lines.length > 0 ? lines : undefined,
+                    }));
+                  }}
+                  placeholder="@jixo/proxy-plugin-xxx"
+                  className="font-mono text-xs resize-none"
+                  rows={2}
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground">Config (JSON)</Label>
+              <Textarea
+                value={configText}
+                onChange={(e) => {
+                  const text = e.target.value;
+                  onConfigTextChange(text);
+                  if (!text.trim()) {
+                    onConfigErrorChange(null);
+                    onUpdate((prev) => {
+                      const { config: _, ...rest } = prev;
+                      return rest;
+                    });
+                    return;
+                  }
+                  try {
+                    const raw: unknown = JSON.parse(text);
+                    if (!isRecord(raw)) {
+                      onConfigErrorChange("必须是 object");
+                      return;
+                    }
+                    onConfigErrorChange(null);
+                    onUpdate((prev) => ({ ...prev, config: raw }));
+                  } catch {
+                    onConfigErrorChange("JSON 格式错误");
+                  }
+                }}
+                placeholder='{ "debug": false }'
+                className="font-mono text-xs resize-none"
+                rows={3}
+              />
+              {configError && <div className="text-destructive text-[10px]">{configError}</div>}
+            </div>
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
+const OFFICIAL_PLUGIN_PRESETS = [
   {
-    type: "http",
-    command: "bunx",
-    args: ["@jixo/proxy-plugin-droid"],
+    id: "proxy-anthropic-ping",
+    label: "@jixo/proxy-anthropic-ping",
+    hook: {
+      type: "http",
+      command: "bunx",
+      args: ["@jixo/proxy-anthropic-ping"],
+      config: {
+        maxKeepAliveDurationMs: 60 * 60 * 1000,
+        cacheTtlMs: 5 * 60 * 1000,
+        pingLeadTimeMs: 60 * 1000,
+        pollingIntervalMs: 30 * 1000,
+        debug: false,
+      },
+    } satisfies HookConfig,
   },
-];
+  {
+    id: "proxy-plugin-droid",
+    label: "@jixo/proxy-plugin-droid",
+    hook: {
+      type: "http",
+      command: "bunx",
+      args: ["@jixo/proxy-plugin-droid"],
+    } satisfies HookConfig,
+  },
+] as const;
 
 export function HooksInput({ value, onChange }: HooksInputProps) {
+  const [isOpen, setIsOpen] = useState(false);
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
-  const [isOpen, setIsOpen] = useState(false);
+  const [showAdvancedJson, setShowAdvancedJson] = useState(false);
+  const [hooks, setHooks] = useState<HookWithId[]>([]);
+  const [configTexts, setConfigTexts] = useState<Map<number, string>>(new Map());
+  const [configErrors, setConfigErrors] = useState<Map<number, string | null>>(new Map());
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
+
+  const idCounterRef = useRef(0);
+  const hasValue = value && value.trim() !== "";
+
+  /** 去掉内部ID，转为纯HookConfig */
+  const stripIds = (list: HookWithId[]): HookConfig[] =>
+    list.map(({ _id, ...rest }) => rest);
+
+  const syncToParent = (nextHooks: HookWithId[]) => {
+    const pure = stripIds(nextHooks);
+    onChange(pure.length === 0 ? "" : JSON.stringify(pure));
+    setJsonText(pure.length === 0 ? "" : JSON.stringify(pure, null, 2));
+    setJsonError(null);
+  };
+
+  const parsed = useMemo(() => {
+    if (!hasValue) {
+      return { list: [] as HookConfig[], pretty: "", error: null as string | null };
+    }
+    try {
+      const raw: unknown = JSON.parse(value);
+      const list = coerceHooksConfigList(raw);
+      return { list, pretty: JSON.stringify(raw, null, 2), error: null as string | null };
+    } catch {
+      return { list: [] as HookConfig[], pretty: value, error: "JSON 解析失败：请检查格式" };
+    }
+  }, [hasValue, value]);
 
   useEffect(() => {
-    if (!value || value.trim() === "") {
+    if (!hasValue) {
+      setIsOpen(false);
+      setShowAdvancedJson(false);
       setJsonText("");
       setJsonError(null);
-      setIsOpen(false);
+      setHooks([]);
+      setConfigTexts(new Map());
+      setConfigErrors(new Map());
+      setExpandedId(null);
+      idCounterRef.current = 0;
       return;
     }
+    setIsOpen(true);
+    setJsonText(parsed.pretty);
+    setJsonError(parsed.error);
+    // 分配稳定ID
+    const newHooks = parsed.list.map((h) => ({ ...h, _id: idCounterRef.current++ }));
+    setHooks(newHooks);
+    const texts = new Map<number, string>();
+    newHooks.forEach((h) => texts.set(h._id, h.config ? JSON.stringify(h.config, null, 2) : ""));
+    setConfigTexts(texts);
+    setConfigErrors(new Map());
+  }, [hasValue, parsed.error, parsed.list, parsed.pretty]);
 
-    try {
-      const parsed = JSON.parse(value);
-      setJsonText(JSON.stringify(parsed, null, 2));
-      setJsonError(null);
-      setIsOpen(true);
-    } catch (error) {
-      setJsonText(value);
-      setJsonError("JSON 解析失败");
-    }
-  }, [value]);
-
-  const handleJsonChange = (text: string) => {
+  const handleAdvancedJsonChange = (text: string) => {
     setJsonText(text);
     if (!text.trim()) {
       setJsonError(null);
+      setHooks([]);
       onChange("");
       return;
     }
-
     try {
-      const parsed = JSON.parse(text);
-      onChange(JSON.stringify(parsed));
+      const raw: unknown = JSON.parse(text);
+      const list = coerceHooksConfigList(raw);
+      const newHooks = list.map((h) => ({ ...h, _id: idCounterRef.current++ }));
+      setHooks(newHooks);
       setJsonError(null);
+      syncToParent(newHooks);
     } catch {
       setJsonError("JSON 解析失败：请检查格式");
     }
   };
 
-  const insertExample = () => {
-    const text = JSON.stringify(EXAMPLE_HOOKS, null, 2);
-    setJsonText(text);
-    onChange(JSON.stringify(EXAMPLE_HOOKS));
-    setJsonError(null);
+  const addHook = (hook: HookConfig) => {
+    const newHook: HookWithId = { ...hook, _id: idCounterRef.current++ };
+    const next = [newHook, ...hooks];
+    setHooks(next);
+    setIsOpen(true);
+    setExpandedId(newHook._id);
+    setConfigTexts((prev) => new Map(prev).set(newHook._id, hook.config ? JSON.stringify(hook.config, null, 2) : ""));
+    syncToParent(next);
   };
 
-  const hasValue = value && value.trim() !== "";
+  const handleAddEmpty = () => {
+    addHook({ type: "http", command: "bunx", args: [] });
+  };
+
+  const handleAddPreset = (presetId: string) => {
+    const preset = OFFICIAL_PLUGIN_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    addHook(preset.hook);
+  };
+
+  const toggleExpand = (id: number) => {
+    setExpandedId((prev) => (prev === id ? null : id));
+  };
+
+  const updateHook = (id: number, updater: (prev: HookConfig) => HookConfig) => {
+    const next = hooks.map((h) => (h._id === id ? { ...updater(h), _id: h._id } : h));
+    setHooks(next);
+    syncToParent(next);
+  };
+
+  const removeHook = (id: number) => {
+    const next = hooks.filter((h) => h._id !== id);
+    setHooks(next);
+    if (expandedId === id) setExpandedId(null);
+    syncToParent(next);
+  };
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const hookIds = useMemo(() => hooks.map((h) => `hook-${h._id}`), [hooks]);
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(event.active.id);
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = hooks.findIndex((h) => `hook-${h._id}` === active.id);
+    const newIndex = hooks.findIndex((h) => `hook-${h._id}` === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const newHooks = arrayMove(hooks, oldIndex, newIndex);
+    setHooks(newHooks);
+    syncToParent(newHooks);
+  };
+
+  const handleDragCancel = () => {
+    setActiveId(null);
+  };
+
+  const activeHook = useMemo(() => {
+    if (!activeId) return null;
+    return hooks.find((h) => `hook-${h._id}` === activeId) ?? null;
+  }, [activeId, hooks]);
+
+  const renderSummaryBadges = (hooksConfig: HookConfig[]) => {
+    if (hooksConfig.length === 0) return null;
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        {hooksConfig.map((hook, idx) => {
+          const pluginName = getHookPluginName(hook);
+          const disabled = hook.disabled === true;
+          return (
+            <Badge
+              key={`${pluginName}-${idx}`}
+              variant="outline"
+              className={`text-[10px] ${disabled ? "opacity-50 border-dashed" : ""}`}
+            >
+              {pluginName}
+            </Badge>
+          );
+        })}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-2">
@@ -77,72 +487,125 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
         >
           <Zap className="h-3.5 w-3.5" />
           Hooks 配置
-          <ChevronDown
-            className={`h-4 w-4 transition-transform ${isOpen ? "rotate-180" : ""}`}
-          />
+          <ChevronDown className={`h-4 w-4 transition-transform ${isOpen ? "rotate-180" : ""}`} />
           {hasValue && !isOpen && (
-            <span className="text-muted-foreground text-xs font-normal">(已配置)</span>
+            <span className="text-muted-foreground text-xs font-normal">({hooks.length})</span>
           )}
         </button>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground inline-flex items-center justify-center"
-            >
-              <Info className="h-4 w-4" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-sm text-xs leading-relaxed">
-            <p className="mb-2">配置插件，用于在转发前后处理请求和响应。</p>
-            <p className="mb-1">
-              <strong>格式：</strong> 单个插件或插件数组
-            </p>
-            <pre className="bg-muted rounded p-1 text-[10px]">
-              {`[
-  {
-    "type": "http",
-    "command": "bunx",
-    "args": ["@jixo/proxy-plugin-xxx"],
-    "config": { ... }
-  }
-]`}
-            </pre>
-            <p className="mt-2 mb-1">
-              <strong>插件配置字段：</strong>
-            </p>
-            <ul className="list-inside list-disc space-y-0.5">
-              <li>type: "http"</li>
-              <li>command: 启动命令</li>
-              <li>args: 命令参数数组</li>
-              <li>config: 插件配置（可选）</li>
-            </ul>
-          </TooltipContent>
-        </Tooltip>
-      </div>
-      {isOpen && (
-        <div className="space-y-2">
-          <Textarea
-            value={jsonText}
-            onChange={(e) => handleJsonChange(e.target.value)}
-            placeholder="留空表示不使用 hooks"
-            className="font-mono text-xs"
-            rows={8}
-          />
-          {jsonError ? (
-            <p className="text-destructive text-xs">{jsonError}</p>
-          ) : (
-            <div className="flex items-center justify-between">
-              <p className="text-muted-foreground text-xs">
-                配置插件来处理请求和响应，每个插件同时作为 request 和 response hook。
-              </p>
+        <div className="flex items-center gap-2">
+          {hasValue && !isOpen && renderSummaryBadges(parsed.list)}
+          <Tooltip>
+            <TooltipTrigger asChild>
               <button
                 type="button"
-                onClick={insertExample}
-                className="text-muted-foreground hover:text-foreground text-xs underline"
+                className="text-muted-foreground hover:text-foreground inline-flex items-center justify-center"
               >
-                插入示例
+                <Info className="h-4 w-4" />
               </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs text-xs">
+              配置插件处理请求/响应。disabled 仅控制启停，不影响 hookId。
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className="space-y-2">
+          {/* 工具栏 */}
+          <div className="flex items-center gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={handleAddEmpty}>
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              添加
+            </Button>
+            <Select onValueChange={handleAddPreset}>
+              <SelectTrigger className="h-8 w-[180px] text-xs">
+                <SelectValue placeholder="官方插件" />
+              </SelectTrigger>
+              <SelectContent>
+                {OFFICIAL_PLUGIN_PRESETS.map((p) => (
+                  <SelectItem key={p.id} value={p.id} className="text-xs">
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {hasValue && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                onClick={() => setShowAdvancedJson((v) => !v)}
+              >
+                <Code className="mr-1 h-3.5 w-3.5" />
+                JSON
+              </Button>
+            )}
+          </div>
+
+          {hooks.length === 0 ? (
+            <div className="text-muted-foreground text-xs py-2">未配置 hooks</div>
+          ) : (
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
+            >
+              <SortableContext items={hookIds} strategy={verticalListSortingStrategy}>
+                <div className="space-y-1.5">
+                  {hooks.map((hook) => (
+                    <SortableHookItem
+                      key={hook._id}
+                      id={`hook-${hook._id}`}
+                      hook={hook}
+                      isExpanded={expandedId === hook._id}
+                      configText={configTexts.get(hook._id) ?? ""}
+                      configError={configErrors.get(hook._id) ?? null}
+                      onToggleExpand={() => toggleExpand(hook._id)}
+                      onUpdate={(updater) => updateHook(hook._id, updater)}
+                      onRemove={() => removeHook(hook._id)}
+                      onConfigTextChange={(text) =>
+                        setConfigTexts((prev) => new Map(prev).set(hook._id, text))
+                      }
+                      onConfigErrorChange={(err) =>
+                        setConfigErrors((prev) => new Map(prev).set(hook._id, err))
+                      }
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+              {createPortal(
+                <DragOverlay>
+                  {activeHook ? (
+                    <div className="rounded border bg-card shadow-lg ring-2 ring-primary/50 opacity-90">
+                      <div className="flex items-center gap-1.5 px-2 py-1.5">
+                        <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="font-mono text-xs">
+                          {activeHook.command} {(activeHook.args ?? []).join(" ")}
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
+                </DragOverlay>,
+                document.body,
+              )}
+            </DndContext>
+          )}
+
+          {showAdvancedJson && (
+            <div className="space-y-1 pt-2 border-t">
+              <Label className="text-[10px] text-muted-foreground">高级 JSON 编辑</Label>
+              <Textarea
+                value={jsonText}
+                onChange={(e) => handleAdvancedJsonChange(e.target.value)}
+                placeholder="[]"
+                className="font-mono text-xs"
+                rows={8}
+              />
+              {jsonError && <p className="text-destructive text-[10px]">{jsonError}</p>}
             </div>
           )}
         </div>

@@ -53,7 +53,7 @@ import {
 import type { StoreChangeEvent } from "./lib/store/base-store";
 import { parsePrivateHeaders } from "@jixo/proxy-plugin";
 import { parsePluginUiFromHeaders } from "./lib/plugin-ui";
-import { pingStatusStore } from "../packages/proxy-anthropic-ping/src/ping-status-server";
+import { pingStatusStore, type PingStatusPayload } from "../packages/proxy-anthropic-ping/src/ping-status-server";
 
 function parsePluginInfo(
   requestHeaders: Record<string, string | string[]> | undefined,
@@ -946,7 +946,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
       "/api/ping-status/stream": {
         async GET(req) {
-          const session = req.query.session;
+          const session = new URL(req.url).searchParams.get("session");
           if (!session) {
             return new Response("Missing session", { status: 400 });
           }
@@ -954,7 +954,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           const encoder = new TextEncoder();
           const stream = new ReadableStream({
             start(controller) {
-              const send = (payload) => {
+              const send = (payload: PingStatusPayload) => {
                 const data = JSON.stringify(payload);
                 controller.enqueue(encoder.encode("data: " + data + "\n\n"));
               };
