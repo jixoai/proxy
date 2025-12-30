@@ -26,6 +26,9 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
+  DragOverlay,
+  type UniqueIdentifier,
 } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -68,12 +71,15 @@ function coerceHooksConfigList(value: unknown): HookConfig[] {
   return list.map(coerceHookConfig);
 }
 
+/** 内部使用的hook结构，包含稳定ID */
+interface HookWithId extends HookConfig {
+  _id: number;
+}
+
 interface SortableHookItemProps {
   id: string;
-  hook: HookConfig;
-  index: number;
+  hook: HookWithId;
   isExpanded: boolean;
-  disabled: boolean;
   configText: string;
   configError: string | null;
   onToggleExpand: () => void;
@@ -86,9 +92,7 @@ interface SortableHookItemProps {
 function SortableHookItem({
   id,
   hook,
-  index,
   isExpanded,
-  disabled,
   configText,
   configError,
   onToggleExpand,
@@ -97,6 +101,7 @@ function SortableHookItem({
   onConfigTextChange,
   onConfigErrorChange,
 }: SortableHookItemProps) {
+  const disabled = hook.disabled === true;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id,
   });
@@ -301,28 +306,24 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [showAdvancedJson, setShowAdvancedJson] = useState(false);
-  const [hooks, setHooks] = useState<HookConfig[]>([]);
-  const [configTexts, setConfigTexts] = useState<string[]>([]);
-  const [configErrors, setConfigErrors] = useState<(string | null)[]>([]);
-  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  const [hooks, setHooks] = useState<HookWithId[]>([]);
+  const [configTexts, setConfigTexts] = useState<Map<number, string>>(new Map());
+  const [configErrors, setConfigErrors] = useState<Map<number, string | null>>(new Map());
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
 
-  // 稳定的唯一ID用于拖拽排序
   const idCounterRef = useRef(0);
-  const hookIdsRef = useRef<string[]>([]);
-
   const hasValue = value && value.trim() !== "";
 
-  const syncHooksToJson = (nextHooks: HookConfig[], newlyAddedIndex?: number) => {
-    setHooks(nextHooks);
-    const nextJson = nextHooks.length === 0 ? "" : JSON.stringify(nextHooks);
-    onChange(nextJson);
-    setJsonText(nextHooks.length === 0 ? "" : JSON.stringify(nextHooks, null, 2));
+  /** 去掉内部ID，转为纯HookConfig */
+  const stripIds = (list: HookWithId[]): HookConfig[] =>
+    list.map(({ _id, ...rest }) => rest);
+
+  const syncToParent = (nextHooks: HookWithId[]) => {
+    const pure = stripIds(nextHooks);
+    onChange(pure.length === 0 ? "" : JSON.stringify(pure));
+    setJsonText(pure.length === 0 ? "" : JSON.stringify(pure, null, 2));
     setJsonError(null);
-    setConfigTexts(nextHooks.map((h) => (h.config ? JSON.stringify(h.config, null, 2) : "")));
-    setConfigErrors(nextHooks.map(() => null));
-    if (newlyAddedIndex !== undefined) {
-      setExpandedIndex(newlyAddedIndex);
-    }
   };
 
   const parsed = useMemo(() => {
@@ -345,44 +346,52 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
       setJsonText("");
       setJsonError(null);
       setHooks([]);
-      setConfigTexts([]);
-      setConfigErrors([]);
-      // 重置hookIds
-      hookIdsRef.current = [];
+      setConfigTexts(new Map());
+      setConfigErrors(new Map());
+      setExpandedId(null);
       idCounterRef.current = 0;
       return;
     }
     setIsOpen(true);
     setJsonText(parsed.pretty);
     setJsonError(parsed.error);
-    setHooks(parsed.list);
-    setConfigTexts(parsed.list.map((h) => (h.config ? JSON.stringify(h.config, null, 2) : "")));
-    setConfigErrors(parsed.list.map(() => null));
-    // 重新生成hookIds
-    hookIdsRef.current = parsed.list.map(() => `hook-${idCounterRef.current++}`);
+    // 分配稳定ID
+    const newHooks = parsed.list.map((h) => ({ ...h, _id: idCounterRef.current++ }));
+    setHooks(newHooks);
+    const texts = new Map<number, string>();
+    newHooks.forEach((h) => texts.set(h._id, h.config ? JSON.stringify(h.config, null, 2) : ""));
+    setConfigTexts(texts);
+    setConfigErrors(new Map());
   }, [hasValue, parsed.error, parsed.list, parsed.pretty]);
 
   const handleAdvancedJsonChange = (text: string) => {
     setJsonText(text);
     if (!text.trim()) {
       setJsonError(null);
-      syncHooksToJson([]);
+      setHooks([]);
+      onChange("");
       return;
     }
     try {
       const raw: unknown = JSON.parse(text);
       const list = coerceHooksConfigList(raw);
+      const newHooks = list.map((h) => ({ ...h, _id: idCounterRef.current++ }));
+      setHooks(newHooks);
       setJsonError(null);
-      syncHooksToJson(list);
+      syncToParent(newHooks);
     } catch {
       setJsonError("JSON 解析失败：请检查格式");
     }
   };
 
   const addHook = (hook: HookConfig) => {
-    const next = [hook, ...hooks];
+    const newHook: HookWithId = { ...hook, _id: idCounterRef.current++ };
+    const next = [newHook, ...hooks];
+    setHooks(next);
     setIsOpen(true);
-    syncHooksToJson(next, 0);
+    setExpandedId(newHook._id);
+    setConfigTexts((prev) => new Map(prev).set(newHook._id, hook.config ? JSON.stringify(hook.config, null, 2) : ""));
+    syncToParent(next);
   };
 
   const handleAddEmpty = () => {
@@ -395,68 +404,56 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
     addHook(preset.hook);
   };
 
-  const toggleExpand = (index: number) => {
-    setExpandedIndex((prev) => (prev === index ? null : index));
+  const toggleExpand = (id: number) => {
+    setExpandedId((prev) => (prev === id ? null : id));
   };
 
-  const updateHook = (index: number, updater: (prev: HookConfig) => HookConfig) => {
-    const next = hooks.map((h, i) => (i === index ? updater(h) : h));
-    syncHooksToJson(next);
+  const updateHook = (id: number, updater: (prev: HookConfig) => HookConfig) => {
+    const next = hooks.map((h) => (h._id === id ? { ...updater(h), _id: h._id } : h));
+    setHooks(next);
+    syncToParent(next);
   };
 
-  const removeHook = (index: number) => {
-    const next = hooks.filter((_, i) => i !== index);
-    if (expandedIndex === index) setExpandedIndex(null);
-    else if (expandedIndex !== null && expandedIndex > index) setExpandedIndex(expandedIndex - 1);
-    syncHooksToJson(next);
+  const removeHook = (id: number) => {
+    const next = hooks.filter((h) => h._id !== id);
+    setHooks(next);
+    if (expandedId === id) setExpandedId(null);
+    syncToParent(next);
   };
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  // 同步hookIds数组长度（添加新hook时）
-  if (hookIdsRef.current.length < hooks.length) {
-    for (let i = hookIdsRef.current.length; i < hooks.length; i++) {
-      hookIdsRef.current.push(`hook-${idCounterRef.current++}`);
-    }
-  } else if (hookIdsRef.current.length > hooks.length) {
-    hookIdsRef.current = hookIdsRef.current.slice(0, hooks.length);
-  }
+  const hookIds = useMemo(() => hooks.map((h) => `hook-${h._id}`), [hooks]);
 
-  const hookIds = hookIdsRef.current;
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(event.active.id);
+  };
 
   const handleDragEnd = (event: DragEndEvent) => {
+    setActiveId(null);
     const { active, over } = event;
-    if (over && active.id !== over.id) {
-      const oldIndex = hookIds.indexOf(active.id as string);
-      const newIndex = hookIds.indexOf(over.id as string);
-      if (oldIndex === -1 || newIndex === -1) return;
+    if (!over || active.id === over.id) return;
 
-      // 重排hookIds
-      const newHookIds = arrayMove([...hookIds], oldIndex, newIndex);
-      hookIdsRef.current = newHookIds;
+    const oldIndex = hooks.findIndex((h) => `hook-${h._id}` === active.id);
+    const newIndex = hooks.findIndex((h) => `hook-${h._id}` === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
 
-      const newHooks = arrayMove(hooks, oldIndex, newIndex);
-      const newConfigTexts = arrayMove(configTexts, oldIndex, newIndex);
-      const newConfigErrors = arrayMove(configErrors, oldIndex, newIndex);
-      setHooks(newHooks);
-      setConfigTexts(newConfigTexts);
-      setConfigErrors(newConfigErrors);
-      onChange(JSON.stringify(newHooks));
-      // 更新expandedIndex
-      if (expandedIndex === oldIndex) {
-        setExpandedIndex(newIndex);
-      } else if (expandedIndex !== null) {
-        if (oldIndex < expandedIndex && newIndex >= expandedIndex) {
-          setExpandedIndex(expandedIndex - 1);
-        } else if (oldIndex > expandedIndex && newIndex <= expandedIndex) {
-          setExpandedIndex(expandedIndex + 1);
-        }
-      }
-    }
+    const newHooks = arrayMove(hooks, oldIndex, newIndex);
+    setHooks(newHooks);
+    syncToParent(newHooks);
   };
+
+  const handleDragCancel = () => {
+    setActiveId(null);
+  };
+
+  const activeHook = useMemo(() => {
+    if (!activeId) return null;
+    return hooks.find((h) => `hook-${h._id}` === activeId) ?? null;
+  }, [activeId, hooks]);
 
   const renderSummaryBadges = (hooksConfig: HookConfig[]) => {
     if (hooksConfig.length === 0) return null;
@@ -549,32 +546,48 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
           {hooks.length === 0 ? (
             <div className="text-muted-foreground text-xs py-2">未配置 hooks</div>
           ) : (
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
+            >
               <SortableContext items={hookIds} strategy={verticalListSortingStrategy}>
                 <div className="space-y-1.5">
-                  {hooks.map((hook, index) => (
+                  {hooks.map((hook) => (
                     <SortableHookItem
-                      key={hookIds[index]}
-                      id={hookIds[index]!}
+                      key={hook._id}
+                      id={`hook-${hook._id}`}
                       hook={hook}
-                      index={index}
-                      isExpanded={expandedIndex === index}
-                      disabled={hook.disabled === true}
-                      configText={configTexts[index] ?? ""}
-                      configError={configErrors[index] ?? null}
-                      onToggleExpand={() => toggleExpand(index)}
-                      onUpdate={(updater) => updateHook(index, updater)}
-                      onRemove={() => removeHook(index)}
+                      isExpanded={expandedId === hook._id}
+                      configText={configTexts.get(hook._id) ?? ""}
+                      configError={configErrors.get(hook._id) ?? null}
+                      onToggleExpand={() => toggleExpand(hook._id)}
+                      onUpdate={(updater) => updateHook(hook._id, updater)}
+                      onRemove={() => removeHook(hook._id)}
                       onConfigTextChange={(text) =>
-                        setConfigTexts((prev) => prev.map((v, i) => (i === index ? text : v)))
+                        setConfigTexts((prev) => new Map(prev).set(hook._id, text))
                       }
                       onConfigErrorChange={(err) =>
-                        setConfigErrors((prev) => prev.map((v, i) => (i === index ? err : v)))
+                        setConfigErrors((prev) => new Map(prev).set(hook._id, err))
                       }
                     />
                   ))}
                 </div>
               </SortableContext>
+              <DragOverlay>
+                {activeHook ? (
+                  <div className="rounded border bg-card shadow-lg ring-2 ring-primary/50 opacity-90">
+                    <div className="flex items-center gap-1.5 px-2 py-1.5">
+                      <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="font-mono text-xs">
+                        {activeHook.command} {(activeHook.args ?? []).join(" ")}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+              </DragOverlay>
             </DndContext>
           )}
 
