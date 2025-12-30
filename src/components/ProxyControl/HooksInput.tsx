@@ -108,7 +108,14 @@ function SortableHookItem({
   };
 
   const pluginName = getHookPluginName(hook);
-  const argsText = (hook.args ?? []).join("\n");
+  const argsPreview = (hook.args ?? []).join(" ");
+  const displayTitle = argsPreview ? `${hook.command} ${argsPreview}` : hook.command || pluginName;
+  const [localArgsText, setLocalArgsText] = useState((hook.args ?? []).join("\n"));
+
+  // 同步外部变化
+  useEffect(() => {
+    setLocalArgsText((hook.args ?? []).join("\n"));
+  }, [hook.args]);
 
   return (
     <Collapsible open={isExpanded} onOpenChange={onToggleExpand}>
@@ -136,8 +143,12 @@ function SortableHookItem({
             </button>
           </CollapsibleTrigger>
           <CollapsibleTrigger asChild>
-            <button type="button" className="flex-1 text-left font-mono text-xs hover:underline">
-              {pluginName}
+            <button
+              type="button"
+              className="flex-1 text-left font-mono text-xs hover:underline truncate"
+              title={displayTitle}
+            >
+              {displayTitle}
             </button>
           </CollapsibleTrigger>
           <Badge variant="secondary" className="text-[9px] px-1 py-0">
@@ -197,11 +208,12 @@ function SortableHookItem({
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-[10px] text-muted-foreground">Args</Label>
+                <Label className="text-[10px] text-muted-foreground">Args (每行一个)</Label>
                 <Textarea
-                  value={argsText}
-                  onChange={(e) => {
-                    const lines = e.target.value
+                  value={localArgsText}
+                  onChange={(e) => setLocalArgsText(e.target.value)}
+                  onBlur={() => {
+                    const lines = localArgsText
                       .split("\n")
                       .map((l) => l.trim())
                       .filter((l) => l.length > 0);
@@ -210,7 +222,7 @@ function SortableHookItem({
                       args: lines.length > 0 ? lines : undefined,
                     }));
                   }}
-                  placeholder="每行一个参数"
+                  placeholder="@jixo/proxy-plugin-xxx"
                   className="font-mono text-xs resize-none"
                   rows={2}
                 />
