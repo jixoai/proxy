@@ -87,6 +87,12 @@ export interface ResponseHookParams {
   headers: Record<string, string | string[]>;
   body: Buffer;
   signal?: AbortSignal;
+  /** 原始请求的元数据（不含 body） */
+  requestMeta?: {
+    method: string;
+    url: string;
+    headers: Record<string, string | string[]>;
+  };
 }
 
 export interface ResponseHookResult {
@@ -402,6 +408,8 @@ class HookProcess {
         statusMessage: params.statusMessage,
         headers: params.headers,
         bodyLength: params.body.length,
+        // 传递 requestMeta 给插件
+        requestMeta: params.requestMeta,
       },
       params.body,
       params.signal,

@@ -6,6 +6,7 @@
  * 2. Response Hook: 将上游 "Upstream request failed" 错误重写为 "context_length_exceeded"
  */
 
+import { z } from "zod";
 import type {
   ProxyPlugin,
   RequestHookParams,
@@ -17,6 +18,14 @@ import type {
 import { normalizeHeaders, createLogger } from "@jixo/proxy-plugin";
 import { rewriteRequest } from "./rewriter";
 import { rewriteResponse } from "./response-rewriter";
+
+/** 插件存储 schema - 标记请求是否被转换 */
+const DroidStoreSchema = z.object({
+  /** 请求已被 Droid 插件转换 */
+  activated: z.literal(true),
+});
+
+type DroidStore = z.infer<typeof DroidStoreSchema>;
 
 export interface DroidPluginOptions {
   /** 是否启用调试日志 */
@@ -36,7 +45,7 @@ export interface DroidPluginOptions {
  * definePlugin(createDroidPlugin({ debug: true }));
  * ```
  */
-export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin {
+export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin<DroidStore> {
   const { debug, logDir } = options;
 
   const logger: PluginLogger = createLogger({
@@ -47,6 +56,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
   return {
     name: "droid-plugin",
+    storeSchema: DroidStoreSchema,
 
     onRequest(params: RequestHookParams): RequestHookResult | null {
       const headers = normalizeHeaders(params.meta.headers) ?? {};
@@ -79,13 +89,25 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
         });
       }
 
+      // 使用 store 标记请求已被转换（用于 onResponse 判断）
+      const finalHeaders = params.store
+        ? params.store.set({ activated: true }, result.headers ?? headers)
+        : result.headers;
+
       return {
-        meta: result.headers ? { headers: result.headers } : undefined,
+        meta: finalHeaders ? { headers: finalHeaders } : undefined,
         body: result.body ? Buffer.from(result.body, "utf-8") : undefined,
       };
     },
 
     onResponse(params: ResponseHookParams): ResponseHookResult | null {
+      // 检查请求是否被 Droid 插件处理过
+      const storeData = params.store?.get() as DroidStore | null;
+      if (!storeData?.activated) {
+        logger.debug("Request was not processed by Droid plugin, skipping response rewrite");
+        return null;
+      }
+
       logger.debug(`Processing response: ${params.meta.statusCode}`);
 
       const result = rewriteResponse({

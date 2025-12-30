@@ -71,3 +71,12 @@ export {
   getPluginConfigWithDefaults,
   definePluginConfig,
 } from "./config";
+
+// Plugin Store
+export {
+  buildPluginStoreKey,
+  isPluginStoreHeader,
+  createPluginStore,
+  createMockStore,
+  type PluginStore,
+} from "./plugin-store";

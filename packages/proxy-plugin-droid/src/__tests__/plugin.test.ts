@@ -1,6 +1,42 @@
 import { describe, it, expect } from "bun:test";
 import { createDroidPlugin } from "../plugin";
-import type { RequestHookParams, ResponseHookParams } from "@jixo/proxy-plugin";
+import { createMockStore, type RequestHookParams, type ResponseHookParams } from "@jixo/proxy-plugin";
+
+/** 创建测试用的 RequestHookParams */
+function createRequestParams(params: {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: Buffer;
+}): RequestHookParams {
+  return {
+    meta: {
+      method: params.method,
+      url: params.url,
+      headers: params.headers,
+    },
+    body: params.body,
+    store: createMockStore(),
+  };
+}
+
+/** 创建测试用的 ResponseHookParams */
+function createResponseParams(params: {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: Buffer;
+  /** 是否模拟请求已被处理（默认 true） */
+  activated?: boolean;
+}): ResponseHookParams {
+  return {
+    meta: {
+      statusCode: params.statusCode,
+      headers: params.headers,
+    },
+    body: params.body,
+    store: createMockStore(params.activated !== false ? { activated: true as const } : undefined),
+  };
+}
 
 describe("createDroidPlugin", () => {
   it("should create a plugin with correct name", () => {
@@ -26,22 +62,21 @@ describe("createDroidPlugin", () => {
       messages: [{ role: "user", content: "Hello" }],
     });
 
-    const params: RequestHookParams = {
-      meta: {
-        method: "POST",
-        url: "https://api.anthropic.com/v1/messages",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": "sk-ant-123",
-        },
+    const params = createRequestParams({
+      method: "POST",
+      url: "https://api.anthropic.com/v1/messages",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "sk-ant-123",
       },
       body: Buffer.from(body),
-    };
+    });
 
     const result = await plugin.onRequest!(params);
 
     expect(result).not.toBeNull();
-    expect("modified" in result! && result.modified !== false).toBe(true);
+    // 检查不是 { modified: false }（跳过）
+    expect(!("modified" in result!) || result!.modified !== false).toBe(true);
 
     const modifiedResult = result as { meta?: { headers?: Record<string, string> }; body?: Buffer };
     expect(modifiedResult.meta?.headers).toBeDefined();
@@ -63,14 +98,12 @@ describe("createDroidPlugin", () => {
       messages: [],
     });
 
-    const params: RequestHookParams = {
-      meta: {
-        method: "POST",
-        url: "https://api.anthropic.com/v1/messages",
-        headers: { "content-type": "application/json" },
-      },
+    const params = createRequestParams({
+      method: "POST",
+      url: "https://api.anthropic.com/v1/messages",
+      headers: { "content-type": "application/json" },
       body: Buffer.from(body),
-    };
+    });
 
     const result = await plugin.onRequest!(params);
 
@@ -88,18 +121,17 @@ describe("createDroidPlugin", () => {
       },
     });
 
-    const params: ResponseHookParams = {
-      meta: {
-        statusCode: 400,
-        headers: { "content-type": "application/json" },
-      },
+    const params = createResponseParams({
+      statusCode: 400,
+      headers: { "content-type": "application/json" },
       body: Buffer.from(body),
-    };
+    });
 
     const result = await plugin.onResponse!(params);
 
     expect(result).not.toBeNull();
-    expect("modified" in result! && result.modified !== false).toBe(true);
+    // 检查不是 { modified: false }（跳过）
+    expect(!("modified" in result!) || result!.modified !== false).toBe(true);
 
     const modifiedResult = result as { meta?: { statusCode?: number }; body?: Buffer };
     expect(modifiedResult.meta?.statusCode).toBe(400);
@@ -116,16 +148,39 @@ describe("createDroidPlugin", () => {
       content: [{ type: "text", text: "Hello!" }],
     });
 
-    const params: ResponseHookParams = {
-      meta: {
-        statusCode: 200,
-        headers: { "content-type": "application/json" },
-      },
+    const params = createResponseParams({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
       body: Buffer.from(body),
-    };
+    });
 
     const result = await plugin.onResponse!(params);
 
+    // 虽然请求被处理过，但正常响应不需要重写
+    expect(result).toBeNull();
+  });
+
+  it("should skip response if request was not processed", async () => {
+    const plugin = createDroidPlugin();
+    const body = JSON.stringify({
+      type: "error",
+      error: {
+        code: 400,
+        type: "server_error",
+        message: "Upstream request failed",
+      },
+    });
+
+    const params = createResponseParams({
+      statusCode: 400,
+      headers: { "content-type": "application/json" },
+      body: Buffer.from(body),
+      activated: false, // 请求未被处理
+    });
+
+    const result = await plugin.onResponse!(params);
+
+    // 请求未被处理，跳过响应重写
     expect(result).toBeNull();
   });
 });

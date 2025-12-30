@@ -7,6 +7,7 @@
 import { encodeEnvelope, decodeEnvelope } from "./envelope";
 import { isRecord, normalizeHeaders } from "./utils";
 import type { ProxyPlugin, RequestMeta, ResponseMeta, PluginConfig } from "./types";
+import { createPluginStore } from "./plugin-store";
 
 export interface PluginServerOptions extends PluginConfig {
   plugin: ProxyPlugin;
@@ -44,7 +45,8 @@ export async function startPluginServer(options: PluginServerOptions): Promise<v
           log(`[${plugin.name}] Request hook: ${normalizedMeta.method} ${normalizedMeta.url}`);
 
           if (plugin.onRequest) {
-            const result = await plugin.onRequest({ meta: normalizedMeta, body });
+            const store = createPluginStore(plugin.name, plugin.storeSchema, undefined);
+            const result = await plugin.onRequest({ meta: normalizedMeta, body, store });
             if (result) {
               // 检查是否是 respondWith - 短路请求，直接返回响应
               if ("respondWith" in result) {
@@ -106,11 +108,24 @@ export async function startPluginServer(options: PluginServerOptions): Promise<v
         }
 
         if (url.pathname === "/hook-res-requestBody") {
-          const normalizedMeta: ResponseMeta = isRecord(meta) ? (meta as ResponseMeta) : {};
+          const metaObj = isRecord(meta) ? (meta as Record<string, unknown>) : {};
+          const normalizedMeta: ResponseMeta = {
+            statusCode: typeof metaObj.statusCode === "number" ? metaObj.statusCode : undefined,
+            statusMessage: typeof metaObj.statusMessage === "string" ? metaObj.statusMessage : undefined,
+            headers: isRecord(metaObj.headers) ? (metaObj.headers as Record<string, string | string[]>) : undefined,
+            bodyLength: typeof metaObj.bodyLength === "number" ? metaObj.bodyLength : undefined,
+          };
+          // 提取 requestMeta（由 hooks-executor 传入）
+          const requestMeta = isRecord(metaObj.requestMeta) ? (metaObj.requestMeta as {
+            method?: string;
+            url?: string;
+            headers?: Record<string, string | string[]>;
+          }) : undefined;
           log(`[${plugin.name}] Response hook: ${normalizedMeta.statusCode}`);
 
           if (plugin.onResponse) {
-            const result = await plugin.onResponse({ meta: normalizedMeta, body });
+            const store = createPluginStore(plugin.name, plugin.storeSchema, requestMeta?.headers);
+            const result = await plugin.onResponse({ meta: normalizedMeta, body, requestMeta, store });
             if (result) {
               // 检查是否是 { modified: false }
               if ("modified" in result && result.modified === false) {
