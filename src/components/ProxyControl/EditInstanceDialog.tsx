@@ -12,7 +12,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tag, Network, Edit } from "lucide-react";
 import type { ProxyInstanceConfig, ProxyConfigFile, HooksConfig } from "@/types/proxy";
 import { CustomHeadersInput } from "./CustomHeadersInput";
@@ -126,52 +125,50 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
           <DialogDescription>修改代理服务器实例的配置</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
-          <ScrollArea className="max-h-[65vh] overflow-y-auto p-2!">
-            <div className="space-y-4 p-2">
-              <div className="space-y-2">
-                <Label htmlFor="edit-name" className="flex items-center gap-2">
-                  <Tag className="h-3.5 w-3.5" />
-                  实例名称
-                </Label>
-                <Input
-                  id="edit-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="例如：开发环境"
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-port" className="flex items-center gap-2">
-                  <Network className="h-3.5 w-3.5" />
-                  端口号
-                </Label>
-                <Input
-                  id="edit-port"
-                  type="number"
-                  value={port}
-                  onChange={(e) => setPort(e.target.value)}
-                  placeholder="例如：8000"
-                  min="1024"
-                  max="65535"
-                  required
-                />
-                <p className="text-muted-foreground text-xs">修改端口后需要重启实例才能生效。</p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-description">实例描述（可选）</Label>
-                <Textarea
-                  id="edit-description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="例如：转发到内部 OpenAI 兼容接口，用于日常开发调试"
-                />
-              </div>
-              <CustomHeadersInput value={instanceHeaders} onChange={setInstanceHeaders} />
-              <HooksInput value={hooks} onChange={setHooks} />
-              {error && <div className="text-destructive text-sm">{error}</div>}
+          <div className="max-h-[65vh] overflow-y-auto space-y-4 py-4 pr-2">
+            <div className="space-y-2">
+              <Label htmlFor="edit-name" className="flex items-center gap-2">
+                <Tag className="h-3.5 w-3.5" />
+                实例名称
+              </Label>
+              <Input
+                id="edit-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="例如：开发环境"
+                required
+              />
             </div>
-          </ScrollArea>
+            <div className="space-y-2">
+              <Label htmlFor="edit-port" className="flex items-center gap-2">
+                <Network className="h-3.5 w-3.5" />
+                端口号
+              </Label>
+              <Input
+                id="edit-port"
+                type="number"
+                value={port}
+                onChange={(e) => setPort(e.target.value)}
+                placeholder="例如：8000"
+                min="1024"
+                max="65535"
+                required
+              />
+              <p className="text-muted-foreground text-xs">修改端口后需要重启实例才能生效。</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-description">实例描述（可选）</Label>
+              <Textarea
+                id="edit-description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="例如：转发到内部 OpenAI 兼容接口，用于日常开发调试"
+              />
+            </div>
+            <CustomHeadersInput value={instanceHeaders} onChange={setInstanceHeaders} />
+            <HooksInput value={hooks} onChange={setHooks} />
+            {error && <div className="text-destructive text-sm">{error}</div>}
+          </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               取消

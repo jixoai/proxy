@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -306,6 +306,10 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
   const [configErrors, setConfigErrors] = useState<(string | null)[]>([]);
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
+  // 稳定的唯一ID用于拖拽排序
+  const idCounterRef = useRef(0);
+  const hookIdsRef = useRef<string[]>([]);
+
   const hasValue = value && value.trim() !== "";
 
   const syncHooksToJson = (nextHooks: HookConfig[], newlyAddedIndex?: number) => {
@@ -343,6 +347,9 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
       setHooks([]);
       setConfigTexts([]);
       setConfigErrors([]);
+      // 重置hookIds
+      hookIdsRef.current = [];
+      idCounterRef.current = 0;
       return;
     }
     setIsOpen(true);
@@ -351,6 +358,8 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
     setHooks(parsed.list);
     setConfigTexts(parsed.list.map((h) => (h.config ? JSON.stringify(h.config, null, 2) : "")));
     setConfigErrors(parsed.list.map(() => null));
+    // 重新生成hookIds
+    hookIdsRef.current = parsed.list.map(() => `hook-${idCounterRef.current++}`);
   }, [hasValue, parsed.error, parsed.list, parsed.pretty]);
 
   const handleAdvancedJsonChange = (text: string) => {
@@ -407,13 +416,28 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const hookIds = useMemo(() => hooks.map((_, i) => `hook-${i}`), [hooks]);
+  // 同步hookIds数组长度（添加新hook时）
+  if (hookIdsRef.current.length < hooks.length) {
+    for (let i = hookIdsRef.current.length; i < hooks.length; i++) {
+      hookIdsRef.current.push(`hook-${idCounterRef.current++}`);
+    }
+  } else if (hookIdsRef.current.length > hooks.length) {
+    hookIdsRef.current = hookIdsRef.current.slice(0, hooks.length);
+  }
+
+  const hookIds = hookIdsRef.current;
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (over && active.id !== over.id) {
       const oldIndex = hookIds.indexOf(active.id as string);
       const newIndex = hookIds.indexOf(over.id as string);
+      if (oldIndex === -1 || newIndex === -1) return;
+
+      // 重排hookIds
+      const newHookIds = arrayMove([...hookIds], oldIndex, newIndex);
+      hookIdsRef.current = newHookIds;
+
       const newHooks = arrayMove(hooks, oldIndex, newIndex);
       const newConfigTexts = arrayMove(configTexts, oldIndex, newIndex);
       const newConfigErrors = arrayMove(configErrors, oldIndex, newIndex);
