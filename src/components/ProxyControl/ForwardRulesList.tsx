@@ -410,9 +410,20 @@ export function ForwardRulesList({ instanceName, focusedForwardName }: ForwardRu
 
   useEffect(() => {
     if (focusedForwardIndex == null) return;
-    const target = itemRefs.current.get(focusedForwardIndex);
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [focusedForwardIndex]);
+    const tryScroll = () => {
+      const target = itemRefs.current.get(focusedForwardIndex);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        return true;
+      }
+      return false;
+    };
+    // 立即尝试，如果失败则延迟重试（等待DOM更新）
+    if (!tryScroll()) {
+      const timer = setTimeout(tryScroll, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [focusedForwardIndex, forwards]);
 
   /** 返回被哪个规则优先匹配（返回上方规则名称，null 表示不会被其他规则优先） */
   const priorRuleNames = useMemo(() => {
