@@ -33,6 +33,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 plugins/hook-logs
 .plugins/
 /plugins/
+.git-worktree/
 
 
 # IntelliJ based IDEs
