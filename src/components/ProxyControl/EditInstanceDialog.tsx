@@ -125,7 +125,7 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
           <DialogDescription>修改代理服务器实例的配置</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
-          <div className="max-h-[65vh] overflow-y-auto space-y-4 py-4 pr-2">
+          <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="edit-name" className="flex items-center gap-2">
                 <Tag className="h-3.5 w-3.5" />
