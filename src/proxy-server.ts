@@ -806,6 +806,12 @@ async function main(argv: string[]) {
                       headers: responseHeaders as Record<string, string | string[]>,
                       body: bodyBuffer,
                       signal: abortSignal,
+                      // 传递请求元数据给响应 hooks
+                      requestMeta: {
+                        method: hookedMethod,
+                        url: hookedTargetUrl.href,
+                        headers: hookedForwardHeaders as Record<string, string | string[]>,
+                      },
                     },
                     (body) => body.length > 0 ? bufferToDataUrl(body, contentType) : null,
                     (headers) => (headers["content-type"] as string) ?? null,

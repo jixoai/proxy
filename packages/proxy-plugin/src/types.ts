@@ -1,3 +1,6 @@
+import type { z } from "zod";
+import type { PluginStore } from "./plugin-store";
+
 /**
  * 请求元数据
  */
@@ -21,9 +24,11 @@ export interface ResponseMeta {
 /**
  * 请求 hook 参数
  */
-export interface RequestHookParams {
+export interface RequestHookParams<TStore = unknown> {
   meta: RequestMeta;
   body: Buffer;
+  /** 插件存储（需定义 storeSchema 才能使用，框架自动注入） */
+  store?: PluginStore<TStore>;
 }
 
 /**
@@ -41,9 +46,17 @@ export type RequestHookResult =
 /**
  * 响应 hook 参数
  */
-export interface ResponseHookParams {
+export interface ResponseHookParams<TStore = unknown> {
   meta: ResponseMeta;
   body: Buffer;
+  /** 原始请求的元数据（不含 body，框架自动注入） */
+  requestMeta?: {
+    method?: string;
+    url?: string;
+    headers?: Record<string, string | string[]>;
+  };
+  /** 插件存储（需定义 storeSchema 才能使用，框架自动注入） */
+  store?: PluginStore<TStore>;
 }
 
 /**
@@ -69,9 +82,12 @@ export interface PluginConfig {
 /**
  * 插件接口
  */
-export interface ProxyPlugin {
+export interface ProxyPlugin<TStore = unknown> {
   /** 插件名称 */
   readonly name: string;
+
+  /** 插件存储 schema（定义后才能使用 store） */
+  readonly storeSchema?: z.ZodType<TStore>;
 
   /**
    * 处理请求 hook

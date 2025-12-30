@@ -1,12 +1,30 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createAnthropicPingPlugin } from "../plugin";
-import type { RequestHookParams } from "@jixo/proxy-plugin";
+import { createMockStore, type RequestHookParams } from "@jixo/proxy-plugin";
 import {
   sampleHeaders,
   sampleHeadersWithSessionId,
   sampleRequestBody,
   sampleRequestBodyMinimal,
 } from "./fixtures";
+
+/** 创建测试用的 RequestHookParams */
+function createRequestParams(params: {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: Buffer;
+}): RequestHookParams {
+  return {
+    meta: {
+      method: params.method,
+      url: params.url,
+      headers: params.headers,
+    },
+    body: params.body,
+    store: createMockStore(),
+  };
+}
 
 describe("createAnthropicPingPlugin", () => {
   let plugin: ReturnType<typeof createAnthropicPingPlugin>;
@@ -40,14 +58,12 @@ describe("createAnthropicPingPlugin", () => {
 
   describe("onRequest", () => {
     it("should intercept Anthropic messages request", async () => {
-      const params: RequestHookParams = {
-        meta: {
-          method: "POST",
-          url: "https://api.anthropic.com/v1/messages",
-          headers: sampleHeadersWithSessionId,
-        },
+      const params = createRequestParams({
+        method: "POST",
+        url: "https://api.anthropic.com/v1/messages",
+        headers: sampleHeadersWithSessionId,
         body: Buffer.from(JSON.stringify(sampleRequestBody)),
-      };
+      });
 
       const result = await plugin.onRequest!(params);
 
@@ -61,14 +77,12 @@ describe("createAnthropicPingPlugin", () => {
     });
 
     it("should intercept requests with /anthropic/ in URL", async () => {
-      const params: RequestHookParams = {
-        meta: {
-          method: "POST",
-          url: "http://localhost:20002/anthropic/v1/messages",
-          headers: { ...sampleHeaders, "x-session-id": "local-session" },
-        },
+      const params = createRequestParams({
+        method: "POST",
+        url: "http://localhost:20002/anthropic/v1/messages",
+        headers: { ...sampleHeaders, "x-session-id": "local-session" },
         body: Buffer.from(JSON.stringify(sampleRequestBody)),
-      };
+      });
 
       await plugin.onRequest!(params);
 
@@ -77,14 +91,12 @@ describe("createAnthropicPingPlugin", () => {
     });
 
     it("should ignore non-messages requests", async () => {
-      const params: RequestHookParams = {
-        meta: {
-          method: "GET",
-          url: "https://api.anthropic.com/v1/models",
-          headers: sampleHeaders,
-        },
+      const params = createRequestParams({
+        method: "GET",
+        url: "https://api.anthropic.com/v1/models",
+        headers: sampleHeaders,
         body: Buffer.alloc(0),
-      };
+      });
 
       const result = await plugin.onRequest!(params);
 
@@ -93,14 +105,12 @@ describe("createAnthropicPingPlugin", () => {
     });
 
     it("should ignore requests without messages", async () => {
-      const params: RequestHookParams = {
-        meta: {
-          method: "POST",
-          url: "https://api.anthropic.com/v1/messages",
-          headers: sampleHeaders,
-        },
+      const params = createRequestParams({
+        method: "POST",
+        url: "https://api.anthropic.com/v1/messages",
+        headers: sampleHeaders,
         body: Buffer.from(JSON.stringify({ model: "claude-3" })),
-      };
+      });
 
       const result = await plugin.onRequest!(params);
 
@@ -109,14 +119,12 @@ describe("createAnthropicPingPlugin", () => {
     });
 
     it("should ignore requests with empty messages", async () => {
-      const params: RequestHookParams = {
-        meta: {
-          method: "POST",
-          url: "https://api.anthropic.com/v1/messages",
-          headers: sampleHeaders,
-        },
+      const params = createRequestParams({
+        method: "POST",
+        url: "https://api.anthropic.com/v1/messages",
+        headers: sampleHeaders,
         body: Buffer.from(JSON.stringify({ model: "claude-3", messages: [] })),
-      };
+      });
 
       const result = await plugin.onRequest!(params);
 
@@ -125,14 +133,12 @@ describe("createAnthropicPingPlugin", () => {
     });
 
     it("should handle invalid JSON body", async () => {
-      const params: RequestHookParams = {
-        meta: {
-          method: "POST",
-          url: "https://api.anthropic.com/v1/messages",
-          headers: sampleHeaders,
-        },
+      const params = createRequestParams({
+        method: "POST",
+        url: "https://api.anthropic.com/v1/messages",
+        headers: sampleHeaders,
         body: Buffer.from("not valid json"),
-      };
+      });
 
       const result = await plugin.onRequest!(params);
 
@@ -141,23 +147,19 @@ describe("createAnthropicPingPlugin", () => {
     });
 
     it("should track multiple sessions", async () => {
-      const params1: RequestHookParams = {
-        meta: {
-          method: "POST",
-          url: "https://api.anthropic.com/v1/messages",
-          headers: { ...sampleHeaders, "x-session-id": "session-1" },
-        },
+      const params1 = createRequestParams({
+        method: "POST",
+        url: "https://api.anthropic.com/v1/messages",
+        headers: { ...sampleHeaders, "x-session-id": "session-1" },
         body: Buffer.from(JSON.stringify(sampleRequestBody)),
-      };
+      });
 
-      const params2: RequestHookParams = {
-        meta: {
-          method: "POST",
-          url: "https://api.anthropic.com/v1/messages",
-          headers: { ...sampleHeaders, "x-session-id": "session-2" },
-        },
+      const params2 = createRequestParams({
+        method: "POST",
+        url: "https://api.anthropic.com/v1/messages",
+        headers: { ...sampleHeaders, "x-session-id": "session-2" },
         body: Buffer.from(JSON.stringify(sampleRequestBodyMinimal)),
-      };
+      });
 
       await plugin.onRequest!(params1);
       await plugin.onRequest!(params2);
@@ -170,14 +172,12 @@ describe("createAnthropicPingPlugin", () => {
     it("should not track when disabled", async () => {
       const disabledPlugin = createAnthropicPingPlugin({ enabled: false });
 
-      const params: RequestHookParams = {
-        meta: {
-          method: "POST",
-          url: "https://api.anthropic.com/v1/messages",
-          headers: sampleHeadersWithSessionId,
-        },
+      const params = createRequestParams({
+        method: "POST",
+        url: "https://api.anthropic.com/v1/messages",
+        headers: sampleHeadersWithSessionId,
         body: Buffer.from(JSON.stringify(sampleRequestBody)),
-      };
+      });
 
       const result = await disabledPlugin.onRequest!(params);
 
@@ -240,21 +240,19 @@ describe("Plugin Integration", () => {
       ],
     };
 
-    const params: RequestHookParams = {
-      meta: {
-        method: "POST",
-        url: "http://localhost:20003/droid/v1/messages",
-        headers: {
-          host: "localhost:20003",
-          "user-agent": "factory-cli/0.36.5",
-          "anthropic-beta": "interleaved-thinking-2025-05-14",
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-          "x-api-key": "sk-ant-test",
-        },
+    const params = createRequestParams({
+      method: "POST",
+      url: "http://localhost:20003/droid/v1/messages",
+      headers: {
+        host: "localhost:20003",
+        "user-agent": "factory-cli/0.36.5",
+        "anthropic-beta": "interleaved-thinking-2025-05-14",
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+        "x-api-key": "sk-ant-test",
       },
       body: Buffer.from(JSON.stringify(realWorldBody)),
-    };
+    });
 
     await plugin.onRequest!(params);
 

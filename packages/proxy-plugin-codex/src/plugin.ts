@@ -5,6 +5,7 @@
  * 将 Claude Messages API SSE 响应转换为 Codex Responses API SSE
  */
 
+import { z } from "zod";
 import type {
   ProxyPlugin,
   RequestHookParams,
@@ -16,6 +17,14 @@ import type {
 import { normalizeHeaders, createLogger, safeParseJson } from "@jixo/proxy-plugin";
 import { isCodexRequest, rewriteRequest } from "./request-converter";
 import { convertSSEResponse, shouldConvertToContextLengthError, buildCodexContextLengthError } from "./response-converter";
+
+/** 插件存储 schema - 标记请求是否被转换 */
+const CodexStoreSchema = z.object({
+  /** 请求已被 Codex 插件转换 */
+  activated: z.literal(true),
+});
+
+type CodexStore = z.infer<typeof CodexStoreSchema>;
 
 export interface CodexPluginOptions {
   /** 是否启用调试日志 */
@@ -52,7 +61,7 @@ function tryParseCodexRequest(body: string): unknown | null {
  * definePlugin(createCodexPlugin({ debug: true }));
  * ```
  */
-export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin {
+export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin<CodexStore> {
   const { debug, logDir, userId } = options;
 
   const logger: PluginLogger = createLogger({
@@ -63,6 +72,7 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
 
   return {
     name: "codex-plugin",
+    storeSchema: CodexStoreSchema,
 
     onRequest(params: RequestHookParams): RequestHookResult | null {
       const headers = normalizeHeaders(params.meta.headers) ?? {};
@@ -103,13 +113,25 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
         });
       }
 
+      // 使用 store 标记请求已被转换（用于 onResponse 判断）
+      const finalHeaders = params.store
+        ? params.store.set({ activated: true }, result.headers ?? headers)
+        : result.headers;
+
       return {
-        meta: result.headers ? { headers: result.headers } : undefined,
+        meta: finalHeaders ? { headers: finalHeaders } : undefined,
         body: result.body ? Buffer.from(result.body, "utf-8") : undefined,
       };
     },
 
     onResponse(params: ResponseHookParams): ResponseHookResult | null {
+      // 检查请求是否被 Codex 插件处理过
+      const storeData = params.store?.get() as CodexStore | null;
+      if (!storeData?.activated) {
+        logger.debug("Request was not processed by Codex plugin, skipping response conversion");
+        return null;
+      }
+
       const headers = normalizeHeaders(params.meta.headers) ?? {};
       const contentType = headers["content-type"] || "";
       const bodyText = params.body.toString("utf-8");
