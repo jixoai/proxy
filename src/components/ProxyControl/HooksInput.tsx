@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -576,18 +577,21 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
                   ))}
                 </div>
               </SortableContext>
-              <DragOverlay>
-                {activeHook ? (
-                  <div className="rounded border bg-card shadow-lg ring-2 ring-primary/50 opacity-90">
-                    <div className="flex items-center gap-1.5 px-2 py-1.5">
-                      <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span className="font-mono text-xs">
-                        {activeHook.command} {(activeHook.args ?? []).join(" ")}
-                      </span>
+              {createPortal(
+                <DragOverlay>
+                  {activeHook ? (
+                    <div className="rounded border bg-card shadow-lg ring-2 ring-primary/50 opacity-90">
+                      <div className="flex items-center gap-1.5 px-2 py-1.5">
+                        <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="font-mono text-xs">
+                          {activeHook.command} {(activeHook.args ?? []).join(" ")}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                ) : null}
-              </DragOverlay>
+                  ) : null}
+                </DragOverlay>,
+                document.body,
+              )}
             </DndContext>
           )}
 
