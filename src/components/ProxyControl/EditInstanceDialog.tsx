@@ -13,8 +13,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tag, Network, Edit } from "lucide-react";
-import type { ProxyInstanceConfig, ProxyConfigFile } from "@/types/proxy";
+import type { ProxyInstanceConfig, ProxyConfigFile, HooksConfig } from "@/types/proxy";
 import { CustomHeadersInput } from "./CustomHeadersInput";
+import { HooksInput } from "./HooksInput";
 
 interface EditInstanceDialogProps {
   instance: ProxyInstanceConfig;
@@ -30,6 +31,7 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
   const [instanceHeaders, setInstanceHeaders] = useState(
     instance.headers ? JSON.stringify(instance.headers) : ""
   );
+  const [hooks, setHooks] = useState(instance.hooks ? JSON.stringify(instance.hooks) : "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -39,6 +41,7 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
       setPort(instance.port.toString());
       setDescription(instance.description || "");
       setInstanceHeaders(instance.headers ? JSON.stringify(instance.headers) : "");
+      setHooks(instance.hooks ? JSON.stringify(instance.hooks) : "");
       setError("");
     }
   }, [open, instance]);
@@ -67,12 +70,23 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
         }
       }
 
+      // 解析 hooks
+      let parsedHooks: HooksConfig | null = null;
+      if (hooks.trim()) {
+        try {
+          parsedHooks = JSON.parse(hooks);
+        } catch {
+          throw new Error("Invalid hooks JSON");
+        }
+      }
+
       config.instances[idx] = {
         ...config.instances[idx]!,
         name,
         port: parseInt(port),
         description: description || null,
         headers,
+        hooks: parsedHooks,
       };
 
       const saveResponse = await fetch("/api/config", {
@@ -152,6 +166,7 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
               />
             </div>
             <CustomHeadersInput value={instanceHeaders} onChange={setInstanceHeaders} />
+            <HooksInput value={hooks} onChange={setHooks} />
             {error && <div className="text-destructive text-sm">{error}</div>}
           </div>
           <DialogFooter>

@@ -8,6 +8,7 @@ import type { ProxyForwardConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditForwardDialog } from "./EditForwardDialog";
 import { EndpointStatusIndicator } from "@/components/EndpointStatusIndicator";
 import type { ForwardStats } from "@/hooks/useForwardStats";
+import { getHookPluginName, hooksConfigToList } from "@/lib/hooks-config";
 
 interface ForwardRuleItemProps {
   forward: ProxyForwardConfig;
@@ -85,6 +86,13 @@ export function ForwardRuleItem({
   };
 
   const customHeadersCount = forward.headers ? Object.keys(forward.headers).length : 0;
+  const hooksList = hooksConfigToList(forward.hooks);
+  const hookNames = hooksList.map(getHookPluginName);
+  const disabledHookCount = hooksList.filter((h) => h.disabled === true).length;
+  const hooksLabel =
+    hookNames.length <= 2
+      ? hookNames.join(", ")
+      : `${hookNames.slice(0, 2).join(", ")} +${hookNames.length - 2}`;
 
   const methodLabel =
     !forward.methods || forward.methods.length === 0 || forward.methods.includes("*")
@@ -143,6 +151,17 @@ export function ForwardRuleItem({
               <span>路由前缀</span>
               <span className="bg-muted rounded px-1 py-0.5 font-mono">{routeLabel}</span>
             </div>
+            {hooksList.length > 0 && (
+              <div className="flex items-center gap-1">
+                <span>Hooks</span>
+                <span className="bg-muted rounded px-1 py-0.5 font-mono">{hooksLabel}</span>
+                {disabledHookCount > 0 && (
+                  <span className="text-[10px] text-muted-foreground">
+                    ({disabledHookCount} disabled)
+                  </span>
+                )}
+              </div>
+            )}
             <a
               href={forward.target}
               target="_blank"

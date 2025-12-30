@@ -33,6 +33,7 @@ import type { ProxyInstanceConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditInstanceDialog } from "./EditInstanceDialog";
 import { ForwardRulesList } from "./ForwardRulesList";
 import { useProxyViewer, type InstanceStatus } from "@/components/ProxyViewerContext";
+import { getHookPluginName, hooksConfigToList } from "@/lib/hooks-config";
 
 interface InstanceControlsProps {
   instance: ProxyInstanceConfig;
@@ -61,6 +62,17 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
     if (!instance.headers) return [];
     return Object.entries(instance.headers);
   }, [instance.headers]);
+
+  const instanceHooksList = useMemo(() => hooksConfigToList(instance.hooks), [instance.hooks]);
+  const instanceHooksLabel = useMemo(() => {
+    const names = instanceHooksList.map(getHookPluginName);
+    if (names.length <= 2) return names.join(", ");
+    return `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
+  }, [instanceHooksList]);
+  const instanceDisabledHookCount = useMemo(
+    () => instanceHooksList.filter((h) => h.disabled === true).length,
+    [instanceHooksList],
+  );
 
   // 从配置更新 autoPushConfig
   useEffect(() => {
@@ -314,6 +326,12 @@ export function InstanceControls({ instance, onUpdate, focusedForwardName }: Ins
           {globalHeaderEntries.length > 0 && (
             <p className="text-muted-foreground text-xs">
               全局自定义 Header：{globalHeaderEntries.length} 个，所有转发规则都会继承。
+            </p>
+          )}
+          {instanceHooksList.length > 0 && (
+            <p className="text-muted-foreground text-xs">
+              实例 Hooks：{instanceHooksLabel}
+              {instanceDisabledHookCount > 0 ? `（${instanceDisabledHookCount} disabled）` : ""}
             </p>
           )}
         </div>

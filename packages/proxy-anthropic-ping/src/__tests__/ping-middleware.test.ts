@@ -749,7 +749,7 @@ describe("AnthropicPingMiddleware - JMESPath SkipPingMatchers", () => {
   it("should have response matcher for status 400 in defaults", () => {
     // Verify DEFAULT_SKIP_PING_MATCHERS includes response matcher for status 400
     const hasResponseStatusMatcher = Object.values(DEFAULT_SKIP_PING_MATCHERS).some(
-      (m) => m.target === "response" && m.matcher.includes("status == `400`")
+      (m) => m.type === "jmespath" && m.target === "response" && m.matcher.includes("status == `400`")
     );
     expect(hasResponseStatusMatcher).toBe(true);
   });
