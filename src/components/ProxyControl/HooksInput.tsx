@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +18,24 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ChevronDown, ChevronRight, Code, Info, Plus, Trash2, Zap } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ChevronDown, ChevronRight, Code, GripVertical, Info, Plus, Trash2, Zap } from "lucide-react";
 import type { HookConfig, HooksConfig } from "@/types/proxy";
 import { getHookPluginName } from "@/lib/hooks-config";
 
@@ -49,6 +66,194 @@ function coerceHooksConfigList(value: unknown): HookConfig[] {
   if (!value) return [];
   const list = Array.isArray(value) ? value : [value];
   return list.map(coerceHookConfig);
+}
+
+interface SortableHookItemProps {
+  id: string;
+  hook: HookConfig;
+  index: number;
+  isExpanded: boolean;
+  disabled: boolean;
+  configText: string;
+  configError: string | null;
+  onToggleExpand: () => void;
+  onUpdate: (updater: (prev: HookConfig) => HookConfig) => void;
+  onRemove: () => void;
+  onConfigTextChange: (text: string) => void;
+  onConfigErrorChange: (error: string | null) => void;
+}
+
+function SortableHookItem({
+  id,
+  hook,
+  index,
+  isExpanded,
+  disabled,
+  configText,
+  configError,
+  onToggleExpand,
+  onUpdate,
+  onRemove,
+  onConfigTextChange,
+  onConfigErrorChange,
+}: SortableHookItemProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+  });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  const pluginName = getHookPluginName(hook);
+  const argsText = (hook.args ?? []).join("\n");
+
+  return (
+    <Collapsible open={isExpanded} onOpenChange={onToggleExpand}>
+      <div
+        ref={setNodeRef}
+        style={style}
+        className={`rounded border ${disabled ? "opacity-50 border-dashed bg-muted/5" : "bg-card/20"}`}
+      >
+        <div className="flex items-center gap-1.5 px-2 py-1.5">
+          <button
+            type="button"
+            className="cursor-grab text-muted-foreground hover:text-foreground touch-none"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </button>
+          <CollapsibleTrigger asChild>
+            <button type="button" className="text-muted-foreground hover:text-foreground">
+              {isExpanded ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleTrigger asChild>
+            <button type="button" className="flex-1 text-left font-mono text-xs hover:underline">
+              {pluginName}
+            </button>
+          </CollapsibleTrigger>
+          <Badge variant="secondary" className="text-[9px] px-1 py-0">
+            {hook.type}
+          </Badge>
+          <Switch
+            checked={!disabled}
+            onCheckedChange={(checked) => {
+              onUpdate((prev) => {
+                if (checked) {
+                  const { disabled: _, ...rest } = prev;
+                  return rest;
+                }
+                return { ...prev, disabled: true };
+              });
+            }}
+          />
+          <Button type="button" size="icon" variant="ghost" className="h-6 w-6" onClick={onRemove}>
+            <Trash2 className="h-3 w-3 text-destructive" />
+          </Button>
+        </div>
+        <CollapsibleContent>
+          <div className="border-t px-2 py-2 space-y-2">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Type</Label>
+                <Select value={hook.type} onValueChange={() => {}}>
+                  <SelectTrigger className="h-7 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="http">http</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Command</Label>
+                <Input
+                  value={hook.command}
+                  onChange={(e) => onUpdate((prev) => ({ ...prev, command: e.target.value }))}
+                  placeholder="bunx"
+                  className="h-7 font-mono text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">CWD</Label>
+                <Input
+                  value={hook.cwd ?? ""}
+                  onChange={(e) =>
+                    onUpdate((prev) => {
+                      const cwd = e.target.value.trim();
+                      return { ...prev, cwd: cwd || undefined };
+                    })
+                  }
+                  placeholder="/path/to/dir"
+                  className="h-7 font-mono text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Args</Label>
+                <Textarea
+                  value={argsText}
+                  onChange={(e) => {
+                    const lines = e.target.value
+                      .split("\n")
+                      .map((l) => l.trim())
+                      .filter((l) => l.length > 0);
+                    onUpdate((prev) => ({
+                      ...prev,
+                      args: lines.length > 0 ? lines : undefined,
+                    }));
+                  }}
+                  placeholder="每行一个参数"
+                  className="font-mono text-xs resize-none"
+                  rows={2}
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground">Config (JSON)</Label>
+              <Textarea
+                value={configText}
+                onChange={(e) => {
+                  const text = e.target.value;
+                  onConfigTextChange(text);
+                  if (!text.trim()) {
+                    onConfigErrorChange(null);
+                    onUpdate((prev) => {
+                      const { config: _, ...rest } = prev;
+                      return rest;
+                    });
+                    return;
+                  }
+                  try {
+                    const raw: unknown = JSON.parse(text);
+                    if (!isRecord(raw)) {
+                      onConfigErrorChange("必须是 object");
+                      return;
+                    }
+                    onConfigErrorChange(null);
+                    onUpdate((prev) => ({ ...prev, config: raw }));
+                  } catch {
+                    onConfigErrorChange("JSON 格式错误");
+                  }
+                }}
+                placeholder='{ "debug": false }'
+                className="font-mono text-xs resize-none"
+                rows={3}
+              />
+              {configError && <div className="text-destructive text-[10px]">{configError}</div>}
+            </div>
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
 }
 
 const OFFICIAL_PLUGIN_PRESETS = [
@@ -185,6 +390,38 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
     syncHooksToJson(next);
   };
 
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const hookIds = useMemo(() => hooks.map((_, i) => `hook-${i}`), [hooks]);
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      const oldIndex = hookIds.indexOf(active.id as string);
+      const newIndex = hookIds.indexOf(over.id as string);
+      const newHooks = arrayMove(hooks, oldIndex, newIndex);
+      const newConfigTexts = arrayMove(configTexts, oldIndex, newIndex);
+      const newConfigErrors = arrayMove(configErrors, oldIndex, newIndex);
+      setHooks(newHooks);
+      setConfigTexts(newConfigTexts);
+      setConfigErrors(newConfigErrors);
+      onChange(JSON.stringify(newHooks));
+      // 更新expandedIndex
+      if (expandedIndex === oldIndex) {
+        setExpandedIndex(newIndex);
+      } else if (expandedIndex !== null) {
+        if (oldIndex < expandedIndex && newIndex >= expandedIndex) {
+          setExpandedIndex(expandedIndex - 1);
+        } else if (oldIndex > expandedIndex && newIndex <= expandedIndex) {
+          setExpandedIndex(expandedIndex + 1);
+        }
+      }
+    }
+  };
+
   const renderSummaryBadges = (hooksConfig: HookConfig[]) => {
     if (hooksConfig.length === 0) return null;
     return (
@@ -276,172 +513,33 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
           {hooks.length === 0 ? (
             <div className="text-muted-foreground text-xs py-2">未配置 hooks</div>
           ) : (
-            <div className="space-y-1.5">
-              {hooks.map((hook, index) => {
-                const pluginName = getHookPluginName(hook);
-                const disabled = hook.disabled === true;
-                const isExpanded = expandedIndex === index;
-                const argsText = (hook.args ?? []).join("\n");
-                const configText = configTexts[index] ?? "";
-                const configError = configErrors[index] ?? null;
-
-                return (
-                  <Collapsible
-                    key={`hook-${index}`}
-                    open={isExpanded}
-                    onOpenChange={() => toggleExpand(index)}
-                  >
-                    <div
-                      className={`rounded border ${
-                        disabled ? "opacity-50 border-dashed bg-muted/5" : "bg-card/20"
-                      }`}
-                    >
-                      <div className="flex items-center gap-1.5 px-2 py-1.5">
-                        <CollapsibleTrigger asChild>
-                          <button type="button" className="text-muted-foreground hover:text-foreground">
-                            {isExpanded ? (
-                              <ChevronDown className="h-3.5 w-3.5" />
-                            ) : (
-                              <ChevronRight className="h-3.5 w-3.5" />
-                            )}
-                          </button>
-                        </CollapsibleTrigger>
-                        <CollapsibleTrigger asChild>
-                          <button
-                            type="button"
-                            className="flex-1 text-left font-mono text-xs hover:underline"
-                          >
-                            {pluginName}
-                          </button>
-                        </CollapsibleTrigger>
-                        <Badge variant="secondary" className="text-[9px] px-1 py-0">
-                          {hook.type}
-                        </Badge>
-                        <Switch
-                          checked={!disabled}
-                          onCheckedChange={(checked) => {
-                            updateHook(index, (prev) => {
-                              if (checked) {
-                                const { disabled: _, ...rest } = prev;
-                                return rest;
-                              }
-                              return { ...prev, disabled: true };
-                            });
-                          }}
-                        />
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="h-6 w-6"
-                          onClick={() => removeHook(index)}
-                        >
-                          <Trash2 className="h-3 w-3 text-destructive" />
-                        </Button>
-                      </div>
-                      <CollapsibleContent>
-                        <div className="border-t px-2 py-2 space-y-2">
-                          <div className="grid gap-2 sm:grid-cols-2">
-                            <div className="space-y-1">
-                              <Label className="text-[10px] text-muted-foreground">Type</Label>
-                              <Select value={hook.type} onValueChange={() => {}}>
-                                <SelectTrigger className="h-7 text-xs">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="http">http</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div className="space-y-1">
-                              <Label className="text-[10px] text-muted-foreground">Command</Label>
-                              <Input
-                                value={hook.command}
-                                onChange={(e) =>
-                                  updateHook(index, (prev) => ({ ...prev, command: e.target.value }))
-                                }
-                                placeholder="bunx"
-                                className="h-7 font-mono text-xs"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <Label className="text-[10px] text-muted-foreground">CWD</Label>
-                              <Input
-                                value={hook.cwd ?? ""}
-                                onChange={(e) =>
-                                  updateHook(index, (prev) => {
-                                    const cwd = e.target.value.trim();
-                                    return { ...prev, cwd: cwd || undefined };
-                                  })
-                                }
-                                placeholder="/path/to/dir"
-                                className="h-7 font-mono text-xs"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <Label className="text-[10px] text-muted-foreground">Args</Label>
-                              <Textarea
-                                value={argsText}
-                                onChange={(e) => {
-                                  const lines = e.target.value
-                                    .split("\n")
-                                    .map((l) => l.trim())
-                                    .filter((l) => l.length > 0);
-                                  updateHook(index, (prev) => ({
-                                    ...prev,
-                                    args: lines.length > 0 ? lines : undefined,
-                                  }));
-                                }}
-                                placeholder="每行一个参数"
-                                className="font-mono text-xs resize-none"
-                                rows={2}
-                              />
-                            </div>
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-[10px] text-muted-foreground">Config (JSON)</Label>
-                            <Textarea
-                              value={configText}
-                              onChange={(e) => {
-                                const text = e.target.value;
-                                setConfigTexts((prev) => prev.map((v, i) => (i === index ? text : v)));
-                                if (!text.trim()) {
-                                  setConfigErrors((prev) => prev.map((v, i) => (i === index ? null : v)));
-                                  updateHook(index, (prev) => {
-                                    const { config: _, ...rest } = prev;
-                                    return rest;
-                                  });
-                                  return;
-                                }
-                                try {
-                                  const raw: unknown = JSON.parse(text);
-                                  if (!isRecord(raw)) {
-                                    setConfigErrors((prev) =>
-                                      prev.map((v, i) => (i === index ? "必须是 object" : v)),
-                                    );
-                                    return;
-                                  }
-                                  setConfigErrors((prev) => prev.map((v, i) => (i === index ? null : v)));
-                                  updateHook(index, (prev) => ({ ...prev, config: raw }));
-                                } catch {
-                                  setConfigErrors((prev) =>
-                                    prev.map((v, i) => (i === index ? "JSON 格式错误" : v)),
-                                  );
-                                }
-                              }}
-                              placeholder='{ "debug": false }'
-                              className="font-mono text-xs resize-none"
-                              rows={3}
-                            />
-                            {configError && <div className="text-destructive text-[10px]">{configError}</div>}
-                          </div>
-                        </div>
-                      </CollapsibleContent>
-                    </div>
-                  </Collapsible>
-                );
-              })}
-            </div>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={hookIds} strategy={verticalListSortingStrategy}>
+                <div className="space-y-1.5">
+                  {hooks.map((hook, index) => (
+                    <SortableHookItem
+                      key={hookIds[index]}
+                      id={hookIds[index]!}
+                      hook={hook}
+                      index={index}
+                      isExpanded={expandedIndex === index}
+                      disabled={hook.disabled === true}
+                      configText={configTexts[index] ?? ""}
+                      configError={configErrors[index] ?? null}
+                      onToggleExpand={() => toggleExpand(index)}
+                      onUpdate={(updater) => updateHook(index, updater)}
+                      onRemove={() => removeHook(index)}
+                      onConfigTextChange={(text) =>
+                        setConfigTexts((prev) => prev.map((v, i) => (i === index ? text : v)))
+                      }
+                      onConfigErrorChange={(err) =>
+                        setConfigErrors((prev) => prev.map((v, i) => (i === index ? err : v)))
+                      }
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
           )}
 
           {showAdvancedJson && (
