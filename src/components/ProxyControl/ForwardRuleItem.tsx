@@ -2,13 +2,15 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Trash2, ExternalLink, Edit, GripVertical } from "lucide-react";
+import { Trash2, ExternalLink, Edit, GripVertical, Copy } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ProxyForwardConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditForwardDialog } from "./EditForwardDialog";
+import { CreateForwardDialog } from "./CreateForwardDialog";
 import { EndpointStatusIndicator } from "@/components/EndpointStatusIndicator";
 import type { ForwardStats } from "@/hooks/useForwardStats";
 import { getHookPluginName, hooksConfigToList } from "@/lib/hooks-config";
+import { useProxyViewer } from "@/components/ProxyViewerContext";
 
 interface ForwardRuleItemProps {
   forward: ProxyForwardConfig;
@@ -39,6 +41,7 @@ export function ForwardRuleItem({
   stats = null,
 }: ForwardRuleItemProps) {
   const [deleting, setDeleting] = useState(false);
+  const { jumpToForwardRule } = useProxyViewer();
 
   const handleDelete = async () => {
     if (!confirm(`确定要删除转发规则 "${forward.name}" 吗？`)) {
@@ -206,6 +209,27 @@ export function ForwardRuleItem({
           trigger={
             <Button size="sm" variant="ghost">
               <Edit className="h-4 w-4" />
+            </Button>
+          }
+        />
+        <CreateForwardDialog
+          instanceName={instanceName}
+          onCreated={(newName) => {
+            onUpdate();
+            if (newName) jumpToForwardRule(instanceName, newName);
+          }}
+          initialData={{
+            name: forward.name,
+            path: forward.path ?? undefined,
+            target: forward.target,
+            methods: forward.methods,
+            description: forward.description,
+            headers: forward.headers,
+            hooks: forward.hooks ? JSON.stringify(forward.hooks) : undefined,
+          }}
+          trigger={
+            <Button size="sm" variant="ghost">
+              <Copy className="h-4 w-4" />
             </Button>
           }
         />

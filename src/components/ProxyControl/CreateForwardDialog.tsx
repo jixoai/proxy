@@ -19,10 +19,21 @@ import type { ProxyConfigFile } from "@/types/proxy";
 interface CreateForwardDialogProps {
   instanceName: string;
   trigger?: React.ReactNode;
-  onCreated: () => void;
+  /** 创建成功回调，参数为新创建的forward名称 */
+  onCreated: (newForwardName?: string) => void;
+  /** 预填充数据（用于复制功能） */
+  initialData?: {
+    name?: string;
+    path?: string;
+    target?: string;
+    methods?: string[];
+    description?: string | null;
+    headers?: Record<string, string> | null;
+    hooks?: string;
+  };
 }
 
-export function CreateForwardDialog({ instanceName, trigger, onCreated }: CreateForwardDialogProps) {
+export function CreateForwardDialog({ instanceName, trigger, onCreated, initialData }: CreateForwardDialogProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -30,8 +41,23 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated }: Create
   const [method, setMethod] = useState("*");
   const [description, setDescription] = useState("");
   const [customHeaders, setCustomHeaders] = useState("");
+  const [hooks, setHooks] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // 当dialog打开时，如果有initialData则预填充
+  const handleOpenChange = (newOpen: boolean) => {
+    setOpen(newOpen);
+    if (newOpen && initialData) {
+      setName(initialData.name ? `${initialData.name} (副本)` : "");
+      setPath(initialData.path ?? "");
+      setTargetUrl(initialData.target ?? "");
+      setMethod(initialData.methods?.join(",") ?? "*");
+      setDescription(initialData.description ?? "");
+      setCustomHeaders(initialData.headers ? JSON.stringify(initialData.headers, null, 2) : "");
+      setHooks(initialData.hooks ?? "");
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,6 +88,16 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated }: Create
         ? ["*"] 
         : method.split(",").map(m => m.trim().toUpperCase()).filter(Boolean);
 
+      // 解析 hooks
+      let parsedHooks = null;
+      if (hooks.trim()) {
+        try {
+          parsedHooks = JSON.parse(hooks);
+        } catch {
+          throw new Error("Invalid hooks JSON");
+        }
+      }
+
       instance.forwards.push({
         name,
         enabled: true,
@@ -70,6 +106,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated }: Create
         path: path || null,
         methods,
         headers,
+        hooks: parsedHooks,
       });
 
       const saveResponse = await fetch("/api/config", {
@@ -83,6 +120,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated }: Create
         throw new Error(data.error || "Failed to create forward");
       }
 
+      const createdName = name;
       setOpen(false);
       setName("");
       setPath("");
@@ -90,7 +128,8 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated }: Create
       setMethod("*");
       setDescription("");
       setCustomHeaders("");
-      onCreated();
+      setHooks("");
+      onCreated(createdName);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
@@ -99,7 +138,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated }: Create
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         {trigger || (
           <Button size="sm" variant="outline">
