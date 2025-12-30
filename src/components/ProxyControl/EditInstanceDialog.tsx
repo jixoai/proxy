@@ -119,13 +119,13 @@ export function EditInstanceDialog({ instance, trigger, onUpdated }: EditInstanc
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="flex max-h-[85vh] flex-col">
         <DialogHeader>
           <DialogTitle>编辑代理实例</DialogTitle>
           <DialogDescription>修改代理服务器实例的配置</DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit}>
-          <div className="space-y-4 py-4">
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <div className="flex-1 space-y-4 overflow-y-auto py-4 pr-2">
             <div className="space-y-2">
               <Label htmlFor="edit-name" className="flex items-center gap-2">
                 <Tag className="h-3.5 w-3.5" />
