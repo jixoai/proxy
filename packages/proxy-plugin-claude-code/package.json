@@ -1,0 +1,25 @@
+{
+  "name": "@jixo/proxy-plugin-claude-code",
+  "version": "0.1.0",
+  "description": "Proxy plugin to enable Claude Code using Codex-compatible backends",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "proxy-plugin-claude-code": "src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jixo/proxy-plugin": "workspace:*",
+    "js-tiktoken": "^1.0.21"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "bun": ">=1.0.0"
+  }
+}
