@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * @jixo/proxy-plugin-codex
+ * @jixo/proxy-plugin-anthropic4codex
  *
  * Codex 插件，实现 Codex Responses API ↔ Claude Messages API 转换：
  * - Request Hook: 将 Codex Responses API 请求转换为 Claude Messages API 请求

@@ -23,15 +23,22 @@ import { rewriteResponse } from "./response-rewriter";
 const DroidStoreSchema = z.object({
   /** 请求已被 Droid 插件转换 */
   activated: z.literal(true),
+  /** 该次请求体字节长度（用于 response hook 判断是否为服务器异常） */
+  requestBodyLength: z.number().int().nonnegative(),
 });
 
 type DroidStore = z.infer<typeof DroidStoreSchema>;
+
+/** 默认服务器异常检测阈值：680KB */
+const DEFAULT_SERVER_ANOMALY_THRESHOLD = 680 * 1024;
 
 export interface DroidPluginOptions {
   /** 是否启用调试日志 */
   debug?: boolean;
   /** 日志目录（可选） */
   logDir?: string;
+  /** 服务器异常检测阈值（字节），小于此值的请求收到 context_length_exceeded 会被视为服务器异常，默认 680KB */
+  serverAnomalyThreshold?: number;
 }
 
 /**
@@ -39,23 +46,23 @@ export interface DroidPluginOptions {
  *
  * @example
  * ```ts
- * import { createDroidPlugin } from "@jixo/proxy-plugin-droid";
+ * import { createDroidPlugin } from "@jixo/proxy-plugin-anthropic4droid";
  * import { definePlugin } from "@jixo/proxy-plugin";
  *
  * definePlugin(createDroidPlugin({ debug: true }));
  * ```
  */
 export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin<DroidStore> {
-  const { debug, logDir } = options;
+  const { debug, logDir, serverAnomalyThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD } = options;
 
   const logger: PluginLogger = createLogger({
-    name: "droid-plugin",
+    name: "anthropic4droid",
     debug,
     logDir,
   });
 
   return {
-    name: "droid-plugin",
+    name: "anthropic4droid",
     storeSchema: DroidStoreSchema,
 
     onRequest(params: RequestHookParams): RequestHookResult | null {
@@ -90,8 +97,11 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       }
 
       // 使用 store 标记请求已被转换（用于 onResponse 判断）
+      const requestBodyLength = result.body
+        ? Buffer.byteLength(result.body, "utf-8")
+        : params.body.length;
       const finalHeaders = params.store
-        ? params.store.set({ activated: true }, result.headers ?? headers)
+        ? params.store.set({ activated: true, requestBodyLength }, result.headers ?? headers)
         : result.headers;
 
       return {
@@ -110,16 +120,29 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       logger.debug(`Processing response: ${params.meta.statusCode}`);
 
+      // 优先使用 store 中记录的真实请求体大小，避免 content-length 缺失/不准确导致误判
+      const requestContentLength = storeData.requestBodyLength;
+
       const result = rewriteResponse({
         meta: params.meta,
         body: params.body,
+        requestContentLength,
+        serverAnomalyThreshold,
       });
 
       if (!result.rewritten) {
         return null;
       }
 
-      logger.debug(`Rewritten response: upstream error -> context_length_exceeded (source: ${result.source})`);
+      if (result.source === "server_anomaly") {
+        logger.debug(
+          `Rewritten response: 200+context_length_exceeded with small request -> 500 (server anomaly)`,
+        );
+      } else {
+        logger.debug(
+          `Rewritten response: upstream error -> context_length_exceeded (source: ${result.source})`,
+        );
+      }
 
       // 记录重写详情
       logger.logToFile("response-rewrite", {

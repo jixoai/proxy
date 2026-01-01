@@ -9,7 +9,7 @@
 
 Claude Code 使用 Anthropic Messages API，以下是其工具的精确定义（来自 `sdk-tools.d.ts`）：
 
-> 说明：本文件是 Claude Code（Anthropic）侧工具/协议的参考。`@jixo/proxy-plugin-codex` 当前实现默认**不做 Claude Code 工具名映射**（例如不把 `exec_command` 变成 `Bash`、不把 `update_plan` 变成 `TodoWrite`），而是尽量保持工具名/参数直通；仅对 Codex 内置 `web_search` 做 server-side 映射到 Anthropic `web_search_20250305`。
+> 说明：本文件是 Claude Code（Anthropic）侧工具/协议的参考。`@jixo/proxy-plugin-anthropic4codex` 当前实现默认**不做 Claude Code 工具名映射**（例如不把 `exec_command` 变成 `Bash`、不把 `update_plan` 变成 `TodoWrite`），而是尽量保持工具名/参数直通；仅对 Codex 内置 `web_search` 做 server-side 映射到 Anthropic `web_search_20250305`。
 
 ### 1.1 核心工具列表
 
@@ -214,7 +214,7 @@ Claude Code 处理以下 SSE 事件：
 // NOTE:
 // Claude 可能会把最终回答拆成很多个 text blocks（段落级切分）。
 // 在 Codex CLI 侧如果逐块映射成独立 message，会导致输出被切成很多段，破坏 Markdown 可读性。
-// proxy-plugin-codex 会把连续的 text blocks 合并为同一个 Codex message output item。
+// proxy-plugin-anthropic4codex 会把连续的 text blocks 合并为同一个 Codex message output item。
 
 // tool_use block
 {
@@ -227,7 +227,7 @@ Claude Code 处理以下 SSE 事件：
 
 ---
 
-## 四、proxy-plugin-codex 的工具策略（当前实现）
+## 四、proxy-plugin-anthropic4codex 的工具策略（当前实现）
 
 - 工具名：默认透传（不做 `Bash` / `FileEdit` / `TodoWrite` 等 Claude Code 工具名映射）。
 - `function` 工具：`parameters` → Claude `input_schema`（保持 `name` 不变）。
@@ -390,7 +390,7 @@ class ClaudeToCodexConverter {
 ### 7.2 工具名映射表
 
 ```typescript
-// 备注：当前 @jixo/proxy-plugin-codex 不再维护工具名映射表，尽量保持工具名直通。
+// 备注：当前 @jixo/proxy-plugin-anthropic4codex 不再维护工具名映射表，尽量保持工具名直通。
 ```
 
 ---

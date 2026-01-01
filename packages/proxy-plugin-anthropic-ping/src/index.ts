@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * @jixo/proxy-anthropic-ping
+ * @jixo/proxy-plugin-anthropic-ping
  *
  * Anthropic 缓存保活插件
  *

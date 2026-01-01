@@ -53,7 +53,7 @@ import {
 import type { StoreChangeEvent } from "./lib/store/base-store";
 import { parsePrivateHeaders } from "@jixo/proxy-plugin";
 import { parsePluginUiFromHeaders } from "./lib/plugin-ui";
-import { pingStatusStore, type PingStatusPayload } from "../packages/proxy-anthropic-ping/src/ping-status-server";
+import { pingStatusStore, type PingStatusPayload } from "../packages/proxy-plugin-anthropic-ping/src/ping-status-server";
 
 function parsePluginInfo(
   requestHeaders: Record<string, string | string[]> | undefined,
@@ -63,6 +63,52 @@ function parsePluginInfo(
     ...(requestHeaders ?? {}),
     ...(responseHeaders ?? {}),
   });
+}
+
+function discoverHookPlugins(): string[] {
+  const result = new Set<string>();
+
+  const isHookPluginPackage = (name: unknown): name is string =>
+    typeof name === "string" && name.startsWith("@jixo/proxy-plugin-");
+
+  const readPackageJsonName = (pkgJsonPath: string): string | null => {
+    try {
+      const content = fs.readFileSync(pkgJsonPath, "utf-8");
+      const json = JSON.parse(content) as { name?: unknown };
+      return typeof json.name === "string" ? json.name : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const collectFromWorkspacePackages = (packagesDir: string) => {
+    if (!fs.existsSync(packagesDir)) return;
+    for (const entry of fs.readdirSync(packagesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const pkgJsonPath = path.join(packagesDir, entry.name, "package.json");
+      if (!fs.existsSync(pkgJsonPath)) continue;
+      const name = readPackageJsonName(pkgJsonPath);
+      if (isHookPluginPackage(name)) result.add(name);
+    }
+  };
+
+  const collectFromNodeModules = (scopeDir: string) => {
+    if (!fs.existsSync(scopeDir)) return;
+    for (const entry of fs.readdirSync(scopeDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const pkgJsonPath = path.join(scopeDir, entry.name, "package.json");
+      if (!fs.existsSync(pkgJsonPath)) continue;
+      const name = readPackageJsonName(pkgJsonPath);
+      if (isHookPluginPackage(name)) result.add(name);
+    }
+  };
+
+  // Prefer workspace packages in repo dev mode.
+  collectFromWorkspacePackages(path.join(__dirname, "..", "packages"));
+  // Fallback to local node_modules (useful if viewer-server runs outside repo root).
+  collectFromNodeModules(path.join(process.cwd(), "node_modules", "@jixo"));
+
+  return [...result].sort((a, b) => a.localeCompare(b));
 }
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -622,6 +668,17 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             return Response.json({ success: true, ...result });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+
+      // ========== Hooks 插件自动发现 ==========
+      "/api/hook-plugins": {
+        async GET() {
+          try {
+            return Response.json({ plugins: discoverHookPlugins() });
+          } catch (error) {
+            return Response.json({ error: String(error), plugins: [] }, { status: 500 });
           }
         },
       },

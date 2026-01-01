@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import * as path from "node:path";
 import { initDatabase } from "../src/lib/db";
+import { clearDataDir, setDataDir } from "../src/lib/runtime-paths";
 import {
   clearAllRequests,
   createProxyRequest,
@@ -9,9 +11,17 @@ import {
 } from "../src/lib/db-requests";
 
 describe("db-requests logging pipeline", () => {
-  beforeEach(() => {
-    // destructive init to ensure a clean proxy_requests table
+  const TEST_DATA_DIR = path.join(process.cwd(), ".tmp", "db-requests-tests", "data");
+
+  beforeAll(() => {
+    // Use an isolated data dir so local dev DB/schema won't break tests.
+    setDataDir(TEST_DATA_DIR);
+    clearDataDir();
     initDatabase();
+  });
+
+  beforeEach(() => {
+    // Ensure a clean proxy_requests table for each test.
     clearAllRequests();
   });
 

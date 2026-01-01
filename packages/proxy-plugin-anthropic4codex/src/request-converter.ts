@@ -177,8 +177,8 @@ function isCodexContentItem(value: unknown): value is CodexContentItem {
 function convertCodexImageUrlToClaudeBlock(imageUrl: string): ClaudeContentBlock {
   const match = /^data:([^;]+);base64,([\s\S]+)$/.exec(imageUrl);
   if (match) {
-    const mediaType = match[1];
-    const data = match[2];
+    const mediaType = match[1] ?? "application/octet-stream";
+    const data = match[2] ?? "";
     return {
       type: "image",
       source: {

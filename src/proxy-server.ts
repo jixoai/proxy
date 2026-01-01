@@ -745,7 +745,9 @@ async function main(argv: string[]) {
             let statusMessage = proxyRes.statusMessage || "";
 
             // 如果存在 hooks，则必须缓存完整响应以支持修改，因此不允许直接流式写回客户端
-            const allowStreamingToClient = hooksExecutor?.hasResponseHooks !== true;
+            // 注意：直接检查配置而不是 hasResponseHooks，避免并发请求之间的 race condition
+            const hasConfiguredHooks = !!(instanceHooks || forwardRule.hooks);
+            const allowStreamingToClient = !hasConfiguredHooks;
             const isFailureStatus = statusCode >= 400 && statusCode <= 599;
             const hasMoreCandidates = i < candidateIndexes.length - 1;
             const shouldRetryOnFailure = isFailureStatus && hasMoreCandidates;
