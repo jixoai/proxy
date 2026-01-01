@@ -145,7 +145,7 @@ Use \`AskUserQuestion\` for interactive user input when you need to:
 **IMPORTANT**: When you need to ask the user questions with multiple-choice options, you MUST use the \`AskUserQuestion\` tool instead of writing questions in plain text. This enables an interactive UI.
 
 ## TodoWrite Tool
-Use \`TodoWrite\` to create and manage structured task lists for:
+Use \`TodoWrite\` (Codex side name: \`update_plan\`) to create and manage structured task lists for:
 - Complex multi-step tasks (3+ steps)
 - When the user provides multiple tasks or a list of requirements
 - To track progress on non-trivial work
@@ -169,6 +169,11 @@ export function convertSystemToInstructions(
   targetModel?: string
 ): string {
   void system;
+  // Allow overriding instructions behavior for gateways that accept empty prompts
+  // or for experiments to reduce prompt maintenance cost.
+  if (process.env.CLAUDE_CODE_INSTRUCTIONS_MODE === "empty") {
+    return "";
+  }
   return getCodexCliInstructions(targetModel);
 }
 

@@ -312,6 +312,7 @@ data: {"code":"server_error","message":"OpenAI request failed","sequence_number"
         itemId: "ws_123",
         toolUseId: "srvtoolu_test123",
         query: "test query",
+        citations: [],
         resultSent: false,
       });
 
@@ -390,6 +391,41 @@ data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_ws
       expect(result).toContain("web_search");
       expect(result).toContain("web_search_tool_result");
       expect(result).toContain("message_stop");
+    });
+
+    test("should emit web_search_tool_result for each web_search_call", () => {
+      const codexSSE = `event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_ws_multi","object":"response","created_at":1234567890,"status":"in_progress","model":"codex","output":[]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"ws_1","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"first query"}}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"first query"}}}
+
+event: response.output_text.annotation.added
+data: {"type":"response.output_text.annotation.added","sequence_number":3,"item_id":"msg_1","output_index":1,"content_index":0,"annotation_index":0,"annotation":{"type":"url_citation","start_index":0,"end_index":50,"title":"First Source","url":"https://example.com/first"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":4,"output_index":2,"item":{"id":"ws_2","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"second query"}}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":5,"output_index":2,"item":{"id":"ws_2","type":"web_search_call","status":"completed","action":{"type":"search","query":"second query"}}}
+
+event: response.output_text.annotation.added
+data: {"type":"response.output_text.annotation.added","sequence_number":6,"item_id":"msg_1","output_index":3,"content_index":0,"annotation_index":0,"annotation":{"type":"url_citation","start_index":0,"end_index":50,"title":"Second Source","url":"https://example.com/second"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":7,"response":{"id":"resp_ws_multi","status":"completed","model":"codex","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}
+
+`;
+
+      const result = convertSSEResponse(codexSSE);
+
+      // Two searches → two results
+      expect(result.match(/web_search_tool_result/g)?.length).toBe(2);
+      expect(result).toContain("https://example.com/first");
+      expect(result).toContain("https://example.com/second");
     });
   });
 

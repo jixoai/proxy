@@ -32,7 +32,7 @@ Codex-compatible Backend (Responses API)
 
 | Claude | Codex | 说明 |
 |--------|-------|------|
-| `system[]` | `instructions` | 合并为字符串，注入 Codex CLI 指令 |
+| `system[]` | `instructions` | 默认注入 Codex CLI 指令模板（可用 `CLAUDE_CODE_INSTRUCTIONS_MODE=empty` 置空）；同时从 system 抽取 Claude Code context 注入 input |
 | `messages[]` | `input[]` | 展平消息，转换内容块类型 |
 | `tools[]` | `tools[]` | function/custom/web_search 类型映射 |
 | `thinking.budget_tokens` | `reasoning.effort` | 数值 → 级别映射 |
@@ -81,8 +81,9 @@ bun run src/index.ts
 
 - `__tests__/request-converter.test.ts` - 请求转换测试
 - `__tests__/response-converter.test.ts` - 响应转换测试
+- `__tests__/count-tokens.test.ts` - count_tokens 模拟测试
 
-当前：58 个测试用例，覆盖：
+覆盖：
 - 基本请求/响应转换
 - 工具调用转换
 - Web 搜索处理
@@ -120,6 +121,7 @@ message_delta + message_stop (state.streamCompleted = true)
 | 变量 | 说明 |
 |------|------|
 | `DEBUG_CLAUDE_CODE=1` | 启用调试日志 |
+| `CLAUDE_CODE_INSTRUCTIONS_MODE=empty` | 将 Codex `instructions` 置空（用于兼容/实验） |
 | `PLUGIN_PORT` | 插件服务端口（默认自动分配） |
 
 ### Headers

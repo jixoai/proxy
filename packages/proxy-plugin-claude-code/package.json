@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@jixo/proxy-plugin": "workspace:*",
-    "js-tiktoken": "^1.0.21"
+    "js-tiktoken": "^1.0.21",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/bun": "latest",

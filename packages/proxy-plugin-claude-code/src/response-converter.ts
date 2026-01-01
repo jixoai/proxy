@@ -19,6 +19,7 @@ import type {
   CodexSSEResponseCompleted,
   CodexSSEError,
   ConverterState,
+  UrlCitation,
   WebSearchCallState,
 } from "./types";
 
@@ -199,6 +200,7 @@ function handleOutputItemAdded(
         itemId: item.id,
         toolUseId,
         query,
+        citations: [],
         resultSent: false,
       };
       state.webSearchCalls.push(webSearchState);
@@ -461,10 +463,19 @@ function handleAnnotationAdded(
 
   // 只处理 url_citation 类型
   if (annotation.type === "url_citation" && annotation.url) {
-    state.urlCitations.push({
+    const citation: UrlCitation = {
       url: annotation.url,
       title: annotation.title || annotation.url,
-    });
+    };
+
+    // 兜底：记录所有引用（Codex 并不保证能将引用与具体 web_search_call 一一对应）
+    state.urlCitations.push(citation);
+
+    // 最佳努力：把引用归属到“当前活跃的” web_search_call（按出现顺序）
+    const active = state.webSearchCalls.find((ws) => ws.itemId === state.activeWebSearchItemId);
+    if (active) {
+      active.citations.push(citation);
+    }
   }
 
   return [];
@@ -537,66 +548,49 @@ function handleResponseCompleted(
 
   // 检查是否有未发送结果的 web_search_call
   // Codex API 不会将 url_citation 与特定的 web_search_call 关联
-  // 所有引用都是最终文本输出的注释，因此我们合并所有搜索结果
-  // 只发送一个 web_search_tool_result，包含所有引用
+  // 所有引用都是最终文本输出的注释，因此我们尽最大努力按“活跃搜索”归属，
+  // 并确保每个 web_search_call 都会收到对应的 web_search_tool_result。
   const unsentWebSearches = state.webSearchCalls.filter(ws => !ws.resultSent);
-  if (unsentWebSearches.length > 0 && state.urlCitations.length > 0) {
-    // 使用第一个未发送的 web_search_call 的 toolUseId
-    const firstWebSearch = unsentWebSearches[0]!;
-
-    // 将所有 urlCitations 转换为 Claude 的 web_search_result 格式
-    const searchResults = state.urlCitations.map(citation => ({
-      type: "web_search_result",
+  if (unsentWebSearches.length > 0) {
+    const fallbackResults = state.urlCitations.map(citation => ({
+      type: "web_search_result" as const,
       url: citation.url,
       title: citation.title,
       encrypted_content: "",
       page_age: undefined,
     }));
 
-    events.push(formatSSE("content_block_start", {
-      type: "content_block_start",
-      index: state.contentBlockIndex,
-      content_block: {
-        type: "web_search_tool_result",
-        tool_use_id: firstWebSearch.toolUseId,
-        content: searchResults,
-      },
-    }));
-
-    events.push(formatSSE("content_block_stop", {
-      type: "content_block_stop",
-      index: state.contentBlockIndex,
-    }));
-    state.contentBlockIndex++;
-
-    // 标记所有 web_search_call 为已发送
     for (const ws of unsentWebSearches) {
+      const scoped = ws.citations.length > 0 ? ws.citations : state.urlCitations;
+      const results = scoped.map(citation => ({
+        type: "web_search_result" as const,
+        url: citation.url,
+        title: citation.title,
+        encrypted_content: "",
+        page_age: undefined,
+      }));
+
+      events.push(formatSSE("content_block_start", {
+        type: "content_block_start",
+        index: state.contentBlockIndex,
+        content_block: {
+          type: "web_search_tool_result",
+          tool_use_id: ws.toolUseId,
+          content: results.length > 0 ? results : fallbackResults,
+        },
+      }));
+
+      events.push(formatSSE("content_block_stop", {
+        type: "content_block_stop",
+        index: state.contentBlockIndex,
+      }));
+      state.contentBlockIndex++;
+
       ws.resultSent = true;
     }
-    // 清空已使用的 urlCitations
+
+    // 清空已使用的引用（该 state 生命周期仅覆盖单次响应）
     state.urlCitations = [];
-  } else if (unsentWebSearches.length > 0) {
-    // 没有引用但有未发送的搜索，发送空结果
-    const firstWebSearch = unsentWebSearches[0]!;
-    events.push(formatSSE("content_block_start", {
-      type: "content_block_start",
-      index: state.contentBlockIndex,
-      content_block: {
-        type: "web_search_tool_result",
-        tool_use_id: firstWebSearch.toolUseId,
-        content: [],
-      },
-    }));
-
-    events.push(formatSSE("content_block_stop", {
-      type: "content_block_stop",
-      index: state.contentBlockIndex,
-    }));
-    state.contentBlockIndex++;
-
-    for (const ws of unsentWebSearches) {
-      ws.resultSent = true;
-    }
   }
 
   // 更新 usage

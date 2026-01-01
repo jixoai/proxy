@@ -57,7 +57,7 @@ claude
 
 | Claude | Codex | 说明 |
 |--------|-------|------|
-| `system[]` | `instructions` | 合并为字符串 |
+| `system[]` | `instructions` | 默认注入 Codex CLI 指令模板（可用 `CLAUDE_CODE_INSTRUCTIONS_MODE=empty` 置空）；同时从 system 抽取 Claude Code context 注入 input |
 | `messages[]` | `input[]` | 展平并转换类型 |
 | `tools[]` | `tools[]` | function/custom/web_search |
 | `thinking.budget_tokens` | `reasoning.effort` | 数值映射 |
@@ -97,6 +97,7 @@ curl -X POST http://localhost:20003/v1/messages \
 | 变量 | 说明 |
 |------|------|
 | `DEBUG_CLAUDE_CODE=1` | 启用调试日志 |
+| `CLAUDE_CODE_INSTRUCTIONS_MODE=empty` | 将 Codex `instructions` 置空（用于兼容/实验） |
 | `PLUGIN_PORT` | 插件端口（默认自动） |
 
 ## 开发

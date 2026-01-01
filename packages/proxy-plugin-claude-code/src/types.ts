@@ -528,6 +528,8 @@ export interface WebSearchCallState {
   toolUseId: string;
   /** 搜索查询 */
   query: string;
+  /** 该次搜索产生的引用（最佳努力归属） */
+  citations: UrlCitation[];
   /** 是否已发送 web_search_tool_result */
   resultSent: boolean;
 }
