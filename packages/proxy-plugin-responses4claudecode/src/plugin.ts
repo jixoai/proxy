@@ -1,8 +1,8 @@
 /**
- * Claude → Codex 转换插件
+ * Responses → Claude Code 转换插件
  *
- * 将 Claude Messages API 请求转换为 Codex Responses API 格式，
- * 并将 Codex SSE 响应转换回 Claude SSE 格式。
+ * 将 Claude Messages API 请求转换为 OpenAI Responses API 格式，
+ * 并将 Responses SSE 响应转换回 Claude SSE 格式。
  */
 
 import { z } from "zod";
@@ -23,14 +23,14 @@ import { convertSSEResponse, convertErrorResponse, convertSuccessResponse } from
 import { estimateTokenCount, createCountTokensResponse } from "./count-tokens";
 
 /** 插件存储 schema - 标记请求是否被转换 */
-const ClaudeCodeStoreSchema = z.object({
-  /** 请求已被 Claude Code 插件转换 */
+const Responses4ClaudeCodeStoreSchema = z.object({
+  /** 请求已被 responses4claudecode 插件转换 */
   activated: z.literal(true),
 });
 
-type ClaudeCodeStore = z.infer<typeof ClaudeCodeStoreSchema>;
+type Responses4ClaudeCodeStore = z.infer<typeof Responses4ClaudeCodeStoreSchema>;
 
-export interface ClaudeCodePluginOptions {
+export interface Responses4ClaudeCodePluginOptions {
   /** 是否启用调试日志 */
   debug?: boolean;
   /** 日志目录（可选） */
@@ -49,28 +49,28 @@ function stripBetaQueryParam(url: string | undefined): string | undefined {
 }
 
 /**
- * 创建 Claude Code 插件
+ * 创建 Responses4ClaudeCode 插件
  *
  * @example
  * ```ts
- * import { createClaudeCodePlugin } from "@jixo/proxy-plugin-claude-code";
+ * import { createResponses4ClaudeCodePlugin } from "@jixo/proxy-plugin-responses4claudecode";
  * import { definePlugin } from "@jixo/proxy-plugin";
  *
- * definePlugin(createClaudeCodePlugin({ debug: true }));
+ * definePlugin(createResponses4ClaudeCodePlugin({ debug: true }));
  * ```
  */
-export function createClaudeCodePlugin(options: ClaudeCodePluginOptions = {}): ProxyPlugin<ClaudeCodeStore> {
+export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePluginOptions = {}): ProxyPlugin<Responses4ClaudeCodeStore> {
   const { debug, logDir } = options;
 
   const logger: PluginLogger = createLogger({
-    name: "claude-code",
+    name: "responses4claudecode",
     debug,
     logDir,
   });
 
   return {
-    name: "claude-code",
-    storeSchema: ClaudeCodeStoreSchema,
+    name: "responses4claudecode",
+    storeSchema: Responses4ClaudeCodeStoreSchema,
 
     onRequest(params: RequestHookParams): RequestHookResult | null {
       const { meta, body } = params;
@@ -156,10 +156,10 @@ export function createClaudeCodePlugin(options: ClaudeCodePluginOptions = {}): P
     },
 
     onResponse(params: ResponseHookParams): ResponseHookResult | null {
-      // 检查请求是否被 Claude Code 插件处理过
-      const storeData = params.store?.get() as ClaudeCodeStore | null;
+      // 检查请求是否被 responses4claudecode 插件处理过
+      const storeData = params.store?.get() as Responses4ClaudeCodeStore | null;
       if (!storeData?.activated) {
-        logger.debug("Request was not processed by Claude Code plugin, skipping response conversion");
+        logger.debug("Request was not processed by responses4claudecode plugin, skipping response conversion");
         return null;
       }
 
@@ -262,11 +262,11 @@ export function createClaudeCodePlugin(options: ClaudeCodePluginOptions = {}): P
 
 /**
  * 创建插件实例（兼容旧 API）
- * @deprecated 使用 createClaudeCodePlugin 代替
+ * @deprecated 使用 createResponses4ClaudeCodePlugin 代替
  */
-export function createPlugin(): ProxyPlugin<ClaudeCodeStore> {
-  const debug = process.env.DEBUG_CLAUDE_CODE === "1";
-  return createClaudeCodePlugin({ debug });
+export function createPlugin(): ProxyPlugin<Responses4ClaudeCodeStore> {
+  const debug = process.env.DEBUG_RESPONSES4CLAUDECODE === "1";
+  return createResponses4ClaudeCodePlugin({ debug });
 }
 
 /**

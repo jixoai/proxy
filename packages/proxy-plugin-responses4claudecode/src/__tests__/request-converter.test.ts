@@ -48,16 +48,16 @@ describe("request-converter", () => {
     });
 
     test("should allow empty instructions via env override", () => {
-      const prev = process.env.CLAUDE_CODE_INSTRUCTIONS_MODE;
-      process.env.CLAUDE_CODE_INSTRUCTIONS_MODE = "empty";
+      const prev = process.env.RESPONSES4CLAUDECODE_INSTRUCTIONS_MODE;
+      process.env.RESPONSES4CLAUDECODE_INSTRUCTIONS_MODE = "empty";
 
       try {
         expect(convertSystemToInstructions("You are a helpful assistant.")).toBe("");
       } finally {
         if (prev === undefined) {
-          delete process.env.CLAUDE_CODE_INSTRUCTIONS_MODE;
+          delete process.env.RESPONSES4CLAUDECODE_INSTRUCTIONS_MODE;
         } else {
-          process.env.CLAUDE_CODE_INSTRUCTIONS_MODE = prev;
+          process.env.RESPONSES4CLAUDECODE_INSTRUCTIONS_MODE = prev;
         }
       }
     });

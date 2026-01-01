@@ -1,11 +1,11 @@
 {
-  "name": "@jixo/proxy-plugin-claude-code",
+  "name": "@jixo/proxy-plugin-responses4claudecode",
   "version": "0.1.0",
-  "description": "Proxy plugin to enable Claude Code using Codex-compatible backends",
+  "description": "Proxy plugin to enable Claude Code using OpenAI Responses API backends",
   "type": "module",
   "main": "src/index.ts",
   "bin": {
-    "proxy-plugin-claude-code": "src/index.ts"
+    "proxy-plugin-responses4claudecode": "src/index.ts"
   },
   "scripts": {
     "test": "bun test",

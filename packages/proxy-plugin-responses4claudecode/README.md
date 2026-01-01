@@ -1,13 +1,13 @@
-# @jixo/proxy-plugin-claude-code
+# @jixo/proxy-plugin-responses4claudecode
 
-将 Claude Messages API 请求转换为 Codex Responses API 格式的代理插件。
+将 Claude Messages API 请求转换为 OpenAI Responses API 格式的代理插件。
 
 ## 概述
 
-让 **Claude Code** 使用 **Codex 兼容后端**（如 OpenAI Responses API、GPT-5 等）。
+让 **Claude Code** 使用 **OpenAI Responses API 兼容后端**（如 GPT-5 等）。
 
 ```
-Claude Code ─── Messages API ───→ Proxy ───→ Responses API ───→ Codex Backend
+Claude Code ─── Messages API ───→ Proxy ───→ Responses API ───→ OpenAI Backend
 ```
 
 ## 快速开始
@@ -25,16 +25,16 @@ bun install
 ```json
 {
   "instances": [{
-    "name": "claude-code",
+    "name": "responses4claudecode",
     "enabled": true,
-    "target": "https://your-codex-backend.com/v1/responses",
+    "target": "https://api.openai.com/v1/responses",
     "port": 20003,
     "path": "/v1/messages",
     "methods": ["POST"],
     "hooks": [{
       "type": "http",
       "command": "bun",
-      "args": ["run", "packages/proxy-plugin-claude-code/src/index.ts"]
+      "args": ["run", "packages/proxy-plugin-responses4claudecode/src/index.ts"]
     }]
   }]
 }
@@ -55,9 +55,9 @@ claude
 
 ### 请求转换
 
-| Claude | Codex | 说明 |
-|--------|-------|------|
-| `system[]` | `instructions` | 默认注入 Codex CLI 指令模板（可用 `CLAUDE_CODE_INSTRUCTIONS_MODE=empty` 置空）；同时从 system 抽取 Claude Code context 注入 input |
+| Claude | Responses | 说明 |
+|--------|-----------|------|
+| `system[]` | `instructions` | 默认注入 CLI 指令模板（可用 `RESPONSES4CLAUDECODE_INSTRUCTIONS_MODE=empty` 置空）；同时从 system 抽取 Claude Code context 注入 input |
 | `messages[]` | `input[]` | 展平并转换类型 |
 | `tools[]` | `tools[]` | function/custom/web_search |
 | `thinking.budget_tokens` | `reasoning.effort` | 数值映射 |
@@ -66,8 +66,8 @@ claude
 
 ### 响应转换 (SSE)
 
-| Codex Event | Claude Event |
-|-------------|--------------|
+| Responses Event | Claude Event |
+|-----------------|--------------|
 | `response.created` | `message_start` |
 | `response.output_text.delta` | `content_block_delta` |
 | `response.function_call_arguments.delta` | `content_block_delta` (tool_use) |
@@ -96,8 +96,8 @@ curl -X POST http://localhost:20003/v1/messages \
 
 | 变量 | 说明 |
 |------|------|
-| `DEBUG_CLAUDE_CODE=1` | 启用调试日志 |
-| `CLAUDE_CODE_INSTRUCTIONS_MODE=empty` | 将 Codex `instructions` 置空（用于兼容/实验） |
+| `DEBUG_RESPONSES4CLAUDECODE=1` | 启用调试日志 |
+| `RESPONSES4CLAUDECODE_INSTRUCTIONS_MODE=empty` | 将 `instructions` 置空（用于兼容/实验） |
 | `PLUGIN_PORT` | 插件端口（默认自动） |
 
 ## 开发
@@ -129,12 +129,12 @@ src/
 
 ## 已知限制
 
-1. **Thinking 兼容性**：Claude `thinking.signature` 不传递到 Codex（避免后端不兼容）
+1. **Thinking 兼容性**：Claude `thinking.signature` 不传递到后端（避免不兼容）
 2. **整块转换**：响应是整块处理，非真正流式（代理框架限制）
 
 ## 相关项目
 
-- [@jixo/proxy-plugin-codex](../proxy-plugin-codex) - Codex CLI → Claude API
+- [@jixo/proxy-plugin-anthropic4codex](../proxy-plugin-anthropic4codex) - Codex CLI → Claude API
 - [@jixo/proxy-plugin](../proxy-plugin) - 代理插件框架
 
 ## 许可证

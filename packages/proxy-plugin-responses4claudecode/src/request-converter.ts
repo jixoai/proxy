@@ -171,7 +171,7 @@ export function convertSystemToInstructions(
   void system;
   // Allow overriding instructions behavior for gateways that accept empty prompts
   // or for experiments to reduce prompt maintenance cost.
-  if (process.env.CLAUDE_CODE_INSTRUCTIONS_MODE === "empty") {
+  if (process.env.RESPONSES4CLAUDECODE_INSTRUCTIONS_MODE === "empty") {
     return "";
   }
   return getCodexCliInstructions(targetModel);
