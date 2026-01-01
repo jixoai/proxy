@@ -5,7 +5,8 @@ import { getDbPath, ensureDataDir } from "./runtime-paths";
 
 // Schema 版本号 - 每次数据库结构变更时递增
 // v2: 添加虚拟列索引优化 + streaming 专用列
-const SCHEMA_VERSION = 2;
+// v3: status_code 虚拟列优先使用 hookedResponse.statusCode
+const SCHEMA_VERSION = 3;
 
 // 延迟初始化数据库实例
 // 必须在 setDataDir() 调用之后才能访问
@@ -84,7 +85,7 @@ export function initDatabase() {
   const dbVersion = versionRow ? parseInt(versionRow.value, 10) : 0;
 
   if (dbVersion === 0) {
-    // 新数据库，初始化 schema v2
+    // 新数据库，初始化 schema v3
     _db.run(`
       CREATE TABLE IF NOT EXISTS proxy_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,7 +100,13 @@ export function initDatabase() {
         data TEXT NOT NULL,
         -- 虚拟列：从 JSON 提取，用于索引加速查询
         method TEXT GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.request.method')) STORED,
-        status_code INTEGER GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.response.statusCode')) STORED,
+        -- status_code 优先使用 hookedResponse（插件修改后的响应）
+        status_code INTEGER GENERATED ALWAYS AS (
+          COALESCE(
+            JSON_EXTRACT(data, '$.hookedResponse.statusCode'),
+            JSON_EXTRACT(data, '$.response.statusCode')
+          )
+        ) STORED,
         request_url TEXT GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.request.url')) STORED
       )
     `);
@@ -125,6 +132,59 @@ export function initDatabase() {
     ]);
 
     console.log("[Database] Initialized with schema version", SCHEMA_VERSION);
+  } else if (dbVersion === 2) {
+    // 从 v2 升级到 v3：重建 status_code 虚拟列
+    console.log("[Database] Upgrading from v2 to v3...");
+
+    // SQLite 不支持直接修改虚拟列，需要重建表
+    _db.exec(`
+      -- 创建新表
+      CREATE TABLE proxy_requests_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp DATETIME NOT NULL,
+        instance_name TEXT,
+        forward_name TEXT,
+        group_name TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        response_body_size INTEGER NOT NULL DEFAULT 0,
+        data TEXT NOT NULL,
+        method TEXT GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.request.method')) STORED,
+        status_code INTEGER GENERATED ALWAYS AS (
+          COALESCE(
+            JSON_EXTRACT(data, '$.hookedResponse.statusCode'),
+            JSON_EXTRACT(data, '$.response.statusCode')
+          )
+        ) STORED,
+        request_url TEXT GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.request.url')) STORED
+      );
+
+      -- 复制数据（不包括虚拟列，它们会自动计算）
+      INSERT INTO proxy_requests_new (id, timestamp, instance_name, forward_name, group_name, status, response_body_size, data)
+      SELECT id, timestamp, instance_name, forward_name, group_name, status, response_body_size, data
+      FROM proxy_requests;
+
+      -- 删除旧表
+      DROP TABLE proxy_requests;
+
+      -- 重命名新表
+      ALTER TABLE proxy_requests_new RENAME TO proxy_requests;
+
+      -- 重建索引
+      CREATE INDEX idx_proxy_requests_time ON proxy_requests(timestamp DESC);
+      CREATE INDEX idx_proxy_requests_group ON proxy_requests(group_name);
+      CREATE INDEX idx_proxy_requests_instance ON proxy_requests(instance_name);
+      CREATE INDEX idx_proxy_requests_forward ON proxy_requests(forward_name);
+      CREATE INDEX idx_proxy_requests_method ON proxy_requests(method);
+      CREATE INDEX idx_proxy_requests_status_code ON proxy_requests(status_code);
+      CREATE INDEX idx_proxy_requests_status ON proxy_requests(status);
+    `);
+
+    // 更新版本号
+    _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [
+      String(SCHEMA_VERSION),
+    ]);
+
+    console.log("[Database] Upgraded to schema version", SCHEMA_VERSION);
   } else if (dbVersion !== SCHEMA_VERSION) {
     // 版本不匹配
     throw new DatabaseSchemaError(

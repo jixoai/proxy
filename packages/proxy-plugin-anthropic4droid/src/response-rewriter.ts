@@ -56,11 +56,11 @@ export function isContextLengthExceededError(parsed: unknown): boolean {
 export function buildServerAnomalyBody() {
   return {
     type: "error",
-    message: "Server anomaly: context_length_exceeded returned with small request",
+    message: "Server anomaly",
     error: {
       type: "server_error",
       code: "server_anomaly",
-      message: "Server returned context_length_exceeded error for a small request",
+      message: "Server anomaly",
     },
   };
 }
