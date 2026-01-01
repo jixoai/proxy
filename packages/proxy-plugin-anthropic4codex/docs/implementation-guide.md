@@ -1,6 +1,6 @@
 # Codex → Claude 转换实现指南
 
-> 完整记录 `@jixo/proxy-plugin-codex` 的实现过程、问题解决和技术细节
+> 完整记录 `@jixo/proxy-plugin-anthropic4codex` 的实现过程、问题解决和技术细节
 
 ---
 
@@ -30,7 +30,7 @@
 Codex CLI
     ↓ (Responses API)
 Proxy Server (port 20002)
-    ↓ (hook: proxy-plugin-codex)
+    ↓ (hook: proxy-plugin-anthropic4codex)
 Request Converter (Codex → Claude)
     ↓ (Messages API)
 Claude API (88code.wu.ren)
@@ -556,7 +556,7 @@ claude-code-20250219,interleaved-thinking-2025-05-14
     {
       "type": "http",
       "command": "bun",
-      "args": ["run", "packages/proxy-plugin-codex/src/index.ts"]
+      "args": ["run", "packages/proxy-plugin-anthropic4codex/src/index.ts"]
     }
   ]
 }
@@ -618,8 +618,8 @@ definePlugin(createCodexPlugin({ debug: true }), { debug: true });
 ### 9.4 测试转换
 
 ```typescript
-import { rewriteRequest } from "./packages/proxy-plugin-codex/src/request-converter";
-import { convertSSEResponse } from "./packages/proxy-plugin-codex/src/response-converter";
+import { rewriteRequest } from "./packages/proxy-plugin-anthropic4codex/src/request-converter";
+import { convertSSEResponse } from "./packages/proxy-plugin-anthropic4codex/src/response-converter";
 
 // 测试请求转换
 const result = rewriteRequest({ headers: {...}, body: JSON.stringify(codexRequest) });

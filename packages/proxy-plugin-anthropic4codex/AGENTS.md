@@ -1,4 +1,4 @@
-# @jixo/proxy-plugin-codex - Development Guide
+# @jixo/proxy-plugin-anthropic4codex - Development Guide
 
 ## Overview
 
@@ -9,7 +9,7 @@ This plugin converts Codex Responses API ↔ Claude Messages API, enabling Codex
 ```
 Codex CLI
     ↓ Responses API
-proxy-plugin-codex
+proxy-plugin-anthropic4codex
     ├── request-converter.ts   (Codex → Claude)
     ├── response-converter.ts  (Claude SSE → Codex SSE)
     ├── constants.ts           (Headers/budgets/ids)
@@ -35,7 +35,7 @@ Claude API
 bun ts
 
 # Run in dev mode
-bun run packages/proxy-plugin-codex/src/index.ts
+bun run packages/proxy-plugin-anthropic4codex/src/index.ts
 ```
 
 ## Key Implementation Notes

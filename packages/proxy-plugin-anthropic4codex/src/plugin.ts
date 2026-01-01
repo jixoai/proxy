@@ -16,7 +16,11 @@ import type {
 } from "@jixo/proxy-plugin";
 import { normalizeHeaders, createLogger, safeParseJson } from "@jixo/proxy-plugin";
 import { isCodexRequest, rewriteRequest } from "./request-converter";
-import { convertSSEResponse, shouldConvertToContextLengthError, buildCodexContextLengthError } from "./response-converter";
+import {
+  convertSSEResponse,
+  shouldConvertToContextLengthError,
+  buildCodexContextLengthError,
+} from "./response-converter";
 
 /** 插件存储 schema - 标记请求是否被转换 */
 const CodexStoreSchema = z.object({
@@ -55,7 +59,7 @@ function tryParseCodexRequest(body: string): unknown | null {
  *
  * @example
  * ```ts
- * import { createCodexPlugin } from "@jixo/proxy-plugin-codex";
+ * import { createCodexPlugin } from "@jixo/proxy-plugin-anthropic4codex";
  * import { definePlugin } from "@jixo/proxy-plugin";
  *
  * definePlugin(createCodexPlugin({ debug: true }));
@@ -65,13 +69,13 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
   const { debug, logDir, userId } = options;
 
   const logger: PluginLogger = createLogger({
-    name: "codex-plugin",
+    name: "anthropic4codex",
     debug,
     logDir,
   });
 
   return {
-    name: "codex-plugin",
+    name: "anthropic4codex",
     storeSchema: CodexStoreSchema,
 
     onRequest(params: RequestHookParams): RequestHookResult | null {
@@ -88,7 +92,11 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
       }
 
       // 传入已解析的 body，避免重复解析
-      const result = rewriteRequest({ headers, body: parsedBody as Parameters<typeof rewriteRequest>[0]["body"], userId });
+      const result = rewriteRequest({
+        headers,
+        body: parsedBody as Parameters<typeof rewriteRequest>[0]["body"],
+        userId,
+      });
 
       if (!result.headers && !result.body) {
         logger.debug("Request conversion returned empty result");
@@ -141,14 +149,14 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
       // 处理 JSON 错误响应 (非 SSE)
       if (contentType.includes("application/json")) {
         const parsed = safeParseJson(bodyText);
-        
+
         // 检查是否需要转换为 context_length_exceeded (包括上下文过长和上游请求失败)
         if (parsed && shouldConvertToContextLengthError(parsed)) {
           const err = parsed as { error?: { message?: string } };
           const codexError = buildCodexContextLengthError(err.error?.message);
-          
+
           logger.debug("Converted Claude error to Codex context_length_exceeded format");
-          
+
           if (debug) {
             logger.logToFile("error-rewrite", {
               originalMeta: params.meta,

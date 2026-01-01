@@ -262,4 +262,88 @@ describe("rewriteResponse", () => {
     expect(result.meta.headers?.["content-type"]).toBe("application/json; charset=utf-8");
     expect(result.meta.headers?.["x-request-id"]).toBe("abc123");
   });
+
+  it("should rewrite 200+context_length_exceeded to 500 server anomaly for small request", () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: {
+        code: "context_length_exceeded",
+        type: "invalid_request_error",
+        message: "context length exceeded",
+      },
+    });
+
+    const result = rewriteResponse({
+      meta: {
+        statusCode: 200,
+        headers: { "content-type": "application/json" },
+      },
+      body: Buffer.from(body),
+      requestContentLength: 123, // small
+      serverAnomalyThreshold: 680 * 1024,
+    });
+
+    expect(result.rewritten).toBe(true);
+    expect(result.source).toBe("server_anomaly");
+    expect(result.meta.statusCode).toBe(500);
+
+    const rewrittenBody = JSON.parse(result.body.toString("utf-8"));
+    expect(rewrittenBody.error.code).toBe("server_anomaly");
+  });
+
+  it("should rewrite 200+context_length_exceeded to 400 for large request", () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: {
+        code: "context_length_exceeded",
+        type: "invalid_request_error",
+        message: "context length exceeded",
+      },
+    });
+
+    const result = rewriteResponse({
+      meta: {
+        statusCode: 200,
+        headers: { "content-type": "application/json" },
+      },
+      body: Buffer.from(body),
+      requestContentLength: 681 * 1024, // >= threshold, not anomaly
+      serverAnomalyThreshold: 680 * 1024,
+    });
+
+    expect(result.rewritten).toBe(true);
+    expect(result.source).toBe("json");
+    expect(result.meta.statusCode).toBe(400);
+
+    const rewrittenBody = JSON.parse(result.body.toString("utf-8"));
+    expect(rewrittenBody.error.code).toBe("context_length_exceeded");
+    expect(rewrittenBody.error.type).toBe("invalid_request_error");
+  });
+
+  it("should rewrite 200+context_length_exceeded to 400 even without requestContentLength", () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: {
+        code: "context_length_exceeded",
+        type: "invalid_request_error",
+        message: "context length exceeded",
+      },
+    });
+
+    const result = rewriteResponse({
+      meta: {
+        statusCode: 200,
+        headers: { "content-type": "application/json" },
+      },
+      body: Buffer.from(body),
+      // requestContentLength omitted
+      serverAnomalyThreshold: 680 * 1024,
+    });
+
+    expect(result.rewritten).toBe(true);
+    expect(result.meta.statusCode).toBe(400);
+
+    const rewrittenBody = JSON.parse(result.body.toString("utf-8"));
+    expect(rewrittenBody.error.code).toBe("context_length_exceeded");
+  });
 });

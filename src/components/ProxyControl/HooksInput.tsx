@@ -40,7 +40,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, Code, GripVertical, Info, Plus, Trash2, Zap } from "lucide-react";
-import type { HookConfig, HooksConfig } from "@/types/proxy";
+import type { HookConfig } from "@/types/proxy";
 import { getHookPluginName } from "@/lib/hooks-config";
 
 interface HooksInputProps {
@@ -274,33 +274,9 @@ function SortableHookItem({
   );
 }
 
-const OFFICIAL_PLUGIN_PRESETS = [
-  {
-    id: "proxy-anthropic-ping",
-    label: "@jixo/proxy-anthropic-ping",
-    hook: {
-      type: "http",
-      command: "bunx",
-      args: ["@jixo/proxy-anthropic-ping"],
-      config: {
-        maxKeepAliveDurationMs: 60 * 60 * 1000,
-        cacheTtlMs: 5 * 60 * 1000,
-        pingLeadTimeMs: 60 * 1000,
-        pollingIntervalMs: 30 * 1000,
-        debug: false,
-      },
-    } satisfies HookConfig,
-  },
-  {
-    id: "proxy-plugin-droid",
-    label: "@jixo/proxy-plugin-droid",
-    hook: {
-      type: "http",
-      command: "bunx",
-      args: ["@jixo/proxy-plugin-droid"],
-    } satisfies HookConfig,
-  },
-] as const;
+type HookPluginsResponse = {
+  plugins: string[];
+};
 
 export function HooksInput({ value, onChange }: HooksInputProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -312,6 +288,9 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
   const [configErrors, setConfigErrors] = useState<Map<number, string | null>>(new Map());
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
+  const [availablePlugins, setAvailablePlugins] = useState<string[]>([]);
+  const [pluginsLoading, setPluginsLoading] = useState(false);
+  const [pluginsError, setPluginsError] = useState<string | null>(null);
 
   const idCounterRef = useRef(0);
   const hasValue = value && value.trim() !== "";
@@ -365,6 +344,38 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
     setConfigErrors(new Map());
   }, [hasValue, parsed.error, parsed.list, parsed.pretty]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setPluginsLoading(true);
+    setPluginsError(null);
+
+    fetch("/api/hook-plugins")
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return (await res.json()) as HookPluginsResponse;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const plugins = Array.isArray(data.plugins)
+          ? data.plugins.filter((p) => typeof p === "string")
+          : [];
+        setAvailablePlugins(plugins);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPluginsError(err instanceof Error ? err.message : String(err));
+        setAvailablePlugins([]);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setPluginsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleAdvancedJsonChange = (text: string) => {
     setJsonText(text);
     if (!text.trim()) {
@@ -399,10 +410,9 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
     addHook({ type: "http", command: "bunx", args: [] });
   };
 
-  const handleAddPreset = (presetId: string) => {
-    const preset = OFFICIAL_PLUGIN_PRESETS.find((p) => p.id === presetId);
-    if (!preset) return;
-    addHook(preset.hook);
+  const handleAddPlugin = (packageName: string) => {
+    if (!packageName) return;
+    addHook({ type: "http", command: "bunx", args: [packageName] });
   };
 
   const toggleExpand = (id: number) => {
@@ -518,16 +528,28 @@ export function HooksInput({ value, onChange }: HooksInputProps) {
               <Plus className="mr-1 h-3.5 w-3.5" />
               添加
             </Button>
-            <Select onValueChange={handleAddPreset}>
+            <Select onValueChange={handleAddPlugin}>
               <SelectTrigger className="h-8 w-[180px] text-xs">
-                <SelectValue placeholder="官方插件" />
+                <SelectValue
+                  placeholder={pluginsLoading ? "加载插件中..." : "内置 hooks"}
+                />
               </SelectTrigger>
               <SelectContent>
-                {OFFICIAL_PLUGIN_PRESETS.map((p) => (
-                  <SelectItem key={p.id} value={p.id} className="text-xs">
-                    {p.label}
+                {pluginsError ? (
+                  <SelectItem value="__error__" disabled className="text-xs">
+                    加载失败：{pluginsError}
                   </SelectItem>
-                ))}
+                ) : availablePlugins.length === 0 ? (
+                  <SelectItem value="__empty__" disabled className="text-xs">
+                    未发现插件（需要包名匹配 @jixo/proxy-plugin-*）
+                  </SelectItem>
+                ) : (
+                  availablePlugins.map((pkg) => (
+                    <SelectItem key={pkg} value={pkg} className="text-xs">
+                      {pkg}
+                    </SelectItem>
+                  ))
+                )}
               </SelectContent>
             </Select>
             {hasValue && (

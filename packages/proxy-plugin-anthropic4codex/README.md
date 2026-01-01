@@ -1,4 +1,4 @@
-# @jixo/proxy-plugin-codex
+# @jixo/proxy-plugin-anthropic4codex
 
 Proxy plugin that enables [Codex CLI](https://github.com/openai/codex) to use Claude models by converting between OpenAI Responses API and Anthropic Messages API.
 
@@ -22,7 +22,7 @@ Add to `proxy-config.json`:
     {
       "type": "http",
       "command": "bunx",
-      "args": ["@jixo/proxy-plugin-codex"]
+      "args": ["@jixo/proxy-plugin-anthropic4codex"]
     }
   ]
 }
@@ -74,7 +74,7 @@ Models are specified via `x-target-model` header in proxy config (no hardcoded m
     {
       "type": "http",
       "command": "bun",
-      "args": ["run", "packages/proxy-plugin-codex/src/index.ts"],
+      "args": ["run", "packages/proxy-plugin-anthropic4codex/src/index.ts"],
       "env": { "DEBUG": "true" }
     }
   ]
@@ -111,7 +111,7 @@ tools: [{type:"function"}]   →    tools: [{name,input_schema}]
 ## Programmatic Usage
 
 ```typescript
-import { createCodexPlugin } from "@jixo/proxy-plugin-codex";
+import { createCodexPlugin } from "@jixo/proxy-plugin-anthropic4codex";
 import { definePlugin } from "@jixo/proxy-plugin";
 
 definePlugin(createCodexPlugin({ debug: true }));

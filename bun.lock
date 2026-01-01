@@ -59,8 +59,16 @@
         "typescript": "^5.9.3",
       },
     },
-    "packages/proxy-anthropic-ping": {
-      "name": "@jixo/proxy-anthropic-ping",
+    "packages/proxy-plugin": {
+      "name": "@jixo/proxy-plugin",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.0.0",
+      },
+    },
+    "packages/proxy-plugin-anthropic-ping": {
+      "name": "@jixo/proxy-plugin-anthropic-ping",
       "version": "0.1.0",
       "bin": {
         "proxy-anthropic-ping": "./src/index.ts",
@@ -75,19 +83,11 @@
         "typescript": "^5.0.0",
       },
     },
-    "packages/proxy-plugin": {
-      "name": "@jixo/proxy-plugin",
-      "version": "0.1.0",
-      "devDependencies": {
-        "@types/bun": "latest",
-        "typescript": "^5.0.0",
-      },
-    },
-    "packages/proxy-plugin-codex": {
-      "name": "@jixo/proxy-plugin-codex",
+    "packages/proxy-plugin-anthropic4codex": {
+      "name": "@jixo/proxy-plugin-anthropic4codex",
       "version": "0.1.0",
       "bin": {
-        "proxy-plugin-codex": "./src/index.ts",
+        "proxy-plugin-anthropic4codex": "./src/index.ts",
       },
       "dependencies": {
         "@jixo/proxy-plugin": "workspace:*",
@@ -97,11 +97,25 @@
         "typescript": "^5.0.0",
       },
     },
-    "packages/proxy-plugin-droid": {
-      "name": "@jixo/proxy-plugin-droid",
+    "packages/proxy-plugin-anthropic4droid": {
+      "name": "@jixo/proxy-plugin-anthropic4droid",
       "version": "0.1.0",
       "bin": {
-        "proxy-plugin-droid": "./src/index.ts",
+        "proxy-plugin-anthropic4droid": "./src/index.ts",
+      },
+      "dependencies": {
+        "@jixo/proxy-plugin": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.0.0",
+      },
+    },
+    "packages/proxy-plugin-openai4droid": {
+      "name": "@jixo/proxy-plugin-openai4droid",
+      "version": "0.1.0",
+      "bin": {
+        "proxy-plugin-openai4droid": "./src/index.ts",
       },
       "dependencies": {
         "@jixo/proxy-plugin": "workspace:*",
@@ -205,13 +219,15 @@
 
     "@img/sharp-win32-x64": ["@img/sharp-win32-x64@0.34.5", "", { "os": "win32", "cpu": "x64" }, "sha512-+29YMsqY2/9eFEiW93eqWnuLcWcufowXewwSNIT6UwZdUUCrM3oFjMWH/Z6/TMmb4hlFenmfAVbpWeup2jryCw=="],
 
-    "@jixo/proxy-anthropic-ping": ["@jixo/proxy-anthropic-ping@workspace:packages/proxy-anthropic-ping"],
-
     "@jixo/proxy-plugin": ["@jixo/proxy-plugin@workspace:packages/proxy-plugin"],
 
-    "@jixo/proxy-plugin-codex": ["@jixo/proxy-plugin-codex@workspace:packages/proxy-plugin-codex"],
+    "@jixo/proxy-plugin-anthropic-ping": ["@jixo/proxy-plugin-anthropic-ping@workspace:packages/proxy-plugin-anthropic-ping"],
 
-    "@jixo/proxy-plugin-droid": ["@jixo/proxy-plugin-droid@workspace:packages/proxy-plugin-droid"],
+    "@jixo/proxy-plugin-anthropic4codex": ["@jixo/proxy-plugin-anthropic4codex@workspace:packages/proxy-plugin-anthropic4codex"],
+
+    "@jixo/proxy-plugin-anthropic4droid": ["@jixo/proxy-plugin-anthropic4droid@workspace:packages/proxy-plugin-anthropic4droid"],
+
+    "@jixo/proxy-plugin-openai4droid": ["@jixo/proxy-plugin-openai4droid@workspace:packages/proxy-plugin-openai4droid"],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
@@ -1115,13 +1131,15 @@
 
     "zwitch": ["zwitch@2.0.4", "", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
 
-    "@jixo/proxy-anthropic-ping/@types/bun": ["@types/bun@1.3.5", "", { "dependencies": { "bun-types": "1.3.5" } }, "sha512-RnygCqNrd3srIPEWBd5LFeUYG7plCoH2Yw9WaZGyNmdTEei+gWaHqydbaIRkIkcbXwhBT94q78QljxN0Sk838w=="],
-
     "@jixo/proxy-plugin/@types/bun": ["@types/bun@1.3.5", "", { "dependencies": { "bun-types": "1.3.5" } }, "sha512-RnygCqNrd3srIPEWBd5LFeUYG7plCoH2Yw9WaZGyNmdTEei+gWaHqydbaIRkIkcbXwhBT94q78QljxN0Sk838w=="],
 
-    "@jixo/proxy-plugin-codex/@types/bun": ["@types/bun@1.3.5", "", { "dependencies": { "bun-types": "1.3.5" } }, "sha512-RnygCqNrd3srIPEWBd5LFeUYG7plCoH2Yw9WaZGyNmdTEei+gWaHqydbaIRkIkcbXwhBT94q78QljxN0Sk838w=="],
+    "@jixo/proxy-plugin-anthropic-ping/@types/bun": ["@types/bun@1.3.5", "", { "dependencies": { "bun-types": "1.3.5" } }, "sha512-RnygCqNrd3srIPEWBd5LFeUYG7plCoH2Yw9WaZGyNmdTEei+gWaHqydbaIRkIkcbXwhBT94q78QljxN0Sk838w=="],
 
-    "@jixo/proxy-plugin-droid/@types/bun": ["@types/bun@1.3.4", "", { "dependencies": { "bun-types": "1.3.4" } }, "sha512-EEPTKXHP+zKGPkhRLv+HI0UEX8/o+65hqARxLy8Ov5rIxMBPNTjeZww00CIihrIQGEQBYg+0roO5qOnS/7boGA=="],
+    "@jixo/proxy-plugin-anthropic4codex/@types/bun": ["@types/bun@1.3.5", "", { "dependencies": { "bun-types": "1.3.5" } }, "sha512-RnygCqNrd3srIPEWBd5LFeUYG7plCoH2Yw9WaZGyNmdTEei+gWaHqydbaIRkIkcbXwhBT94q78QljxN0Sk838w=="],
+
+    "@jixo/proxy-plugin-anthropic4droid/@types/bun": ["@types/bun@1.3.5", "", { "dependencies": { "bun-types": "1.3.5" } }, "sha512-RnygCqNrd3srIPEWBd5LFeUYG7plCoH2Yw9WaZGyNmdTEei+gWaHqydbaIRkIkcbXwhBT94q78QljxN0Sk838w=="],
+
+    "@jixo/proxy-plugin-openai4droid/@types/bun": ["@types/bun@1.3.5", "", { "dependencies": { "bun-types": "1.3.5" } }, "sha512-RnygCqNrd3srIPEWBd5LFeUYG7plCoH2Yw9WaZGyNmdTEei+gWaHqydbaIRkIkcbXwhBT94q78QljxN0Sk838w=="],
 
     "@radix-ui/react-alert-dialog/@radix-ui/react-slot": ["@radix-ui/react-slot@1.2.3", "", { "dependencies": { "@radix-ui/react-compose-refs": "1.1.2" }, "peerDependencies": { "@types/react": "*", "react": "^16.8 || ^17.0 || ^18.0 || ^19.0 || ^19.0.0-rc" }, "optionalPeers": ["@types/react"] }, "sha512-aeNmHnBxbi2St0au6VBVC7JXFlhLlOnvIIlePNniyUNAClzmtAUEY8/pBiK3iHjufOlwA+c20/8jngo7xcrg8A=="],
 
@@ -1177,11 +1195,13 @@
 
     "wrap-ansi/strip-ansi": ["strip-ansi@7.1.2", "", { "dependencies": { "ansi-regex": "^6.0.1" } }, "sha512-gmBGslpoQJtgnMAvOVqGZpEz9dyoKTCzy2nfz/n8aIFhN/jCE/rCmcxabB6jOOHV+0WNnylOxaxBQPSvcWklhA=="],
 
-    "@jixo/proxy-anthropic-ping/@types/bun/bun-types": ["bun-types@1.3.5", "", { "dependencies": { "@types/node": "*" } }, "sha512-inmAYe2PFLs0SUbFOWSVD24sg1jFlMPxOjOSSCYqUgn4Hsc3rDc7dFvfVYjFPNHtov6kgUeulV4SxbuIV/stPw=="],
+    "@jixo/proxy-plugin-anthropic-ping/@types/bun/bun-types": ["bun-types@1.3.5", "", { "dependencies": { "@types/node": "*" } }, "sha512-inmAYe2PFLs0SUbFOWSVD24sg1jFlMPxOjOSSCYqUgn4Hsc3rDc7dFvfVYjFPNHtov6kgUeulV4SxbuIV/stPw=="],
 
-    "@jixo/proxy-plugin-codex/@types/bun/bun-types": ["bun-types@1.3.5", "", { "dependencies": { "@types/node": "*" } }, "sha512-inmAYe2PFLs0SUbFOWSVD24sg1jFlMPxOjOSSCYqUgn4Hsc3rDc7dFvfVYjFPNHtov6kgUeulV4SxbuIV/stPw=="],
+    "@jixo/proxy-plugin-anthropic4codex/@types/bun/bun-types": ["bun-types@1.3.5", "", { "dependencies": { "@types/node": "*" } }, "sha512-inmAYe2PFLs0SUbFOWSVD24sg1jFlMPxOjOSSCYqUgn4Hsc3rDc7dFvfVYjFPNHtov6kgUeulV4SxbuIV/stPw=="],
 
-    "@jixo/proxy-plugin-droid/@types/bun/bun-types": ["bun-types@1.3.4", "", { "dependencies": { "@types/node": "*" } }, "sha512-5ua817+BZPZOlNaRgGBpZJOSAQ9RQ17pkwPD0yR7CfJg+r8DgIILByFifDTa+IPDDxzf5VNhtNlcKqFzDgJvlQ=="],
+    "@jixo/proxy-plugin-anthropic4droid/@types/bun/bun-types": ["bun-types@1.3.5", "", { "dependencies": { "@types/node": "*" } }, "sha512-inmAYe2PFLs0SUbFOWSVD24sg1jFlMPxOjOSSCYqUgn4Hsc3rDc7dFvfVYjFPNHtov6kgUeulV4SxbuIV/stPw=="],
+
+    "@jixo/proxy-plugin-openai4droid/@types/bun/bun-types": ["bun-types@1.3.5", "", { "dependencies": { "@types/node": "*" } }, "sha512-inmAYe2PFLs0SUbFOWSVD24sg1jFlMPxOjOSSCYqUgn4Hsc3rDc7dFvfVYjFPNHtov6kgUeulV4SxbuIV/stPw=="],
 
     "@jixo/proxy-plugin/@types/bun/bun-types": ["bun-types@1.3.5", "", { "dependencies": { "@types/node": "*" } }, "sha512-inmAYe2PFLs0SUbFOWSVD24sg1jFlMPxOjOSSCYqUgn4Hsc3rDc7dFvfVYjFPNHtov6kgUeulV4SxbuIV/stPw=="],
 

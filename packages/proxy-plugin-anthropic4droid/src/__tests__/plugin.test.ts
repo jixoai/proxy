@@ -27,6 +27,8 @@ function createResponseParams(params: {
   body: Buffer;
   /** 是否模拟请求已被处理（默认 true） */
   activated?: boolean;
+  /** 模拟请求体大小（字节），用于 server anomaly 判断 */
+  requestBodyLength?: number;
 }): ResponseHookParams {
   return {
     meta: {
@@ -34,14 +36,22 @@ function createResponseParams(params: {
       headers: params.headers,
     },
     body: params.body,
-    store: createMockStore(params.activated !== false ? { activated: true as const } : undefined),
+    store: createMockStore(
+      params.activated !== false
+        ? {
+            activated: true as const,
+            // 默认模拟为“大请求”，避免触发 server anomaly 分支影响基础重写逻辑
+            requestBodyLength: params.requestBodyLength ?? 700 * 1024,
+          }
+        : undefined,
+    ),
   };
 }
 
 describe("createDroidPlugin", () => {
   it("should create a plugin with correct name", () => {
     const plugin = createDroidPlugin();
-    expect(plugin.name).toBe("droid-plugin");
+    expect(plugin.name).toBe("anthropic4droid");
   });
 
   it("should have onRequest handler", () => {

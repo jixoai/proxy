@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * @jixo/proxy-plugin-droid
+ * @jixo/proxy-plugin-anthropic4droid
  *
  * Droid 插件，包含：
  * - Request Hook: 将 Droid-CLI 格式的请求转换为 Claude-Code-CLI 格式
