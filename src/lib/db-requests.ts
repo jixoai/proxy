@@ -60,6 +60,7 @@ export interface LoggedRequest {
 }
 
 export interface ProxyRequestFilters {
+  instance_name?: string | null;
   forward_name?: string | null;
   method?: string;
   status_code?: number;
@@ -79,6 +80,21 @@ function serializeRequest(req: LoggedRequest): string {
   return JSON.stringify(req);
 }
 
+function computeUrlColumns(url: string | null | undefined): {
+  request_url_lc: string | null;
+  request_path_lc: string | null;
+} {
+  if (!url || typeof url !== "string") {
+    return { request_url_lc: null, request_path_lc: null };
+  }
+  const request_url_lc = url.toLowerCase();
+  try {
+    return { request_url_lc, request_path_lc: new URL(url).pathname.toLowerCase() };
+  } catch {
+    return { request_url_lc, request_path_lc: null };
+  }
+}
+
 function deserializeRequest(row: { id: number; data: string }): LoggedRequest {
   const parsed = JSON.parse(row.data) as LoggedRequest;
   parsed.id = row.id;
@@ -94,12 +110,13 @@ function coerceGroupName(instance: string | null, forward: string | null): strin
 }
 
 export function createProxyRequest(request: Omit<LoggedRequest, "id">): number {
+  const urlCols = computeUrlColumns(request.request?.url);
   const data = serializeRequest({
     ...request,
     group_name: request.group_name ?? coerceGroupName(request.instance_name, request.forward_name),
   });
   const stmt = db.query(
-    "INSERT INTO proxy_requests (timestamp, instance_name, forward_name, group_name, status, response_body_size, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO proxy_requests (timestamp, instance_name, forward_name, group_name, status, response_body_size, request_url_lc, request_path_lc, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
   );
   const result = stmt.run(
     request.timestamp,
@@ -108,6 +125,8 @@ export function createProxyRequest(request: Omit<LoggedRequest, "id">): number {
     request.group_name ?? coerceGroupName(request.instance_name, request.forward_name),
     request.status,
     request.response?.bodySize ?? 0,
+    urlCols.request_url_lc,
+    urlCols.request_path_lc,
     data,
   );
   const id = Number(result.lastInsertRowid);
@@ -151,6 +170,14 @@ export function getAllRequests(
   const where: string[] = [];
   const params: any[] = [];
 
+  if (filters?.instance_name !== undefined) {
+    if (filters.instance_name === null) {
+      where.push("instance_name IS NULL");
+    } else {
+      where.push("instance_name = ?");
+      params.push(filters.instance_name);
+    }
+  }
   if (filters?.forward_name !== undefined) {
     if (filters.forward_name === null) {
       where.push("forward_name IS NULL");
@@ -168,24 +195,109 @@ export function getAllRequests(
     params.push(filters.status_code);
   }
   if (filters?.url_pattern) {
-    where.push("request_url LIKE ?");
-    params.push(`%${filters.url_pattern}%`);
+    const raw = filters.url_pattern.trim().toLowerCase();
+    if (raw.length > 0) {
+      const looksLikeUrlPrefix =
+        raw === "http" ||
+        raw === "https" ||
+        raw.startsWith("http://") ||
+        raw.startsWith("https://") ||
+        raw.startsWith("http:") ||
+        raw.startsWith("https:");
+
+      if (looksLikeUrlPrefix) {
+        where.push("request_url_lc >= ? AND request_url_lc < ?");
+        params.push(raw, `${raw}\uffff`);
+      } else {
+        const prefix = raw.startsWith("/") ? raw : `/${raw}`;
+        where.push("request_path_lc >= ? AND request_path_lc < ?");
+        params.push(prefix, `${prefix}\uffff`);
+      }
+    }
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const orderDirection = pagination?.order === "asc" ? "ASC" : "DESC";
   // 用 id 排序（主键索引），比 timestamp 更快
   const order = `ORDER BY id ${orderDirection}`;
-  const limitSql =
-    pagination != null
-      ? `LIMIT ${pagination.limit} OFFSET ${(pagination.page - 1) * pagination.limit}`
-      : "";
+
+  // IMPORTANT(perf): avoid OFFSET scanning large `data` blobs.
+  // When pagination is used, first fetch only IDs (cheap even with large rows), then fetch `data` for those IDs.
+  if (pagination != null) {
+    const limitSql = `LIMIT ${pagination.limit} OFFSET ${(pagination.page - 1) * pagination.limit}`;
+    const idRows = db
+      .query(`SELECT id FROM proxy_requests ${whereSql} ${order} ${limitSql}`)
+      .all(...params) as Array<{ id: number }>;
+    const ids = idRows.map((row) => row.id);
+    if (ids.length === 0) return [];
+
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = db
+      .query(`SELECT id, data FROM proxy_requests WHERE id IN (${placeholders}) ${order}`)
+      .all(...ids) as Array<{ id: number; data: string }>;
+    return rows.map(deserializeRequest);
+  }
 
   const rows = db
-    .query(`SELECT id, data FROM proxy_requests ${whereSql} ${order} ${limitSql}`)
+    .query(`SELECT id, data FROM proxy_requests ${whereSql} ${order}`)
     .all(...params) as Array<{ id: number; data: string }>;
-
   return rows.map(deserializeRequest);
+}
+export function getAllRequestsFuzzyLimited(
+  filters: Omit<ProxyRequestFilters, "url_pattern"> | undefined,
+  needle: string,
+  options: {
+    limit: number;
+    order?: "asc" | "desc";
+    signal?: AbortSignal;
+  },
+): LoggedRequest[] {
+  const where: string[] = [];
+  const params: any[] = [];
+
+  if (filters?.instance_name !== undefined) {
+    if (filters.instance_name === null) {
+      where.push("instance_name IS NULL");
+    } else {
+      where.push("instance_name = ?");
+      params.push(filters.instance_name);
+    }
+  }
+  if (filters?.forward_name !== undefined) {
+    if (filters.forward_name === null) {
+      where.push("forward_name IS NULL");
+    } else {
+      where.push("forward_name = ?");
+      params.push(filters.forward_name);
+    }
+  }
+  if (filters?.method) {
+    where.push("method = ?");
+    params.push(filters.method);
+  }
+  if (filters?.status_code) {
+    where.push("status_code = ?");
+    params.push(filters.status_code);
+  }
+  const needleLc = needle.trim().toLowerCase();
+  if (needleLc.length === 0) return [];
+
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const orderDirection = options.order === "asc" ? "ASC" : "DESC";
+  const stmt = db.query(
+    `SELECT id, data, request_url_lc, request_url FROM proxy_requests ${whereSql} ORDER BY id ${orderDirection}`,
+  );
+
+  const items: LoggedRequest[] = [];
+  for (const row of stmt.iterate(...params) as IterableIterator<{ id: number; data: string; request_url_lc: string | null; request_url: string | null }>) {
+    if (options.signal?.aborted) break;
+    const hay = (row.request_url_lc ?? row.request_url ?? "").toLowerCase();
+    if (!hay.includes(needleLc)) continue;
+    items.push(deserializeRequest({ id: row.id, data: row.data }));
+    if (items.length >= options.limit) break;
+  }
+
+  return items;
 }
 
 export function deleteProxyRequest(id: number): boolean {
@@ -223,9 +335,10 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
   };
 
   const data = serializeRequest(merged);
+  const urlCols = computeUrlColumns(merged.request?.url);
   const result = db
     .query(
-      "UPDATE proxy_requests SET timestamp = ?, instance_name = ?, forward_name = ?, group_name = ?, status = ?, response_body_size = ?, data = ? WHERE id = ?",
+      "UPDATE proxy_requests SET timestamp = ?, instance_name = ?, forward_name = ?, group_name = ?, status = ?, response_body_size = ?, request_url_lc = ?, request_path_lc = ?, data = ? WHERE id = ?",
     )
     .run(
       merged.timestamp,
@@ -234,6 +347,8 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
       merged.group_name,
       merged.status,
       merged.response?.bodySize ?? 0,
+      urlCols.request_url_lc,
+      urlCols.request_path_lc,
       data,
       id,
     );
@@ -437,6 +552,14 @@ export function getRequestsCount(filters?: ProxyRequestFilters): number {
   const where: string[] = [];
   const params: any[] = [];
 
+  if (filters?.instance_name !== undefined) {
+    if (filters.instance_name === null) {
+      where.push("instance_name IS NULL");
+    } else {
+      where.push("instance_name = ?");
+      params.push(filters.instance_name);
+    }
+  }
   if (filters?.forward_name !== undefined) {
     if (filters.forward_name === null) {
       where.push("forward_name IS NULL");
@@ -454,8 +577,25 @@ export function getRequestsCount(filters?: ProxyRequestFilters): number {
     params.push(filters.status_code);
   }
   if (filters?.url_pattern) {
-    where.push("request_url LIKE ?");
-    params.push(`%${filters.url_pattern}%`);
+    const raw = filters.url_pattern.trim().toLowerCase();
+    if (raw.length > 0) {
+      const looksLikeUrlPrefix =
+        raw === "http" ||
+        raw === "https" ||
+        raw.startsWith("http://") ||
+        raw.startsWith("https://") ||
+        raw.startsWith("http:") ||
+        raw.startsWith("https:");
+
+      if (looksLikeUrlPrefix) {
+        where.push("request_url_lc >= ? AND request_url_lc < ?");
+        params.push(raw, `${raw}\uffff`);
+      } else {
+        const prefix = raw.startsWith("/") ? raw : `/${raw}`;
+        where.push("request_path_lc >= ? AND request_path_lc < ?");
+        params.push(prefix, `${prefix}\uffff`);
+      }
+    }
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";

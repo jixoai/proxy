@@ -24,6 +24,7 @@ import {
 } from "./lib/config-store";
 import {
   getAllRequests as dbGetAllRequests,
+  getAllRequestsFuzzyLimited as dbGetAllRequestsFuzzyLimited,
   getProxyRequestById,
   getRequestsAfterId,
   getRequestsByIdRange,
@@ -237,6 +238,7 @@ function getAllRequests(): RequestData[] {
 
 function getAllRequestsFiltered(
   filters?: {
+    instance_name?: string | null;
     forward_name?: string | null;
     method?: string;
     status_code?: number;
@@ -819,29 +821,76 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       // ========== 请求日志 API ==========
       // 只获取请求总数（用于初始化分页）
       "/api/requests/count": {
-        async GET() {
-          const total = getRequestsCount();
-          return Response.json({ total });
-        },
-      },
-      "/api/requests": {
         async GET(req) {
           const url = new URL(req.url);
+          const instanceNameParam = url.searchParams.get("instance_name");
           const forwardNameParam = url.searchParams.get("forward_name");
           const method = url.searchParams.get("method");
           const statusCodeParam = url.searchParams.get("status_code");
           const urlPattern = url.searchParams.get("url_pattern");
-          const pageParam = url.searchParams.get("page");
-          const limitParam = url.searchParams.get("limit");
-          const orderParam = url.searchParams.get("order") as "asc" | "desc" | null;
+          const urlMode = url.searchParams.get("url_mode");
 
           const filters: {
+            instance_name?: string | null;
             forward_name?: string | null;
             method?: string;
             status_code?: number;
             url_pattern?: string;
           } = {};
 
+          if (instanceNameParam !== null) {
+            filters.instance_name = instanceNameParam === "null" ? null : instanceNameParam;
+          }
+          if (forwardNameParam !== null) {
+            filters.forward_name = forwardNameParam === "null" ? null : forwardNameParam;
+          }
+          if (method) {
+            filters.method = method;
+          }
+          if (statusCodeParam) {
+            const statusCode = parseInt(statusCodeParam);
+            if (!isNaN(statusCode)) {
+              filters.status_code = statusCode;
+            }
+          }
+          if (urlPattern) {
+            filters.url_pattern = urlPattern;
+          }
+
+          // 模糊模式不返回全量 total（避免全表迭代）
+          if (urlMode === "fuzzy" && urlPattern) {
+            return Response.json({ total: 0 });
+          }
+
+          const hasFilters = Object.keys(filters).length > 0;
+          const total = getRequestsCount(hasFilters ? filters : undefined);
+          return Response.json({ total });
+        },
+      },
+      "/api/requests": {
+        async GET(req) {
+          const url = new URL(req.url);
+          const instanceNameParam = url.searchParams.get("instance_name");
+          const forwardNameParam = url.searchParams.get("forward_name");
+          const method = url.searchParams.get("method");
+          const statusCodeParam = url.searchParams.get("status_code");
+          const urlPattern = url.searchParams.get("url_pattern");
+          const urlMode = url.searchParams.get("url_mode");
+          const pageParam = url.searchParams.get("page");
+          const limitParam = url.searchParams.get("limit");
+          const orderParam = url.searchParams.get("order") as "asc" | "desc" | null;
+
+          const filters: {
+            instance_name?: string | null;
+            forward_name?: string | null;
+            method?: string;
+            status_code?: number;
+            url_pattern?: string;
+          } = {};
+
+          if (instanceNameParam !== null) {
+            filters.instance_name = instanceNameParam === "null" ? null : instanceNameParam;
+          }
           if (forwardNameParam !== null) {
             filters.forward_name = forwardNameParam === "null" ? null : forwardNameParam;
           }
@@ -867,6 +916,30 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             const order = orderParam === "asc" ? "asc" : "desc";
             const pagination = { page, limit, order };
             const hasFilters = Object.keys(filters).length > 0;
+
+            if (urlMode === "fuzzy" && urlPattern) {
+              const baseFilters = {
+                instance_name: filters.instance_name,
+                forward_name: filters.forward_name,
+                method: filters.method,
+                status_code: filters.status_code,
+              };
+              const items = dbGetAllRequestsFuzzyLimited(baseFilters, urlPattern, {
+                limit,
+                order,
+                signal: req.signal,
+              });
+              const formatted = items.map(formatProxyRequest);
+              return Response.json({
+                items: formatted,
+                total: formatted.length,
+                page: 1,
+                limit,
+                order,
+                totalPages: 1,
+              });
+            }
+
             const requests = hasFilters
               ? getAllRequestsFiltered(filters, pagination)
               : getAllRequestsFiltered({}, pagination);

@@ -26,6 +26,7 @@ import { useMemo } from "react";
 export function HeaderBar() {
   const {
     requests,
+    totalCount,
     livePush,
     setLivePush,
     wsConnected,
@@ -35,6 +36,8 @@ export function HeaderBar() {
     setFilterStatus,
     filterUrl,
     setFilterUrl,
+    filterUrlFuzzy,
+    setFilterUrlFuzzy,
     loadRequests,
     handleClearAll,
     availableRules,
@@ -52,24 +55,12 @@ export function HeaderBar() {
     });
   }, [availableRules]);
 
-  // 计算过滤后的请求数
-  const filteredCount = requests.filter((req) => {
-    if (filterMethod && req.metadata.request.method !== filterMethod) return false;
-    if (filterStatus) {
-      const statusCode = req.metadata.response?.statusCode?.toString() || "";
-      if (statusCode !== filterStatus) return false;
-    }
-    if (filterUrl && !req.metadata.request.url.toLowerCase().includes(filterUrl.toLowerCase()))
-      return false;
-    return true;
-  }).length;
-
   return (
     <header className="bg-card w-full">
       <div className="mb-3 flex items-center justify-between">
         <div>
           <p className="text-muted-foreground text-xs">
-            {filteredCount} / {requests.length} requests
+            {requests.length} / {totalCount} requests
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -188,6 +179,15 @@ export function HeaderBar() {
           }}
         />
 
+        <div className="flex items-center gap-1">
+          <Switch
+            checked={filterUrlFuzzy}
+            onCheckedChange={setFilterUrlFuzzy}
+            disabled={!filterUrl.trim()}
+          />
+          <span className="text-xs text-muted-foreground">模糊</span>
+        </div>
+
         {(filterMethod || filterStatus || filterUrl || activeRuleName) && (
           <Button
             variant="ghost"
@@ -196,6 +196,7 @@ export function HeaderBar() {
               setFilterMethod("");
               setFilterStatus("");
               setFilterUrl("");
+              setFilterUrlFuzzy(false);
               setActiveRuleName(null);
             }}
           >

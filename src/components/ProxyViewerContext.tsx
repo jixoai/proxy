@@ -160,6 +160,8 @@ interface ProxyViewerContextValue {
   setFilterStatus: (status: string) => void;
   filterUrl: string;
   setFilterUrl: (url: string) => void;
+  filterUrlFuzzy: boolean;
+  setFilterUrlFuzzy: (enabled: boolean) => void;
   filterRule: string;
   setFilterRule: (rule: string) => void;
 
@@ -217,6 +219,7 @@ type SearchParams = {
   filterMethod?: string;
   filterStatus?: string;
   filterUrl?: string;
+  urlMode?: "fuzzy";
   filterRule?: string;
 };
 
@@ -301,6 +304,9 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const [detailNotFound, setDetailNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
   const [pageLoading, setPageLoading] = useState(false);
+
+  const loadRequestsAbortRef = useRef<AbortController | null>(null);
+  const loadPagesAbortRef = useRef<AbortController | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [pagesParam, setPagesParamState] = useState<string | undefined>(undefined);
   const pagesParamRef = useRef<string | undefined>(undefined);
@@ -321,6 +327,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const [filterMethod, setFilterMethodState] = useState<string>("");
   const [filterStatus, setFilterStatusState] = useState<string>("");
   const [filterUrl, setFilterUrlState] = useState<string>("");
+  const [filterUrlFuzzy, setFilterUrlFuzzyState] = useState<boolean>(false);
   const [filterRule, setFilterRuleState] = useState<string>("");
 
   const [availableRules, setAvailableRules] = useState<Array<{ name: string; instanceName: string }>>([]);
@@ -329,7 +336,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const [instancesLoading, setInstancesLoading] = useState(true);
   const [instanceStatuses, setInstanceStatuses] = useState<Record<string, InstanceStatus>>({});
   const [instanceConfigSyncStatus, setInstanceConfigSyncStatus] = useState<Record<string, boolean | undefined>>({});
-  const [activeInstanceName, setActiveInstanceName] = useState<string | null>(null);
+  const [activeInstanceName, setActiveInstanceNameState] = useState<string | null>(null);
   const [activeRuleName, setActiveRuleNameState] = useState<string | null>(null);
   const [controlFocusInstanceName, setControlFocusInstanceName] = useState<string | null>(null);
   const [controlFocusForwardName, setControlFocusForwardName] = useState<string | null>(null);
@@ -342,6 +349,69 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
 
   const [jsonDialogOpen, setJsonDialogOpenState] = useState(false);
   const [dialogJSONSnapshot, setDialogJSONSnapshot] = useState<string[]>([]);
+
+  const lastLoadedRequestsQueryKeyRef = useRef<string>("");
+  const hasServerFiltersRef = useRef(false);
+
+  const parseRuleFilter = useCallback((value: string) => {
+    const idx = value.indexOf("/");
+    if (idx <= 0 || idx === value.length - 1) return null;
+    return { instanceName: value.slice(0, idx), forwardName: value.slice(idx + 1) };
+  }, []);
+
+  const getRequestsQueryParams = useCallback(() => {
+    const params = new URLSearchParams();
+
+    let instanceName: string | null | undefined = activeInstanceName;
+    let forwardName: string | null | undefined;
+
+    const ruleValue = activeRuleName || filterRule || "";
+    if (ruleValue) {
+      const parsed = parseRuleFilter(ruleValue);
+      if (parsed) {
+        instanceName = parsed.instanceName;
+        forwardName = parsed.forwardName;
+      } else {
+        forwardName = ruleValue;
+      }
+    }
+
+    if (instanceName !== undefined && instanceName !== null) {
+      params.set("instance_name", instanceName);
+    }
+    if (forwardName !== undefined) {
+      params.set("forward_name", forwardName === null ? "null" : forwardName);
+    }
+    if (filterMethod) {
+      params.set("method", filterMethod);
+    }
+    if (filterStatus) {
+      params.set("status_code", filterStatus);
+    }
+    if (filterUrl.trim()) {
+      params.set("url_pattern", filterUrl.trim());
+      if (filterUrlFuzzy) {
+        params.set("url_mode", "fuzzy");
+      }
+    }
+
+    const queryString = params.toString();
+    const isFuzzy = Boolean(filterUrlFuzzy && filterUrl.trim().length > 0);
+    return { queryString, hasFilters: queryString.length > 0, key: queryString, isFuzzy };
+  }, [
+    activeInstanceName,
+    activeRuleName,
+    filterRule,
+    filterMethod,
+    filterStatus,
+    filterUrl,
+    filterUrlFuzzy,
+    parseRuleFilter,
+  ]);
+
+  useEffect(() => {
+    hasServerFiltersRef.current = getRequestsQueryParams().hasFilters;
+  }, [getRequestsQueryParams]);
 
   const cleanSearch = useCallback((search: SearchParams) => {
     const next = { ...search };
@@ -369,6 +439,16 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const loadPages = useCallback(
     async (pages: number[]) => {
       const currentPageSize = pageSize;
+      const { queryString, isFuzzy, key } = getRequestsQueryParams();
+      const filterSuffix = queryString ? `&${queryString}` : "";
+      const order = isFuzzy ? "desc" : "asc";
+      const targetPages = isFuzzy ? [1] : pages;
+
+      if (loadPagesAbortRef.current) {
+        loadPagesAbortRef.current.abort();
+      }
+      const abortController = new AbortController();
+      loadPagesAbortRef.current = abortController;
 
       // 标记正在加载（页面切换加载，保留现有数据）
       setPageLoading(true);
@@ -376,9 +456,10 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
       try {
         // 并行加载所有需要的页（不使用缓存，每次都从后端加载）
         const results = await Promise.all(
-          pages.map(async (page) => {
+          targetPages.map(async (page) => {
             const response = await fetch(
-              `/api/requests?page=${page}&limit=${currentPageSize}&order=asc`,
+              `/api/requests?page=${page}&limit=${currentPageSize}&order=${order}${filterSuffix}`,
+              { signal: abortController.signal },
             );
             const data = (await response.json()) as {
               items: RequestData[];
@@ -391,15 +472,19 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
           }),
         );
 
+        // 如果过滤条件已变化，丢弃过期结果，避免覆盖新搜索的 loading/requests 状态
+        if (key !== lastLoadedRequestsQueryKeyRef.current) {
+          return;
+        }
+
         // 构建 requests 数据
         const allData: RequestData[] = [];
         for (const { page, data } of results) {
-          // 后端返回 order=asc（旧的在前），反转让新的在前（与显示顺序一致）
-          const normalized = data.items.map((item) => normalizeIncomingRequest(item)).reverse();
-          // pages 是降序的（如 [4,3]），按此顺序拼接
-          allData.push(...normalized);
+          const normalized = data.items.map((item) => normalizeIncomingRequest(item));
+          const inDisplayOrder = isFuzzy ? normalized : normalized.reverse();
+          allData.push(...inDisplayOrder);
           // 订阅 pluginUi streams
-          for (const item of normalized) {
+          for (const item of inDisplayOrder) {
             const records = item.metadata.pluginUi?.records;
             if (records) subscribePluginUiStreams(records);
           }
@@ -415,24 +500,57 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
           maxDisplayedIdRef.current = maxId;
         }
       } catch (error) {
+        if ((error as any)?.name === "AbortError") {
+          return;
+        }
         console.error("Failed to load pages:", error);
       } finally {
-        setPageLoading(false);
-        setLoading(false);
+        if (key === lastLoadedRequestsQueryKeyRef.current) {
+          setPageLoading(false);
+          setLoading(false);
+        }
       }
     },
-    [pageSize, normalizeIncomingRequest, subscribePluginUiStreams],
+    [pageSize, normalizeIncomingRequest, subscribePluginUiStreams, getRequestsQueryParams],
   );
 
   /** 初始加载：只获取 totalCount，数据由 RequestList 的 useEffect 加载 */
   const loadRequests = useCallback(async () => {
+    const { queryString, hasFilters, key, isFuzzy } = getRequestsQueryParams();
+    lastLoadedRequestsQueryKeyRef.current = key;
+
     unsubscribeAllPluginUiStreams();
+    setPageLoading(false);
     // 不清空 requests，让 WebSocket 推送的数据可以先显示
     setLoading(true);
 
+    if (loadRequestsAbortRef.current) {
+      loadRequestsAbortRef.current.abort();
+    }
+    const abortController = new AbortController();
+    loadRequestsAbortRef.current = abortController;
+
+    // 有过滤条件时，先清空现有数据，避免展示“旧列表 + 新搜索条件”的错觉
+    if (hasFilters) {
+      setRequests([]);
+      setTotalCount(0);
+      totalCountRef.current = 0;
+      maxDisplayedIdRef.current = 0;
+    }
+
+    if (isFuzzy) {
+      // 模糊模式不做 count（避免全表迭代），用占位 total 触发 RequestList 加载
+      setTotalCount(1);
+      totalCountRef.current = 1;
+      return;
+    }
+
     try {
       // 只获取总数
-      const response = await fetch("/api/requests/count");
+      const response = await fetch(
+        queryString ? `/api/requests/count?${queryString}` : "/api/requests/count",
+        { signal: abortController.signal },
+      );
       const data = (await response.json()) as { total: number };
 
       // 设置 totalCount，触发 RequestList 的 useEffect 加载数据
@@ -446,10 +564,13 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
       }
       // 有数据时，loading 状态由 loadPages 控制
     } catch (error) {
+      if ((error as any)?.name === "AbortError") {
+        return;
+      }
       console.error("Failed to load requests:", error);
       setLoading(false);
     }
-  }, [unsubscribeAllPluginUiStreams]);
+  }, [unsubscribeAllPluginUiStreams, getRequestsQueryParams]);
 
   const handleClearAll = useCallback(async () => {
     try {
@@ -589,6 +710,11 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     setControlFocusForwardName(null);
   }, []);
 
+  const setActiveInstanceName = useCallback((name: string | null) => {
+    setActiveInstanceNameState(name);
+    setPagesParamState(undefined);
+  }, []);
+
   const setPagesParam = useCallback(
     (value: string) => {
       setPagesParamState(value);
@@ -665,12 +791,32 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
 
   const setFilterUrl = useCallback(
     (url: string) => {
+      const empty = url.trim().length === 0;
       setFilterUrlState(url);
+      if (empty) {
+        setFilterUrlFuzzyState(false);
+      }
       setPagesParamState(undefined);
       if (!applyingSearchRef.current) {
         updateSearch((prev) => ({
           ...prev,
           filterUrl: url || undefined,
+          urlMode: empty ? undefined : prev.urlMode,
+          pages: undefined,
+        }));
+      }
+    },
+    [updateSearch],
+  );
+
+  const setFilterUrlFuzzy = useCallback(
+    (enabled: boolean) => {
+      setFilterUrlFuzzyState(Boolean(enabled));
+      setPagesParamState(undefined);
+      if (!applyingSearchRef.current) {
+        updateSearch((prev) => ({
+          ...prev,
+          urlMode: enabled ? "fuzzy" : undefined,
           pages: undefined,
         }));
       }
@@ -714,6 +860,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
       setFilterMethodState(search.filterMethod ?? "");
       setFilterStatusState(search.filterStatus ?? "");
       setFilterUrlState(search.filterUrl ?? "");
+      setFilterUrlFuzzyState(Boolean(search.urlMode === "fuzzy" && search.filterUrl && search.filterUrl.trim().length > 0));
       setFilterRuleState(search.filterRule ?? "");
       setActiveRuleNameState(search.filterRule ?? null);
       setJsonDialogOpenState(search.dialog === "json");
@@ -790,6 +937,33 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const prevFilterUrlRef = useRef<string>("");
+  const reloadRequestsTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    const { key } = getRequestsQueryParams();
+    if (key === lastLoadedRequestsQueryKeyRef.current) return;
+
+    const urlChanged = filterUrl !== prevFilterUrlRef.current;
+    prevFilterUrlRef.current = filterUrl;
+
+    if (reloadRequestsTimerRef.current !== null) {
+      window.clearTimeout(reloadRequestsTimerRef.current);
+      reloadRequestsTimerRef.current = null;
+    }
+
+    const delay = urlChanged ? 300 : 0;
+    reloadRequestsTimerRef.current = window.setTimeout(() => {
+      void loadRequests();
+    }, delay);
+
+    return () => {
+      if (reloadRequestsTimerRef.current !== null) {
+        window.clearTimeout(reloadRequestsTimerRef.current);
+        reloadRequestsTimerRef.current = null;
+      }
+    };
+  }, [filterUrl, getRequestsQueryParams, loadRequests]);
+
   // WebSocket 连接
   useEffect(() => {
     if (!livePush) {
@@ -831,6 +1005,10 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
         try {
           const message = JSON.parse(event.data);
           if (message.type === "new-request" && message.data) {
+            if (hasServerFiltersRef.current) {
+              return;
+            }
+
             const normalized = normalizeIncomingRequest(message.data as RequestData);
             const newId = parseInt(normalized.id, 10);
             
@@ -922,10 +1100,23 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
             });
           } else if (message.type === "delete-request" && message.id) {
             const deletedId = String(message.id);
-            // 减少 totalCount
-            setTotalCount((prev) => Math.max(0, prev - 1));
-            totalCountRef.current = Math.max(0, totalCountRef.current - 1);
-            setRequests((prev) => prev.filter((req) => req.id !== deletedId));
+
+            if (hasServerFiltersRef.current) {
+              setRequests((prev) => {
+                const existed = prev.some((req) => req.id === deletedId);
+                if (existed) {
+                  setTotalCount((count) => Math.max(0, count - 1));
+                  totalCountRef.current = Math.max(0, totalCountRef.current - 1);
+                }
+                return prev.filter((req) => req.id !== deletedId);
+              });
+            } else {
+              // 减少 totalCount
+              setTotalCount((prev) => Math.max(0, prev - 1));
+              totalCountRef.current = Math.max(0, totalCountRef.current - 1);
+              setRequests((prev) => prev.filter((req) => req.id !== deletedId));
+            }
+
             if (selectedIdRef.current === deletedId) {
               setSelectedId(null);
               setSelectedDetail(null);
@@ -1026,6 +1217,8 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     setFilterStatus,
     filterUrl,
     setFilterUrl,
+    filterUrlFuzzy,
+    setFilterUrlFuzzy,
     filterRule,
     setFilterRule,
     availableRules,

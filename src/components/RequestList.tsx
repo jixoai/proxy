@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Inbox,
@@ -252,13 +252,8 @@ export function RequestList() {
     setPagesParam,
     pageSize,
     loadPages,
-    filterMethod,
-    filterStatus,
-    filterUrl,
     selectedId,
     selectRequest,
-    activeInstanceName,
-    activeRuleName,
     deleteRequest,
     abortRequest,
     jumpToForwardRule,
@@ -279,42 +274,6 @@ export function RequestList() {
       : instance.forwards.find((f) => f.name === forwardName);
     return forward ? { name: forward.name, description: forward.description } : null;
   };
-
-  // 过滤后的请求
-  const filteredRequests = useMemo(() => {
-    return requests.filter((req) => {
-      // 按实例过滤
-      if (activeInstanceName !== null) {
-        const reqInstanceName = req.metadata.instanceName || "unknown";
-        if (reqInstanceName !== activeInstanceName) {
-          return false;
-        }
-      }
-
-      // 按规则过滤
-      if (activeRuleName !== null) {
-        const ruleName = req.metadata.forwardName || "unknown";
-        if (ruleName !== activeRuleName) {
-          return false;
-        }
-      }
-
-      // 其他过滤条件
-      if (filterMethod && req.metadata.request.method !== filterMethod) {
-        return false;
-      }
-      if (filterStatus) {
-        const statusCode = req.metadata.response?.statusCode?.toString() || "";
-        if (statusCode !== filterStatus) {
-          return false;
-        }
-      }
-      if (filterUrl && !req.metadata.request.url.toLowerCase().includes(filterUrl.toLowerCase())) {
-        return false;
-      }
-      return true;
-    });
-  }, [requests, activeInstanceName, activeRuleName, filterMethod, filterStatus, filterUrl]);
 
   // Pagination - 使用新的多页分页系统
   const itemsPerPage = pageSize || DEFAULT_PAGE_SIZE;
@@ -337,19 +296,18 @@ export function RequestList() {
     // 2. 初次加载（hasLoaded=false 且 totalCount > 0）
     const pagesChanged = pagesKey !== prevPagesKeyRef.current;
     const needsInitialLoad = !hasLoadedRef.current && totalCount > 0 && currentPages.length > 0;
+    const needsRefreshLoad = loading && totalCount > 0 && currentPages.length > 0;
     
-    if (pagesChanged || needsInitialLoad) {
+    if (pagesChanged || needsInitialLoad || needsRefreshLoad) {
       prevPagesKeyRef.current = pagesKey;
       hasLoadedRef.current = true;
       loadPages(currentPages);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pagesKey, totalCount]);
+  }, [pagesKey, totalCount, loading]);
 
-  // 过滤后的请求（在已加载的数据上做前端过滤）
-  const paginatedRequests = useMemo(() => {
-    return filteredRequests;
-  }, [filteredRequests]);
+  const paginatedRequests = requests;
+  const isFetching = loading || pageLoading;
 
   // 格式化时间戳
   const formatTimestamp = (timestamp: string) => {
@@ -384,13 +342,13 @@ export function RequestList() {
       )}
       {/* Request Table */}
       <div className="flex-1 overflow-auto">
-        {loading && paginatedRequests.length === 0 ? (
+        {isFetching && paginatedRequests.length === 0 ? (
           <Empty>
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <Loader2 className="animate-spin" />
               </EmptyMedia>
-              <EmptyTitle>加载中...</EmptyTitle>
+              <EmptyTitle>搜索中...</EmptyTitle>
               <EmptyDescription>正在获取请求记录</EmptyDescription>
             </EmptyHeader>
           </Empty>

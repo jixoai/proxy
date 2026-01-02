@@ -13,6 +13,7 @@ const requestsSearchSchema = z
     filterMethod: z.string().optional(),
     filterStatus: z.string().optional(),
     filterUrl: z.string().optional(),
+    urlMode: z.enum(["fuzzy"]).optional(),
     filterRule: z.string().optional(),
   })
   .partial();
