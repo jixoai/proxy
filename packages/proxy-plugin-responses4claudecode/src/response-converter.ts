@@ -8,11 +8,8 @@ import type {
   CodexSSEOutputItemAdded,
   CodexSSEContentPartAdded,
   CodexSSEOutputTextDelta,
-  CodexSSEOutputTextDone,
   CodexSSEReasoningSummaryDelta,
-  CodexSSEReasoningSummaryDone,
   CodexSSEFunctionCallArgumentsDelta,
-  CodexSSEFunctionCallArgumentsDone,
   CodexSSEOutputItemDone,
   CodexSSEContentPartDone,
   CodexSSEAnnotationAdded,
@@ -26,7 +23,6 @@ import type {
 import {
   convertResponseIdToMessageId,
   convertCallIdToToolId,
-  isCustomTool,
   mapToolNameToClaude,
 } from "./constants";
 

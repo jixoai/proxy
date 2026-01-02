@@ -291,18 +291,10 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
 }
 
 /**
- * 创建插件实例（兼容旧 API）
- * @deprecated 使用 createResponses4ClaudeCodePlugin 代替
- */
-export function createPlugin(): ProxyPlugin<Responses4ClaudeCodeStore> {
-  const debug = process.env.DEBUG_RESPONSES4CLAUDECODE === "1";
-  return createResponses4ClaudeCodePlugin({ debug });
-}
-
-/**
  * 启动插件服务器
  */
 export async function startPlugin(): Promise<void> {
-  const plugin = createPlugin();
+  const debug = process.env.DEBUG_RESPONSES4CLAUDECODE === "1";
+  const plugin = createResponses4ClaudeCodePlugin({ debug });
   await startPluginServer({ plugin });
 }
