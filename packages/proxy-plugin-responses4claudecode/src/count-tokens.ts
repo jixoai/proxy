@@ -144,9 +144,13 @@ export function isCountTokensRequest(url: string | undefined): boolean {
 
 /**
  * 创建 count_tokens 响应
+ *
+ * Claude API 返回格式：
+ * { "context_management": null, "input_tokens": 22838 }
  */
 export function createCountTokensResponse(inputTokens: number): string {
   return JSON.stringify({
+    context_management: null,
     input_tokens: inputTokens,
   });
 }

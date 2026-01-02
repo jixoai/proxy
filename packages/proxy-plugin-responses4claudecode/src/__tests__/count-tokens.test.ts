@@ -78,10 +78,10 @@ describe("count-tokens", () => {
   });
 
   describe("createCountTokensResponse", () => {
-    test("should create valid JSON response", () => {
+    test("should create valid JSON response with context_management", () => {
       const response = createCountTokensResponse(1234);
       const parsed = JSON.parse(response);
-      expect(parsed).toEqual({ input_tokens: 1234 });
+      expect(parsed).toEqual({ context_management: null, input_tokens: 1234 });
     });
   });
 });
