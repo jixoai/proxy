@@ -455,7 +455,13 @@ export function RequestList() {
                       <TableCell className="max-w-[250px] truncate font-mono text-xs">
                         <Tooltip>
                           <TooltipTrigger>
-                            {new URL(req.metadata.request.url).pathname}
+                            {(() => {
+                              try {
+                                return new URL(req.metadata.request.url).pathname;
+                              } catch {
+                                return req.metadata.request.url || "-";
+                              }
+                            })()}
                           </TooltipTrigger>
                           <TooltipContent className="max-w-md">
                             {(() => {
@@ -477,7 +483,7 @@ export function RequestList() {
                                   </div>
                                 </div>
                               ) : (
-                                req.metadata.request.url
+                                req.metadata.request.url || "-"
                               );
                             })()}
                           </TooltipContent>
@@ -487,7 +493,13 @@ export function RequestList() {
                         {req.metadata.targetUrl ? (
                           <Tooltip>
                             <TooltipTrigger>
-                              {new URL(req.metadata.targetUrl).host}
+                              {(() => {
+                                try {
+                                  return new URL(req.metadata.targetUrl).host;
+                                } catch {
+                                  return req.metadata.targetUrl;
+                                }
+                              })()}
                             </TooltipTrigger>
                             <TooltipContent>{req.metadata.targetUrl}</TooltipContent>
                           </Tooltip>

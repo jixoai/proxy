@@ -4,6 +4,8 @@ import { db } from "./db";
 import { dbNotifier } from "./db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, ensureDataUrl, isDataUrl } from "./data-url";
 import type { HookLayer } from "../types/proxy";
+import { parsePrivateHeaders } from "@jixo/proxy-plugin";
+import { parsePluginUiFromHeaders } from "./plugin-ui";
 
 export type AbortReason = "client_disconnect" | "user_abort";
 export type RequestStatus = "pending" | "streaming" | "completed" | "error" | "aborted";
@@ -74,10 +76,121 @@ export interface ProxyRequestPagination {
   order?: "asc" | "desc";
 }
 
+/** 列表页展示需要的摘要数据（轻量化） */
+export interface ListSummary {
+  id: string;
+  timestamp: string;
+  ttfbMs?: number;
+  bodyMs?: number;
+  instanceName: string | null;
+  forwardName: string | null;
+  forwardId: string | null;
+  status: RequestStatus;
+  abortReason: AbortReason | null;
+  isWebSocket: boolean;
+  targetUrl?: string;
+  request: {
+    method: string;
+    url: string;
+    bodySize: number;
+  };
+  response: {
+    statusCode: number | null;
+    bodySize: number;
+  } | null;
+  pluginInfo?: {
+    pluginOrigin?: string;
+    pluginsProcessed?: string[];
+    requestType?: string;
+    sessionId?: string;
+    pingCount?: number;
+  };
+  pluginUi?: {
+    records: Array<{
+      name: string;
+      payload?: {
+        name: string;
+        tray: Array<{ icon: string; description?: string }>;
+        remark?: string;
+      };
+      streamUrl?: string;
+      source: "request" | "response";
+    }>;
+    order: string[];
+    version: number;
+  };
+}
+
 export const requestEvents = new EventEmitter();
 
 function serializeRequest(req: LoggedRequest): string {
   return JSON.stringify(req);
+}
+
+/** 从 LoggedRequest 计算列表摘要 JSON */
+function computeListSummary(req: LoggedRequest): string {
+  const hasHookedRequest = !!req.hookedRequest;
+
+  // 合并 headers 用于解析插件信息
+  const mergedRequestHeaders = {
+    ...req.request.headers,
+    ...req.hookedRequest?.headers,
+  };
+  const mergedResponseHeaders = {
+    ...req.response?.headers,
+    ...req.hookedResponse?.headers,
+  };
+
+  // 解析 pluginInfo
+  const pluginInfo = parsePrivateHeaders({
+    ...mergedRequestHeaders,
+    ...mergedResponseHeaders,
+  });
+
+  // 解析 pluginUi
+  const processed = parsePrivateHeaders(mergedRequestHeaders).pluginsProcessed;
+  const pluginUiResult = parsePluginUiFromHeaders(mergedRequestHeaders, mergedResponseHeaders, processed);
+
+  const summary: ListSummary = {
+    id: (req.id ?? req.request_id).toString(),
+    timestamp: req.timestamp,
+    ttfbMs: req.response?.ttfbMs,
+    bodyMs: req.response?.bodyMs,
+    instanceName: req.instance_name,
+    forwardName: req.forward_name,
+    forwardId: req.forward_id,
+    status: req.status,
+    abortReason: req.abort_reason,
+    isWebSocket: req.is_websocket,
+    targetUrl: hasHookedRequest
+      ? req.hookedRequest!.url
+      : (req.request.targetUrl ?? req.request.url),
+    request: {
+      method: req.request.method,
+      url: req.request.url,
+      bodySize: req.request.bodySize,
+    },
+    response: req.response
+      ? {
+          statusCode: req.response.statusCode,
+          bodySize: req.response.bodySize,
+        }
+      : null,
+    pluginInfo: pluginInfo.pluginOrigin || pluginInfo.pluginsProcessed?.length
+      ? {
+          pluginOrigin: pluginInfo.pluginOrigin ?? undefined,
+          pluginsProcessed: pluginInfo.pluginsProcessed,
+          requestType: pluginInfo.requestType ?? undefined,
+          sessionId: pluginInfo.sessionId ?? undefined,
+          pingCount: pluginInfo.pingCount ?? undefined,
+        }
+      : undefined,
+    pluginUi: pluginUiResult
+      ? { ...pluginUiResult, version: Date.now() }
+      : undefined,
+  };
+
+  return JSON.stringify(summary);
 }
 
 function computeUrlColumns(url: string | null | undefined): {
@@ -111,25 +224,31 @@ function coerceGroupName(instance: string | null, forward: string | null): strin
 
 export function createProxyRequest(request: Omit<LoggedRequest, "id">): number {
   const urlCols = computeUrlColumns(request.request?.url);
-  const data = serializeRequest({
+  const reqWithGroup = {
     ...request,
     group_name: request.group_name ?? coerceGroupName(request.instance_name, request.forward_name),
-  });
+  };
+  const data = serializeRequest(reqWithGroup);
+
   const stmt = db.query(
-    "INSERT INTO proxy_requests (timestamp, instance_name, forward_name, group_name, status, response_body_size, request_url_lc, request_path_lc, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO proxy_requests (timestamp, instance_name, forward_name, group_name, status, response_body_size, request_url_lc, request_path_lc, list_summary, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   );
   const result = stmt.run(
     request.timestamp,
     request.instance_name,
     request.forward_name,
-    request.group_name ?? coerceGroupName(request.instance_name, request.forward_name),
+    reqWithGroup.group_name,
     request.status,
     request.response?.bodySize ?? 0,
     urlCols.request_url_lc,
     urlCols.request_path_lc,
+    null,
     data,
   );
   const id = Number(result.lastInsertRowid);
+
+  const listSummary = computeListSummary({ ...(reqWithGroup as LoggedRequest), id });
+  db.query("UPDATE proxy_requests SET list_summary = ? WHERE id = ?").run(listSummary, id);
 
   const created = getProxyRequestById(id);
   if (created) {
@@ -137,6 +256,39 @@ export function createProxyRequest(request: Omit<LoggedRequest, "id">): number {
   }
   dbNotifier.notify("insert", "proxy_requests", id);
   return id;
+}
+
+function getOrComputeListSummary(row: { id: number; list_summary: string | null }): ListSummary {
+  if (row.list_summary) {
+    try {
+      return JSON.parse(row.list_summary) as ListSummary;
+    } catch {
+      // fall through
+    }
+  }
+
+  const dataRow = db.query("SELECT data FROM proxy_requests WHERE id = ?").get(row.id) as
+    | { data: string }
+    | null;
+  if (!dataRow) {
+    return {
+      id: row.id.toString(),
+      timestamp: "",
+      instanceName: null,
+      forwardName: null,
+      forwardId: null,
+      status: "completed" as RequestStatus,
+      abortReason: null,
+      isWebSocket: false,
+      request: { method: "?", url: "", bodySize: 0 },
+      response: null,
+    };
+  }
+
+  const req = deserializeRequest({ id: row.id, data: dataRow.data });
+  const summaryJson = computeListSummary(req);
+  db.query("UPDATE proxy_requests SET list_summary = ? WHERE id = ?").run(summaryJson, row.id);
+  return JSON.parse(summaryJson) as ListSummary;
 }
 
 export function getProxyRequestById(id: number): LoggedRequest | null {
@@ -243,6 +395,145 @@ export function getAllRequests(
     .all(...params) as Array<{ id: number; data: string }>;
   return rows.map(deserializeRequest);
 }
+
+/** 获取请求列表摘要（轻量化，不读取完整 data）*/
+export function getAllRequestsSummary(
+  filters?: ProxyRequestFilters,
+  pagination?: ProxyRequestPagination,
+): ListSummary[] {
+  const where: string[] = [];
+  const params: any[] = [];
+
+  if (filters?.instance_name !== undefined) {
+    if (filters.instance_name === null) {
+      where.push("instance_name IS NULL");
+    } else {
+      where.push("instance_name = ?");
+      params.push(filters.instance_name);
+    }
+  }
+  if (filters?.forward_name !== undefined) {
+    if (filters.forward_name === null) {
+      where.push("forward_name IS NULL");
+    } else {
+      where.push("forward_name = ?");
+      params.push(filters.forward_name);
+    }
+  }
+  if (filters?.method) {
+    where.push("method = ?");
+    params.push(filters.method);
+  }
+  if (filters?.status_code) {
+    where.push("status_code = ?");
+    params.push(filters.status_code);
+  }
+  if (filters?.url_pattern) {
+    const raw = filters.url_pattern.trim().toLowerCase();
+    if (raw.length > 0) {
+      const looksLikeUrlPrefix =
+        raw === "http" ||
+        raw === "https" ||
+        raw.startsWith("http://") ||
+        raw.startsWith("https://") ||
+        raw.startsWith("http:") ||
+        raw.startsWith("https:");
+
+      if (looksLikeUrlPrefix) {
+        where.push("request_url_lc >= ? AND request_url_lc < ?");
+        params.push(raw, `${raw}\uffff`);
+      } else {
+        const prefix = raw.startsWith("/") ? raw : `/${raw}`;
+        where.push("request_path_lc >= ? AND request_path_lc < ?");
+        params.push(prefix, `${prefix}\uffff`);
+      }
+    }
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const orderDirection = pagination?.order === "asc" ? "ASC" : "DESC";
+  const order = `ORDER BY id ${orderDirection}`;
+
+  if (pagination != null) {
+    const limitSql = `LIMIT ${pagination.limit} OFFSET ${(pagination.page - 1) * pagination.limit}`;
+    // 只读取 id 和 list_summary，不读 data
+    const rows = db
+      .query(`SELECT id, list_summary FROM proxy_requests ${whereSql} ${order} ${limitSql}`)
+      .all(...params) as Array<{ id: number; list_summary: string | null }>;
+
+    return rows.map(getOrComputeListSummary);
+  }
+
+  const rows = db
+    .query(`SELECT id, list_summary FROM proxy_requests ${whereSql} ${order}`)
+    .all(...params) as Array<{ id: number; list_summary: string | null }>;
+
+  return rows.map(getOrComputeListSummary);
+}
+
+/** 模糊搜索（轻量化版本，返回 ListSummary） */
+export function getAllRequestsSummaryFuzzy(
+  filters: Omit<ProxyRequestFilters, "url_pattern"> | undefined,
+  needle: string,
+  options: {
+    limit: number;
+    order?: "asc" | "desc";
+    signal?: AbortSignal;
+  },
+): ListSummary[] {
+  const where: string[] = [];
+  const params: any[] = [];
+
+  if (filters?.instance_name !== undefined) {
+    if (filters.instance_name === null) {
+      where.push("instance_name IS NULL");
+    } else {
+      where.push("instance_name = ?");
+      params.push(filters.instance_name);
+    }
+  }
+  if (filters?.forward_name !== undefined) {
+    if (filters.forward_name === null) {
+      where.push("forward_name IS NULL");
+    } else {
+      where.push("forward_name = ?");
+      params.push(filters.forward_name);
+    }
+  }
+  if (filters?.method) {
+    where.push("method = ?");
+    params.push(filters.method);
+  }
+  if (filters?.status_code) {
+    where.push("status_code = ?");
+    params.push(filters.status_code);
+  }
+  const needleLc = needle.trim().toLowerCase();
+  if (needleLc.length === 0) return [];
+
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const orderDirection = options.order === "asc" ? "ASC" : "DESC";
+  const stmt = db.query(
+    `SELECT id, list_summary, request_url_lc, request_url FROM proxy_requests ${whereSql} ORDER BY id ${orderDirection}`,
+  );
+
+  const items: ListSummary[] = [];
+  for (const row of stmt.iterate(...params) as IterableIterator<{
+    id: number;
+    list_summary: string | null;
+    request_url_lc: string | null;
+    request_url: string | null;
+  }>) {
+    if (options.signal?.aborted) break;
+    const hay = (row.request_url_lc ?? row.request_url ?? "").toLowerCase();
+    if (!hay.includes(needleLc)) continue;
+    items.push(getOrComputeListSummary({ id: row.id, list_summary: row.list_summary }));
+    if (items.length >= options.limit) break;
+  }
+
+  return items;
+}
+
 export function getAllRequestsFuzzyLimited(
   filters: Omit<ProxyRequestFilters, "url_pattern"> | undefined,
   needle: string,
@@ -336,9 +627,10 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
 
   const data = serializeRequest(merged);
   const urlCols = computeUrlColumns(merged.request?.url);
+  const listSummary = computeListSummary(merged);
   const result = db
     .query(
-      "UPDATE proxy_requests SET timestamp = ?, instance_name = ?, forward_name = ?, group_name = ?, status = ?, response_body_size = ?, request_url_lc = ?, request_path_lc = ?, data = ? WHERE id = ?",
+      "UPDATE proxy_requests SET timestamp = ?, instance_name = ?, forward_name = ?, group_name = ?, status = ?, response_body_size = ?, request_url_lc = ?, request_path_lc = ?, list_summary = ?, data = ? WHERE id = ?",
     )
     .run(
       merged.timestamp,
@@ -349,6 +641,7 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
       merged.response?.bodySize ?? 0,
       urlCols.request_url_lc,
       urlCols.request_path_lc,
+      listSummary,
       data,
       id,
     );

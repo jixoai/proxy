@@ -7,7 +7,8 @@ import { getDbPath, ensureDataDir } from "./runtime-paths";
 // v2: 添加虚拟列索引优化 + streaming 专用列
 // v3: status_code 虚拟列优先使用 hookedResponse.statusCode
 // v4: 添加 request_url/path 的持久化小写列（用于前缀搜索索引）
-const SCHEMA_VERSION = 4;
+// v5: 添加 list_summary 列（列表页轻量化，避免读取完整 data）
+const SCHEMA_VERSION = 5;
 
 // 延迟初始化数据库实例
 // 必须在 setDataDir() 调用之后才能访问
@@ -100,6 +101,8 @@ export function initDatabase() {
         -- 实体列：用于 URL 前缀查询（避免 LIKE '%...%' 全表扫）
         request_url_lc TEXT,
         request_path_lc TEXT,
+        -- 列表摘要 JSON（用于列表页轻量化查询，避免读取完整 data）
+        list_summary TEXT,
         -- JSON 数据
         data TEXT NOT NULL,
         -- 虚拟列：从 JSON 提取，用于索引加速查询
@@ -156,6 +159,7 @@ export function initDatabase() {
         response_body_size INTEGER NOT NULL DEFAULT 0,
         request_url_lc TEXT,
         request_path_lc TEXT,
+        list_summary TEXT,
         data TEXT NOT NULL,
         method TEXT GENERATED ALWAYS AS (JSON_EXTRACT(data, '$.request.method')) STORED,
         status_code INTEGER GENERATED ALWAYS AS (
@@ -168,8 +172,8 @@ export function initDatabase() {
       );
 
       -- 复制数据（不包括虚拟列，它们会自动计算）
-      INSERT INTO proxy_requests_new (id, timestamp, instance_name, forward_name, group_name, status, response_body_size, request_url_lc, request_path_lc, data)
-      SELECT id, timestamp, instance_name, forward_name, group_name, status, response_body_size, NULL, NULL, data
+      INSERT INTO proxy_requests_new (id, timestamp, instance_name, forward_name, group_name, status, response_body_size, request_url_lc, request_path_lc, list_summary, data)
+      SELECT id, timestamp, instance_name, forward_name, group_name, status, response_body_size, NULL, NULL, NULL, data
       FROM proxy_requests;
 
       -- 删除旧表
@@ -271,6 +275,21 @@ export function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_proxy_requests_request_url_lc ON proxy_requests(request_url_lc);
       CREATE INDEX IF NOT EXISTS idx_proxy_requests_request_path_lc ON proxy_requests(request_path_lc);
     `);
+
+    // 继续升级到 v5
+    _db.exec("ALTER TABLE proxy_requests ADD COLUMN list_summary TEXT");
+
+    // 更新版本号
+    _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [
+      String(SCHEMA_VERSION),
+    ]);
+
+    console.log("[Database] Upgraded to schema version", SCHEMA_VERSION);
+  } else if (dbVersion === 4) {
+    // 从 v4 升级到 v5：新增 list_summary 列
+    console.log("[Database] Upgrading from v4 to v5...");
+
+    _db.exec("ALTER TABLE proxy_requests ADD COLUMN list_summary TEXT");
 
     // 更新版本号
     _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [

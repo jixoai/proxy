@@ -25,6 +25,8 @@ import {
 import {
   getAllRequests as dbGetAllRequests,
   getAllRequestsFuzzyLimited as dbGetAllRequestsFuzzyLimited,
+  getAllRequestsSummary as dbGetAllRequestsSummary,
+  getAllRequestsSummaryFuzzy as dbGetAllRequestsSummaryFuzzy,
   getProxyRequestById,
   getRequestsAfterId,
   getRequestsByIdRange,
@@ -34,6 +36,7 @@ import {
   updateProxyRequest,
   requestEvents,
   type LoggedRequest,
+  type ListSummary,
 } from "./lib/db-requests";
 import { dbListener, dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, isDataUrl } from "./lib/data-url";
@@ -248,6 +251,57 @@ function getAllRequestsFiltered(
 ): RequestData[] {
   const requests = dbGetAllRequests(filters, pagination);
   return requests.map(formatProxyRequest);
+}
+
+/** 将 ListSummary 转换为前端期望的 RequestData 格式（列表页专用，无 body 数据） */
+function formatListSummary(summary: ListSummary): RequestData {
+  return {
+    id: summary.id,
+    folderName: `${summary.id}_${summary.timestamp ? new Date(summary.timestamp).toISOString().replace(/[:.]/g, "-") : "unknown"}`,
+    metadata: {
+      timestamp: summary.timestamp,
+      ttfbMs: summary.ttfbMs,
+      bodyMs: summary.bodyMs,
+      instanceName: summary.instanceName,
+      forwardName: summary.forwardName,
+      forwardId: summary.forwardId,
+      status: summary.status,
+      abortReason: summary.abortReason,
+      isWebSocket: summary.isWebSocket,
+      targetUrl: summary.targetUrl,
+      request: {
+        method: summary.request.method,
+        url: summary.request.url,
+        headersCount: 0, // 列表页不需要这个字段
+        bodySize: summary.request.bodySize,
+      },
+      response: summary.response
+        ? {
+            statusCode: summary.response.statusCode,
+            statusMessage: null,
+            headersCount: 0,
+            bodySize: summary.response.bodySize,
+          }
+        : null,
+      pluginInfo: summary.pluginInfo,
+      pluginUi: summary.pluginUi,
+    },
+  };
+}
+
+/** 获取请求列表摘要（轻量化）*/
+function getAllRequestsSummaryFiltered(
+  filters?: {
+    instance_name?: string | null;
+    forward_name?: string | null;
+    method?: string;
+    status_code?: number;
+    url_pattern?: string;
+  },
+  pagination?: { page: number; limit: number; order?: "asc" | "desc" },
+): RequestData[] {
+  const summaries = dbGetAllRequestsSummary(filters, pagination);
+  return summaries.map(formatListSummary);
 }
 
 /**
@@ -924,12 +978,13 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
                 method: filters.method,
                 status_code: filters.status_code,
               };
-              const items = dbGetAllRequestsFuzzyLimited(baseFilters, urlPattern, {
+              // 使用轻量化的 summary 函数
+              const summaries = dbGetAllRequestsSummaryFuzzy(baseFilters, urlPattern, {
                 limit,
                 order,
                 signal: req.signal,
               });
-              const formatted = items.map(formatProxyRequest);
+              const formatted = summaries.map(formatListSummary);
               return Response.json({
                 items: formatted,
                 total: formatted.length,
@@ -940,9 +995,11 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
               });
             }
 
-            const requests = hasFilters
-              ? getAllRequestsFiltered(filters, pagination)
-              : getAllRequestsFiltered({}, pagination);
+            // 使用轻量化的 summary 函数（不读取完整 data）
+            const requests = getAllRequestsSummaryFiltered(
+              hasFilters ? filters : {},
+              { page, limit, order },
+            );
             const total = getRequestsCount(hasFilters ? filters : undefined);
 
             return Response.json({
