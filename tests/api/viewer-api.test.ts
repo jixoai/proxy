@@ -60,7 +60,7 @@ describe("Viewer API", () => {
     // Initialize config and database
     overrideConfigFilePathForTests(TEST_CONFIG_PATH);
     setDataDir(TEST_DATA_DIR);
-    initDatabase();
+    await initDatabase();
 
     manager = new ProxyInstancesManager();
     server = startViewerServer(manager, TEST_PORT);

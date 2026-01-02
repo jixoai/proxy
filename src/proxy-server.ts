@@ -248,7 +248,7 @@ async function main(argv: string[]) {
           case "init": {
             // 初始化数据目录和数据库
             setDataDir(message.dataDir);
-            initDatabase();
+            await initDatabase();
 
             const response: WorkerResponse = {
               type: "init-result",

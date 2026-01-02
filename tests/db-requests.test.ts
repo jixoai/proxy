@@ -17,11 +17,11 @@ import {
 describe("db-requests logging pipeline", () => {
   const TEST_DATA_DIR = path.join(process.cwd(), ".tmp", "db-requests-tests", "data");
 
-  beforeAll(() => {
+  beforeAll(async () => {
     // Use an isolated data dir so local dev DB/schema won't break tests.
     setDataDir(TEST_DATA_DIR);
     clearDataDir();
-    initDatabase();
+    await initDatabase();
   });
 
   beforeEach(() => {

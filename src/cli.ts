@@ -134,7 +134,7 @@ async function main() {
 
   // 初始化数据库
   console.log("[Init] Initializing database...");
-  initDatabase();
+  await initDatabase();
 
   // 清理孤儿 streaming/pending 请求（程序重启后这些请求已无法继续）
   cleanupOrphanStreamingRequests();
