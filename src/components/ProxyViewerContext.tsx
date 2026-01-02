@@ -396,8 +396,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
     }
 
     const queryString = params.toString();
-    const isFuzzy = Boolean(filterUrlFuzzy && filterUrl.trim().length > 0);
-    return { queryString, hasFilters: queryString.length > 0, key: queryString, isFuzzy };
+    return { queryString, hasFilters: queryString.length > 0, key: queryString };
   }, [
     activeInstanceName,
     activeRuleName,
@@ -439,10 +438,9 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
   const loadPages = useCallback(
     async (pages: number[]) => {
       const currentPageSize = pageSize;
-      const { queryString, isFuzzy, key } = getRequestsQueryParams();
+      const { queryString, key } = getRequestsQueryParams();
       const filterSuffix = queryString ? `&${queryString}` : "";
-      const order = isFuzzy ? "desc" : "asc";
-      const targetPages = isFuzzy ? [1] : pages;
+      const order = "asc";
 
       if (loadPagesAbortRef.current) {
         loadPagesAbortRef.current.abort();
@@ -456,7 +454,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
       try {
         // 并行加载所有需要的页（不使用缓存，每次都从后端加载）
         const results = await Promise.all(
-          targetPages.map(async (page) => {
+          pages.map(async (page) => {
             const response = await fetch(
               `/api/requests?page=${page}&limit=${currentPageSize}&order=${order}${filterSuffix}`,
               { signal: abortController.signal },
@@ -481,7 +479,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
         const allData: RequestData[] = [];
         for (const { page, data } of results) {
           const normalized = data.items.map((item) => normalizeIncomingRequest(item));
-          const inDisplayOrder = isFuzzy ? normalized : normalized.reverse();
+          const inDisplayOrder = normalized.reverse();
           allData.push(...inDisplayOrder);
           // 订阅 pluginUi streams
           for (const item of inDisplayOrder) {
@@ -516,7 +514,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
 
   /** 初始加载：只获取 totalCount，数据由 RequestList 的 useEffect 加载 */
   const loadRequests = useCallback(async () => {
-    const { queryString, hasFilters, key, isFuzzy } = getRequestsQueryParams();
+    const { queryString, hasFilters, key } = getRequestsQueryParams();
     lastLoadedRequestsQueryKeyRef.current = key;
 
     unsubscribeAllPluginUiStreams();
@@ -536,13 +534,6 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
       setTotalCount(0);
       totalCountRef.current = 0;
       maxDisplayedIdRef.current = 0;
-    }
-
-    if (isFuzzy) {
-      // 模糊模式不做 count（避免全表迭代），用占位 total 触发 RequestList 加载
-      setTotalCount(1);
-      totalCountRef.current = 1;
-      return;
     }
 
     try {
@@ -791,17 +782,13 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
 
   const setFilterUrl = useCallback(
     (url: string) => {
-      const empty = url.trim().length === 0;
       setFilterUrlState(url);
-      if (empty) {
-        setFilterUrlFuzzyState(false);
-      }
       setPagesParamState(undefined);
       if (!applyingSearchRef.current) {
         updateSearch((prev) => ({
           ...prev,
           filterUrl: url || undefined,
-          urlMode: empty ? undefined : prev.urlMode,
+          urlMode: prev.urlMode,
           pages: undefined,
         }));
       }
@@ -860,7 +847,7 @@ export function ProxyViewerProvider({ children }: { children: ReactNode }) {
       setFilterMethodState(search.filterMethod ?? "");
       setFilterStatusState(search.filterStatus ?? "");
       setFilterUrlState(search.filterUrl ?? "");
-      setFilterUrlFuzzyState(Boolean(search.urlMode === "fuzzy" && search.filterUrl && search.filterUrl.trim().length > 0));
+      setFilterUrlFuzzyState(Boolean(search.urlMode === "fuzzy"));
       setFilterRuleState(search.filterRule ?? "");
       setActiveRuleNameState(search.filterRule ?? null);
       setJsonDialogOpenState(search.dialog === "json");

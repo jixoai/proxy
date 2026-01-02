@@ -6,8 +6,10 @@ import {
   clearAllRequests,
   createProxyRequest,
   getAllRequests,
+  getAllRequestsSummaryFuzzy,
   getProxyRequestById,
   getRequestsCount,
+  getRequestsCountFuzzy,
   getRequestsAfterId,
   type LoggedRequest,
 } from "../src/lib/db-requests";
@@ -134,5 +136,32 @@ describe("db-requests logging pipeline", () => {
 
     const byBareHttpPrefix = getAllRequests({ url_pattern: "http" });
     expect(byBareHttpPrefix.length).toBe(2);
+  });
+
+  test("fuzzy search (FTS) supports multi-token queries like 'anth v1'", () => {
+    const id1 = createProxyRequest(
+      makeRequestPayload({
+        request_id: "req-1",
+        request: { ...makeRequestPayload().request, url: "http://localhost/anthropic/v1/messages" },
+      }),
+    );
+    createProxyRequest(
+      makeRequestPayload({
+        request_id: "req-2",
+        request: { ...makeRequestPayload().request, url: "http://localhost/openai/v1/chat/completions" },
+      }),
+    );
+
+    const total = getRequestsCountFuzzy({}, "anth v1");
+    expect(total).toBe(1);
+
+    const items = getAllRequestsSummaryFuzzy({}, "anth v1", {
+      page: 1,
+      limit: 10,
+      order: "desc",
+    });
+    expect(items.length).toBe(1);
+    expect(items[0]!.id).toBe(String(id1));
+    expect(items[0]!.request.url).toBe("http://localhost/anthropic/v1/messages");
   });
 });

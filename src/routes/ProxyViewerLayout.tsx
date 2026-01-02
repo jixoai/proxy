@@ -6,6 +6,7 @@ import { JSONPreviewDialog } from "@/components/JSONPreviewDialog";
 import { ProxyViewerProvider } from "@/components/ProxyViewerContext";
 import { PluginUiStreamProvider } from "@/contexts/PluginUiStreamContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { getPackageVersion } from "@/lib/version.macro";
 import {
   SidebarProvider,
   Sidebar,
@@ -23,6 +24,8 @@ import {
 import { List, Settings } from "lucide-react";
 
 export function ProxyViewerLayout() {
+  const version = getPackageVersion();
+
   return (
     <ErrorBoundary>
       <PluginUiStreamProvider>
@@ -67,7 +70,7 @@ export function ProxyViewerLayout() {
                 </SidebarContent>
 
                 <SidebarFooter className="border-t px-4 py-2">
-                  <div className="text-muted-foreground text-xs">Proxy Viewer v1.0</div>
+                  <div className="text-muted-foreground text-xs">Proxy Viewer v{version}</div>
                 </SidebarFooter>
               </Sidebar>
 

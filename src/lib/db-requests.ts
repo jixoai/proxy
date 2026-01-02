@@ -208,6 +208,44 @@ function computeUrlColumns(url: string | null | undefined): {
   }
 }
 
+function upsertRequestFtsRow(id: number, urlLc: string | null, pathLc: string | null) {
+  db
+    .query("INSERT OR REPLACE INTO proxy_requests_fts(rowid, url, path) VALUES (?, ?, ?)")
+    .run(id, urlLc ?? "", pathLc ?? "");
+}
+
+function deleteRequestFtsRow(id: number) {
+  db.query("DELETE FROM proxy_requests_fts WHERE rowid = ?").run(id);
+}
+
+function clearAllRequestFtsRows() {
+  db.query("DELETE FROM proxy_requests_fts").run();
+}
+
+function buildFtsMatchQuery(needle: string): string | null {
+  const raw = needle.trim().toLowerCase();
+  if (raw.length === 0) return null;
+
+  const looksLikeUrlSearch =
+    raw === "http" ||
+    raw === "https" ||
+    raw.startsWith("http://") ||
+    raw.startsWith("https://") ||
+    raw.startsWith("http:") ||
+    raw.startsWith("https:") ||
+    (!raw.startsWith("/") && /[.:]/.test(raw));
+
+  const column = looksLikeUrlSearch ? "url" : "path";
+  const tokens = raw.match(/[a-z0-9]+/g) ?? [];
+  if (tokens.length === 0) return null;
+
+  const parts = tokens.map((token) => {
+    const t = token.length >= 3 ? `${token}*` : token;
+    return `${column}:${t}`;
+  });
+  return parts.join(" ");
+}
+
 function deserializeRequest(row: { id: number; data: string }): LoggedRequest {
   const parsed = JSON.parse(row.data) as LoggedRequest;
   parsed.id = row.id;
@@ -249,6 +287,8 @@ export function createProxyRequest(request: Omit<LoggedRequest, "id">): number {
 
   const listSummary = computeListSummary({ ...(reqWithGroup as LoggedRequest), id });
   db.query("UPDATE proxy_requests SET list_summary = ? WHERE id = ?").run(listSummary, id);
+
+  upsertRequestFtsRow(id, urlCols.request_url_lc, urlCols.request_path_lc);
 
   const created = getProxyRequestById(id);
   if (created) {
@@ -476,6 +516,7 @@ export function getAllRequestsSummaryFuzzy(
   filters: Omit<ProxyRequestFilters, "url_pattern"> | undefined,
   needle: string,
   options: {
+    page: number;
     limit: number;
     order?: "asc" | "desc";
     signal?: AbortSignal;
@@ -508,30 +549,73 @@ export function getAllRequestsSummaryFuzzy(
     where.push("status_code = ?");
     params.push(filters.status_code);
   }
-  const needleLc = needle.trim().toLowerCase();
-  if (needleLc.length === 0) return [];
+  const match = buildFtsMatchQuery(needle);
+  if (!match) return [];
+  if (options.signal?.aborted) return [];
 
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const orderDirection = options.order === "asc" ? "ASC" : "DESC";
-  const stmt = db.query(
-    `SELECT id, list_summary, request_url_lc, request_url FROM proxy_requests ${whereSql} ORDER BY id ${orderDirection}`,
-  );
+  const limitSql = `LIMIT ${options.limit} OFFSET ${(options.page - 1) * options.limit}`;
+  const whereSql = where.length ? `AND ${where.join(" AND ")}` : "";
 
-  const items: ListSummary[] = [];
-  for (const row of stmt.iterate(...params) as IterableIterator<{
-    id: number;
-    list_summary: string | null;
-    request_url_lc: string | null;
-    request_url: string | null;
-  }>) {
-    if (options.signal?.aborted) break;
-    const hay = (row.request_url_lc ?? row.request_url ?? "").toLowerCase();
-    if (!hay.includes(needleLc)) continue;
-    items.push(getOrComputeListSummary({ id: row.id, list_summary: row.list_summary }));
-    if (items.length >= options.limit) break;
+  const rows = db
+    .query(
+      `SELECT pr.id as id, pr.list_summary as list_summary
+       FROM proxy_requests pr
+       JOIN proxy_requests_fts fts ON fts.rowid = pr.id
+       WHERE proxy_requests_fts MATCH ? ${whereSql}
+       ORDER BY pr.id ${orderDirection}
+       ${limitSql}`,
+    )
+    .all(match, ...params) as Array<{ id: number; list_summary: string | null }>;
+
+  return rows.map(getOrComputeListSummary);
+}
+
+export function getRequestsCountFuzzy(
+  filters: Omit<ProxyRequestFilters, "url_pattern"> | undefined,
+  needle: string,
+): number {
+  const where: string[] = [];
+  const params: any[] = [];
+
+  if (filters?.instance_name !== undefined) {
+    if (filters.instance_name === null) {
+      where.push("pr.instance_name IS NULL");
+    } else {
+      where.push("pr.instance_name = ?");
+      params.push(filters.instance_name);
+    }
+  }
+  if (filters?.forward_name !== undefined) {
+    if (filters.forward_name === null) {
+      where.push("pr.forward_name IS NULL");
+    } else {
+      where.push("pr.forward_name = ?");
+      params.push(filters.forward_name);
+    }
+  }
+  if (filters?.method) {
+    where.push("pr.method = ?");
+    params.push(filters.method);
+  }
+  if (filters?.status_code) {
+    where.push("pr.status_code = ?");
+    params.push(filters.status_code);
   }
 
-  return items;
+  const match = buildFtsMatchQuery(needle);
+  if (!match) return 0;
+
+  const whereSql = where.length ? `AND ${where.join(" AND ")}` : "";
+  const row = db
+    .query(
+      `SELECT COUNT(*) as count
+       FROM proxy_requests pr
+       JOIN proxy_requests_fts fts ON fts.rowid = pr.id
+       WHERE proxy_requests_fts MATCH ? ${whereSql}`,
+    )
+    .get(match, ...params) as { count: number };
+  return row.count;
 }
 
 export function getAllRequestsFuzzyLimited(
@@ -594,6 +678,7 @@ export function getAllRequestsFuzzyLimited(
 export function deleteProxyRequest(id: number): boolean {
   const result = db.query("DELETE FROM proxy_requests WHERE id = ?").run(id);
   if (result.changes > 0) {
+    deleteRequestFtsRow(id);
     dbNotifier.notify("delete", "proxy_requests", id);
     requestEvents.emit("delete-request", id);
     return true;
@@ -603,6 +688,7 @@ export function deleteProxyRequest(id: number): boolean {
 
 export function clearAllRequests(): boolean {
   const res = db.query("DELETE FROM proxy_requests").run();
+  clearAllRequestFtsRows();
   requestEvents.emit("clear-all");
   return res.changes > 0;
 }
@@ -646,6 +732,7 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
       id,
     );
 
+    upsertRequestFtsRow(id, urlCols.request_url_lc, urlCols.request_path_lc);
   if (result.changes > 0) {
     const updated = getProxyRequestById(id);
     if (updated) {

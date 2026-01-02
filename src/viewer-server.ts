@@ -27,6 +27,7 @@ import {
   getAllRequestsFuzzyLimited as dbGetAllRequestsFuzzyLimited,
   getAllRequestsSummary as dbGetAllRequestsSummary,
   getAllRequestsSummaryFuzzy as dbGetAllRequestsSummaryFuzzy,
+  getRequestsCountFuzzy,
   getProxyRequestById,
   getRequestsAfterId,
   getRequestsByIdRange,
@@ -911,9 +912,15 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
             filters.url_pattern = urlPattern;
           }
 
-          // 模糊模式不返回全量 total（避免全表迭代）
-          if (urlMode === "fuzzy" && urlPattern) {
-            return Response.json({ total: 0 });
+          if (urlMode === "fuzzy" && urlPattern && urlPattern.trim().length > 0) {
+            const baseFilters = {
+              instance_name: filters.instance_name,
+              forward_name: filters.forward_name,
+              method: filters.method,
+              status_code: filters.status_code,
+            };
+            const total = getRequestsCountFuzzy(baseFilters, urlPattern);
+            return Response.json({ total });
           }
 
           const hasFilters = Object.keys(filters).length > 0;
@@ -980,18 +987,20 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
               };
               // 使用轻量化的 summary 函数
               const summaries = dbGetAllRequestsSummaryFuzzy(baseFilters, urlPattern, {
+                page,
                 limit,
                 order,
                 signal: req.signal,
               });
               const formatted = summaries.map(formatListSummary);
+              const total = getRequestsCountFuzzy(baseFilters, urlPattern);
               return Response.json({
                 items: formatted,
-                total: formatted.length,
-                page: 1,
+                total,
+                page,
                 limit,
                 order,
-                totalPages: 1,
+                totalPages: Math.ceil(total / limit),
               });
             }
 

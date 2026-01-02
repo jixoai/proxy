@@ -8,7 +8,8 @@ import { getDbPath, ensureDataDir } from "./runtime-paths";
 // v3: status_code 虚拟列优先使用 hookedResponse.statusCode
 // v4: 添加 request_url/path 的持久化小写列（用于前缀搜索索引）
 // v5: 添加 list_summary 列（列表页轻量化，避免读取完整 data）
-const SCHEMA_VERSION = 5;
+// v6: 添加 FTS5（unicode61）用于模糊搜索
+const SCHEMA_VERSION = 6;
 
 // 延迟初始化数据库实例
 // 必须在 setDataDir() 调用之后才能访问
@@ -86,8 +87,49 @@ export function initDatabase() {
     | null;
   const dbVersion = versionRow ? parseInt(versionRow.value, 10) : 0;
 
+  const ensureFtsTable = () => {
+    _db!.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS proxy_requests_fts
+      USING fts5(
+        url,
+        path,
+        tokenize='unicode61'
+      );
+    `);
+  };
+
+  const rebuildFtsIndex = () => {
+    // 简单可靠：重建整个 FTS（一次性迁移成本，后续查询走索引）
+    _db!.exec("DELETE FROM proxy_requests_fts");
+    const select = _db!.query(
+      "SELECT id, request_url_lc, request_path_lc FROM proxy_requests ORDER BY id ASC",
+    );
+    const insert = _db!.query(
+      "INSERT INTO proxy_requests_fts(rowid, url, path) VALUES (?, ?, ?)",
+    );
+
+    try {
+      _db!.exec("BEGIN");
+      for (const row of select.iterate() as IterableIterator<{
+        id: number;
+        request_url_lc: string | null;
+        request_path_lc: string | null;
+      }>) {
+        insert.run(row.id, row.request_url_lc ?? "", row.request_path_lc ?? "");
+      }
+      _db!.exec("COMMIT");
+    } catch (error) {
+      try {
+        _db!.exec("ROLLBACK");
+      } catch {
+        // ignore
+      }
+      throw error;
+    }
+  };
+
   if (dbVersion === 0) {
-    // 新数据库，初始化 schema v4
+    // 新数据库，初始化 schema v6
     _db.run(`
       CREATE TABLE IF NOT EXISTS proxy_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,6 +160,8 @@ export function initDatabase() {
       )
     `);
 
+    ensureFtsTable();
+
     // 索引：时间倒序（主要查询模式）
     _db.run("CREATE INDEX IF NOT EXISTS idx_proxy_requests_time ON proxy_requests(timestamp DESC)");
     // 索引：分组过滤
@@ -143,8 +187,8 @@ export function initDatabase() {
 
     console.log("[Database] Initialized with schema version", SCHEMA_VERSION);
   } else if (dbVersion === 2) {
-    // 从 v2 升级到 v4：重建 status_code 虚拟列 + 添加 URL 前缀查询列
-    console.log("[Database] Upgrading from v2 to v4...");
+    // 从 v2 升级到 v6：重建 status_code 虚拟列 + 添加 URL 前缀查询列 + list_summary + FTS
+    console.log("[Database] Upgrading from v2 to v6...");
 
     // SQLite 不支持直接修改虚拟列，需要重建表
     _db.exec(`
@@ -226,14 +270,17 @@ export function initDatabase() {
     }
 
     // 更新版本号
+    ensureFtsTable();
+    rebuildFtsIndex();
+
     _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [
       String(SCHEMA_VERSION),
     ]);
 
     console.log("[Database] Upgraded to schema version", SCHEMA_VERSION);
   } else if (dbVersion === 3) {
-    // 从 v3 升级到 v4：新增 url/path 小写实体列 + 回填 + 索引
-    console.log("[Database] Upgrading from v3 to v4...");
+    // 从 v3 升级到 v6：新增 url/path 小写实体列 + 回填 + 索引 + list_summary + FTS
+    console.log("[Database] Upgrading from v3 to v6...");
 
     _db.exec(`
       ALTER TABLE proxy_requests ADD COLUMN request_url_lc TEXT;
@@ -279,6 +326,10 @@ export function initDatabase() {
     // 继续升级到 v5
     _db.exec("ALTER TABLE proxy_requests ADD COLUMN list_summary TEXT");
 
+    // 继续升级到 v6
+    ensureFtsTable();
+    rebuildFtsIndex();
+
     // 更新版本号
     _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [
       String(SCHEMA_VERSION),
@@ -286,10 +337,26 @@ export function initDatabase() {
 
     console.log("[Database] Upgraded to schema version", SCHEMA_VERSION);
   } else if (dbVersion === 4) {
-    // 从 v4 升级到 v5：新增 list_summary 列
-    console.log("[Database] Upgrading from v4 to v5...");
+    // 从 v4 升级到 v6：新增 list_summary 列 + FTS
+    console.log("[Database] Upgrading from v4 to v6...");
 
     _db.exec("ALTER TABLE proxy_requests ADD COLUMN list_summary TEXT");
+
+    ensureFtsTable();
+    rebuildFtsIndex();
+
+    // 更新版本号
+    _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [
+      String(SCHEMA_VERSION),
+    ]);
+
+    console.log("[Database] Upgraded to schema version", SCHEMA_VERSION);
+  } else if (dbVersion === 5) {
+    // 从 v5 升级到 v6：新增 FTS
+    console.log("[Database] Upgrading from v5 to v6...");
+
+    ensureFtsTable();
+    rebuildFtsIndex();
 
     // 更新版本号
     _db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [

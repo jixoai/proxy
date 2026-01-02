@@ -171,7 +171,11 @@ export function HeaderBar() {
 
         <Input
           type="text"
-          placeholder="Filter URL..."
+          placeholder={
+            filterUrlFuzzy
+              ? "模糊搜索（空格分词，AND）：例如 /droid v1 messages"
+              : "前缀搜索（更快更准）：例如 /droid 或 http://localhost:20003/"
+          }
           className="flex-1"
           value={filterUrl}
           onChange={(e) => {
@@ -183,7 +187,6 @@ export function HeaderBar() {
           <Switch
             checked={filterUrlFuzzy}
             onCheckedChange={setFilterUrlFuzzy}
-            disabled={!filterUrl.trim()}
           />
           <span className="text-xs text-muted-foreground">模糊</span>
         </div>
