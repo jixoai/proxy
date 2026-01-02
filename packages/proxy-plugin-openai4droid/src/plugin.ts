@@ -122,10 +122,15 @@ function rewriteRequest(params: { headers: Record<string, string>; body: string 
           "You are Droid, an AI software engineering agent built by Factory.",
         )
       ) {
-        const rewriteInput = structuredClone(requestBody.input);
-        rewriteInput[0].content[0].text = `IMPORTANT:<system>${requestBody.instructions}</system>\n\n${requestBody.input[0].content[0].text}`;
+        let rewriteInput = structuredClone(requestBody.input);
+        if (typeof requestBody.input === "string") {
+          rewriteInput = `IMPORTANT:<system>${requestBody.instructions}</system>\n\n${requestBody.input}`;
+        } else {
+          rewriteInput[0].content[0].text = `IMPORTANT:<system>${requestBody.instructions}</system>\n\n${requestBody.input[0].content[0].text}`;
+        }
+        const { max_output_tokens: _, ...safeRequestBody } = requestBody;
         return {
-          ...requestBody,
+          ...safeRequestBody,
           input: rewriteInput,
           instructions: CODEX_INSTRUCTIONS,
         };
@@ -133,7 +138,10 @@ function rewriteRequest(params: { headers: Record<string, string>; body: string 
     };
     const rewrittenBody = rewriteRequestBody(requestBody);
     if (rewrittenBody) {
-      const sessionInput = rewrittenBody.input[0].content[0].text;
+      const sessionInput =
+        typeof requestBody.input === "string"
+          ? requestBody.input
+          : rewrittenBody.input[0].content[0].text;
       const sessionHash = createHash("sha256").update(sessionInput).digest("hex");
       const sessionId = sha256ToStableUuid(sessionHash);
       return {
@@ -147,7 +155,9 @@ function rewriteRequest(params: { headers: Record<string, string>; body: string 
         body: JSON.stringify(rewrittenBody),
       };
     }
-  } catch (e) {}
+  } catch (e) {
+    console.warn("QAQ", e);
+  }
   return {};
 }
 
