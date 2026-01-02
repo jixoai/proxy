@@ -20,12 +20,23 @@ import {
 } from "@jixo/proxy-plugin";
 import { isClaudeRequest, rewriteRequest } from "./request-converter";
 import { convertSSEResponse, convertErrorResponse, convertSuccessResponse } from "./response-converter";
-import { estimateTokenCount, createCountTokensResponse } from "./count-tokens";
+import {
+  estimateTokenCount,
+  createCountTokensResponse,
+  cacheInputTokens,
+  extractSessionId,
+  extractUsageFromResponse,
+  extractUsageFromSSE,
+} from "./token-cache";
 
-/** 插件存储 schema - 标记请求是否被转换 */
+/** 插件存储 schema - 标记请求是否被转换，并存储会话信息 */
 const Responses4ClaudeCodeStoreSchema = z.object({
   /** 请求已被 responses4claudecode 插件转换 */
   activated: z.literal(true),
+  /** 会话 ID，用于 token 缓存 */
+  sessionId: z.string().optional(),
+  /** 请求中的消息数量，用于计算增量 */
+  messageCount: z.number().optional(),
 });
 
 type Responses4ClaudeCodeStore = z.infer<typeof Responses4ClaudeCodeStoreSchema>;
@@ -140,9 +151,14 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
           });
         }
 
-        // 使用 store 标记请求已被转换（用于 onResponse 判断）
+        // 提取会话信息用于 token 缓存
+        const claudeBody = parsedBody as { metadata?: { user_id?: string }; messages?: unknown[] };
+        const sessionId = extractSessionId(claudeBody.metadata);
+        const messageCount = claudeBody.messages?.length || 0;
+
+        // 使用 store 标记请求已被转换，并存储会话信息（用于 onResponse 判断和 token 缓存）
         const finalHeaders = params.store
-          ? params.store.set({ activated: true }, result.headers ?? headers)
+          ? params.store.set({ activated: true, sessionId, messageCount }, result.headers ?? headers)
           : result.headers;
 
         return {
@@ -182,6 +198,13 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
         const convertedSuccess = convertSuccessResponse(parsed);
         if (convertedSuccess) {
           logger.debug("Converted Codex success response to Claude format");
+
+          // 缓存 input_tokens
+          const usage = extractUsageFromResponse(parsed);
+          if (usage && storeData?.sessionId) {
+            cacheInputTokens(storeData.sessionId, usage.inputTokens, storeData.messageCount || 0);
+            logger.debug(`Cached input_tokens: ${usage.inputTokens} for session: ${storeData.sessionId}`);
+          }
 
           if (debug) {
             logger.logToFile("success-rewrite", {
@@ -239,6 +262,13 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
         const convertedSSE = convertSSEResponse(bodyText);
 
         logger.debug("SSE converted successfully");
+
+        // 从 SSE 中提取 usage 并缓存
+        const usage = extractUsageFromSSE(bodyText);
+        if (usage && storeData?.sessionId) {
+          cacheInputTokens(storeData.sessionId, usage.inputTokens, storeData.messageCount || 0);
+          logger.debug(`Cached input_tokens from SSE: ${usage.inputTokens} for session: ${storeData.sessionId}`);
+        }
 
         if (debug) {
           logger.logToFile("response-rewrite", {

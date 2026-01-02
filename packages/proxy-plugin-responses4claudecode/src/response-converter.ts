@@ -657,11 +657,32 @@ function handleError(
   // 检测上下文窗口超限错误
   // 当检测到这类错误时，我们需要返回一个较大的 input_tokens 值
   // 以便 Claude Code 知道上下文过大，需要触发摘要压缩
-  const isContextWindowError = message.toLowerCase().includes("context window") ||
-    message.toLowerCase().includes("context length") ||
-    message.toLowerCase().includes("input exceeds") ||
-    message.toLowerCase().includes("too many tokens") ||
-    message.toLowerCase().includes("token limit");
+  //
+  // 参考 Droid 的 Wj() 函数识别模式（来自二进制分析）：
+  // - err.code === "context_length_exceeded"
+  // - err.error.code === "context_length_exceeded"
+  // - message 匹配正则: context length/limit, prompt is too long, maximum context,
+  //   input is too long, is too many tokens, context_length_exceeded, etc.
+  const msgLower = message.toLowerCase();
+  const codeLower = (errorType || "").toLowerCase();
+
+  const isContextWindowError =
+    // 检查 error code（与 Droid 的 Wj() 一致）
+    codeLower === "context_length_exceeded" ||
+    codeLower.includes("context_length") ||
+    // 检查 message 文本（扩展 Droid 的 KTB regex 模式）
+    msgLower.includes("context window") ||
+    msgLower.includes("context length") ||
+    msgLower.includes("context limit") ||
+    msgLower.includes("context_length_exceeded") ||
+    msgLower.includes("prompt is too long") ||
+    msgLower.includes("maximum context") ||
+    msgLower.includes("input is too long") ||
+    msgLower.includes("input exceeds") ||
+    msgLower.includes("too many tokens") ||
+    msgLower.includes("token limit") ||
+    msgLower.includes("exceeds the context") ||
+    msgLower.includes("request too large");
 
   if (isContextWindowError) {
     // 设置一个较大的 input_tokens 值来表示上下文过大
