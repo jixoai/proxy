@@ -118,7 +118,7 @@ function rewriteRequest(params: { headers: Record<string, string>; body: string 
     requestBody = JSON.parse(body) as any;
     const rewriteRequestBody = (requestBody: any) => {
       if (
-        requestBody.instructions.startsWith(
+        requestBody.instructions?.startsWith(
           "You are Droid, an AI software engineering agent built by Factory.",
         )
       ) {
