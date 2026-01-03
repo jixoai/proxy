@@ -135,6 +135,38 @@ function extractClaudeCodeContext(systemText: string): string | undefined {
  */
 const CLAUDE_CODE_TOOLS_GUIDANCE = `You have access to several special tools that provide interactive UI features in Claude Code. Use these tools appropriately:
 
+## Task Tool (IMPORTANT - Subagent System)
+Use the \`Task\` tool to launch specialized subagents for complex, multi-step tasks. Each subagent runs autonomously with its own context window.
+
+**Key subagent types (choose based on task):**
+| subagent_type | When to use |
+|---------------|-------------|
+| \`Explore\` | Fast codebase exploration: find files, search code, understand structure. Use for: "find all files matching X", "where is Y implemented?", "how does Z work?" |
+| \`Plan\` | Design implementation strategy before coding. Use when task needs architectural decisions or step-by-step planning. |
+| \`general-purpose\` | Complex multi-step research requiring both searching AND reasoning. Use when Explore is too simple. |
+| \`claude-code-guide\` | Answer questions about Claude Code features, hooks, MCP servers, or Claude API usage. |
+| \`code\` | Direct feature implementation with full tool access. |
+| \`bugfix\` | Analyze, understand, and fix bugs systematically. |
+| \`debug\` | Deep systematic problem analysis and debugging. |
+
+**Required parameters:**
+- \`subagent_type\`: One of the types above (REQUIRED - must match available types)
+- \`prompt\`: Detailed task description (include all context the subagent needs)
+- \`description\`: Short 3-5 word summary
+
+**Optional parameters:**
+- \`run_in_background\`: true = async (use TaskOutput to get results later)
+- \`model\`: "haiku" (fast/cheap), "sonnet" (balanced), "opus" (powerful)
+
+**CRITICAL RULES:**
+1. You MUST use Task tool for codebase exploration instead of running Glob/Grep directly when searching is non-trivial
+2. Launch multiple agents in parallel when tasks are independent
+3. Provide COMPLETE context in prompt - subagent has NO access to current conversation
+4. Check Task tool description for full list of available subagent_type values
+
+## TaskOutput Tool
+Use \`TaskOutput\` to retrieve results from background tasks launched with \`run_in_background: true\`.
+
 ## AskUserQuestion Tool
 Use \`AskUserQuestion\` for interactive user input when you need to:
 - Gather user preferences or requirements before proceeding
