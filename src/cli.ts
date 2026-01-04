@@ -9,7 +9,13 @@ import { hideBin } from "yargs/helpers";
 import * as path from "node:path";
 import { initDatabase, DatabaseSchemaError } from "./lib/db";
 import { cleanupOrphanStreamingRequests } from "./lib/db-requests";
-import { initConfigStore, loadConfig, saveConfig, getConfigFilePath, setConfigFilePath } from "./lib/config-store";
+import {
+  initConfigStore,
+  loadConfig,
+  saveConfig,
+  getConfigFilePath,
+  setConfigFilePath,
+} from "./lib/config-store";
 import { ProxyInstancesManager } from "./proxy-instances-manager";
 import { startViewerServer } from "./viewer-server";
 import {

@@ -106,10 +106,10 @@ async function promptMigrationDecision(params: {
       if (answer === "" || answer === "u" || answer === "upgrade") return "upgrade";
       if (answer === "a" || answer === "abort") return "abort";
       if (answer === "c" || answer === "clear") {
-        const confirm = (await rl.question("Type 'clear' to confirm deletion: "))
+        const confirm = (await rl.question("Confirm clear? [y/N]: "))
           .trim()
           .toLowerCase();
-        if (confirm === "clear") return "clear";
+        if (confirm === "y" || confirm === "yes") return "clear";
         console.log("[Database] Clear cancelled.");
         continue;
       }
