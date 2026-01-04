@@ -4,7 +4,16 @@
  * 将 Droid-CLI 格式的请求转换为 Claude-Code-CLI 格式
  */
 
-import type { RequestBody, Message, TextBlock, RewriteResult } from "./types";
+import type { RequestBody, Message, TextBlock, RewriteResult, AnyTool } from "./types";
+import { isWebSearchTool } from "./types";
+
+/**
+ * 检测请求是否包含 web_search 工具
+ */
+export function hasWebSearchTool(requestBody: RequestBody): boolean {
+  if (!requestBody.tools || !Array.isArray(requestBody.tools)) return false;
+  return requestBody.tools.some((tool) => isWebSearchTool(tool));
+}
 
 /**
  * 检测是否为 Droid 请求
@@ -12,6 +21,16 @@ import type { RequestBody, Message, TextBlock, RewriteResult } from "./types";
  * 注意：如果请求已经被处理过（包含 <droid-system-context>），则返回 false
  */
 export function isDroidRequest(requestBody: RequestBody): boolean {
+  // 如果包含 web_search 工具，也视为需要处理的请求
+  if (hasWebSearchTool(requestBody)) {
+    // 检查是否已经被处理过
+    const systemText = extractSystemText(requestBody.system);
+    if (systemText.includes("<droid-system-context>")) {
+      return false;
+    }
+    return true;
+  }
+
   if (!requestBody.system) return false;
 
   const systemText = Array.isArray(requestBody.system)
@@ -165,16 +184,34 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
     };
   }
 
+  // web_search 工具会自动保留在 tools 数组中，无需特殊处理
+  // Claude Code 格式支持 web_search_20250305 server tool
+
   return requestBody;
 }
 
 /**
  * 重写请求头
+ * 
+ * @param headers - 原始请求头
+ * @param options - 可选配置
+ * @param options.hasWebSearch - 是否包含 web_search 工具
  */
-export function rewriteHeaders(headers: Record<string, string>): Record<string, string> {
+export function rewriteHeaders(
+  headers: Record<string, string>,
+  options?: { hasWebSearch?: boolean }
+): Record<string, string> {
   const newHeaders: Record<string, string> = { ...headers };
 
-  newHeaders["anthropic-beta"] = "claude-code-20250219,interleaved-thinking-2025-05-14";
+  // 基础 beta features
+  let betaFeatures = "claude-code-20250219,interleaved-thinking-2025-05-14";
+  
+  // 如果包含 web_search 工具，添加 web-search-2025-03-05 beta
+  if (options?.hasWebSearch) {
+    betaFeatures += ",web-search-2025-03-05";
+  }
+  
+  newHeaders["anthropic-beta"] = betaFeatures;
 
   if (newHeaders["x-api-key"] && !newHeaders["authorization"]) {
     newHeaders["authorization"] = `Bearer ${newHeaders["x-api-key"]}`;
@@ -210,13 +247,16 @@ export function rewriteRequest(params: {
     return {};
   }
 
+  // 检测是否包含 web_search 工具（在重写前检测）
+  const hasWebSearch = hasWebSearchTool(requestBody);
+
   const rewrittenBody = rewriteRequestBody(requestBody);
   if (!rewrittenBody) {
     return {};
   }
 
   return {
-    headers: rewriteHeaders(headers),
+    headers: rewriteHeaders(headers, { hasWebSearch }),
     body: JSON.stringify(rewrittenBody),
   };
 }
