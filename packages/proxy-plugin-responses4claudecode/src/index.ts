@@ -17,6 +17,9 @@ export { isClaudeRequest, rewriteRequest, convertRequest } from "./request-conve
 export { SSEStreamConverter, convertSSEResponse, convertErrorResponse, convertSuccessResponse, isCodexSuccessResponse } from "./response-converter";
 export * from "./types";
 export * from "./constants";
+export * from "./task-manager";
+export * from "./task-interceptor";
+export * from "./task-executor";
 
 // 如果直接运行，启动插件服务器
 if (import.meta.main) {

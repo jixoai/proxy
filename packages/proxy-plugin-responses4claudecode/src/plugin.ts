@@ -28,6 +28,8 @@ import {
   extractUsageFromResponse,
   extractUsageFromSSE,
 } from "./token-cache";
+import { interceptTaskTools } from "./task-interceptor";
+import { createConfigFromRequest } from "./task-executor";
 
 /** 插件存储 schema - 标记请求是否被转换，并存储会话信息 */
 const Responses4ClaudeCodeStoreSchema = z.object({
@@ -83,7 +85,7 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
     name: "responses4claudecode",
     storeSchema: Responses4ClaudeCodeStoreSchema,
 
-    onRequest(params: RequestHookParams): RequestHookResult | null {
+    async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       const { meta, body } = params;
       const headers = normalizeHeaders(meta.headers) ?? {};
 
@@ -119,11 +121,61 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
         return null;
       }
 
+      // 拦截 Task/TaskOutput 工具调用
+      // 对于 run_in_background=true 的 Task，我们在本地管理状态并注入 tool_result
+      // 对于 TaskOutput，我们查找缓存的结果并注入 tool_result
+      let claudeBody = parsedBody as {
+        metadata?: { user_id?: string };
+        messages?: Array<{ role: string; content: unknown }>;
+        model?: string;
+      };
+
+      if (claudeBody.messages && Array.isArray(claudeBody.messages)) {
+        try {
+          const originalMessagesCount = claudeBody.messages.length;
+
+          // 构建执行器配置（模型由 x-target-model header 决定）
+          // 从请求 URL 提取 API 端点：/anthropic-codex/v1/messages → 需要转发到后端
+          const apiEndpoint = meta.url?.replace(/\/messages$/, "/responses") || undefined;
+          const executorConfig = createConfigFromRequest(headers, apiEndpoint);
+
+          const interceptResult = await interceptTaskTools(
+            claudeBody.messages as Parameters<typeof interceptTaskTools>[0],
+            claudeBody.metadata,
+            { executorConfig, enableBackgroundExecution: true }
+          );
+
+          // 如果有 tool_result 需要注入，更新 messages
+          if (interceptResult.modified && interceptResult.modifiedMessages) {
+            logger.debug(`Injected tool_result for Task/TaskOutput tool calls`);
+
+            // 更新 claudeBody 的 messages
+            claudeBody = {
+              ...claudeBody,
+              messages: interceptResult.modifiedMessages as typeof claudeBody.messages,
+            };
+
+            // 更新 parsedBody 以便后续转换使用
+            parsedBody.messages = interceptResult.modifiedMessages;
+
+            if (debug) {
+              logger.logToFile("task-intercept", {
+                injectedToolResults: interceptResult.modifiedMessages.length - originalMessagesCount,
+                messagesCount: interceptResult.modifiedMessages.length,
+              });
+            }
+          }
+        } catch (error) {
+          logger.debug(`Error intercepting Task tools: ${error}`);
+          // 继续正常处理请求
+        }
+      }
+
       // 转换请求
       try {
         const result = rewriteRequest({
           headers,
-          body: body.toString("utf-8"),
+          body: parsedBody,
         });
 
         if (!result.body) {
@@ -152,7 +204,7 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
         }
 
         // 提取会话信息用于 token 缓存
-        const claudeBody = parsedBody as { metadata?: { user_id?: string }; messages?: unknown[] };
+        // 复用前面已声明的 claudeBody
         const sessionId = extractSessionId(claudeBody.metadata);
         const messageCount = claudeBody.messages?.length || 0;
 
