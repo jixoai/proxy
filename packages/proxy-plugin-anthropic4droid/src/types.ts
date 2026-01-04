@@ -25,11 +25,33 @@ export type Tool = {
   input_schema?: { properties?: Record<string, ToolParamSchema> };
 };
 
+/**
+ * Claude web_search server tool (web_search_20250305)
+ */
+export type WebSearchTool = {
+  type: "web_search_20250305";
+  name: "web_search";
+  max_uses?: number;
+};
+
+/**
+ * Tool can be either a regular tool or a web_search server tool
+ */
+export type AnyTool = Tool | WebSearchTool;
+
+/**
+ * Check if tool is a web_search server tool
+ */
+export function isWebSearchTool(tool: AnyTool): tool is WebSearchTool {
+  return "type" in tool && tool.type === "web_search_20250305";
+}
+
 export type RequestBody = {
   model?: string;
   system?: string | TextBlock[];
   messages?: Message[];
-  tools?: Tool[];
+  tools?: AnyTool[];
+  tool_choice?: unknown;
   metadata?: Record<string, unknown>;
   max_tokens?: number;
   stream?: boolean;

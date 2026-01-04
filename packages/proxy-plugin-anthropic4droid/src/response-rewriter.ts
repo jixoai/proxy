@@ -1,8 +1,9 @@
 /**
  * Droid 响应重写逻辑
  *
- * 将上游的 "Upstream request failed" 错误重写为 "context_length_exceeded"
- * 以便 Droid 可以自动 compact 并重试
+ * 1. 将上游的 "Upstream request failed" 错误重写为 "context_length_exceeded"
+ *    以便 Droid 可以自动 compact 并重试
+ * 2. 转换 web_search 响应格式，添加 snippet 字段
  */
 
 import {
@@ -92,6 +93,98 @@ export function buildContextLengthExceededBody() {
 export function looksLikeSse(text: string): boolean {
   const head = text.trimStart().slice(0, 200);
   return head.startsWith("event:") || head.startsWith("data:") || head.includes("\ndata:");
+}
+
+// === Web Search Response Transformation ===
+
+interface WebSearchResult {
+  type: "web_search_result";
+  url: string;
+  title: string;
+  encrypted_content?: string;
+  page_age?: string | null;
+  snippet?: string;
+  page_content?: string;
+}
+
+interface WebSearchToolResult {
+  type: "web_search_tool_result";
+  tool_use_id: string;
+  content: WebSearchResult[];
+}
+
+interface ContentBlock {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+interface ClaudeResponse {
+  content?: ContentBlock[];
+  [key: string]: unknown;
+}
+
+/**
+ * 检测响应是否包含 web_search_tool_result
+ */
+export function hasWebSearchToolResult(parsed: unknown): parsed is ClaudeResponse {
+  if (!isRecord(parsed)) return false;
+  if (!Array.isArray(parsed.content)) return false;
+  return parsed.content.some(
+    (block: unknown) => isRecord(block) && block.type === "web_search_tool_result"
+  );
+}
+
+/**
+ * 从响应中提取后续 text 块的内容（用作 snippet 的备选来源）
+ */
+export function extractTextFromResponse(response: ClaudeResponse): string {
+  if (!response.content) return "";
+  const textBlocks = response.content.filter(
+    (block): block is ContentBlock & { text: string } =>
+      block.type === "text" && typeof block.text === "string"
+  );
+  return textBlocks.map((b) => b.text).join("\n\n");
+}
+
+/**
+ * 转换 web_search 响应，为每个 web_search_result 添加 snippet 字段
+ * 
+ * Claude 返回的 web_search_result 只有 encrypted_content（加密内容）
+ * droid-patch 期望 snippet 或 page_content 字段
+ * 
+ * 策略：
+ * 1. 如果有 page_content，使用它
+ * 2. 否则使用 title 作为 snippet（因为 encrypted_content 不可读）
+ */
+export function transformWebSearchResponse(parsed: ClaudeResponse): ClaudeResponse {
+  if (!parsed.content) return parsed;
+
+  const transformed = { ...parsed, content: [...parsed.content] };
+
+  for (let i = 0; i < transformed.content.length; i++) {
+    const block = transformed.content[i];
+    if (block.type === "web_search_tool_result" && Array.isArray(block.content)) {
+      const toolResult = block as unknown as WebSearchToolResult;
+      const transformedResults = toolResult.content.map((result) => {
+        // 如果已有 snippet 或 page_content，保持不变
+        if (result.snippet || result.page_content) {
+          return result;
+        }
+        // 使用 title 作为 snippet（因为 encrypted_content 不可读）
+        return {
+          ...result,
+          snippet: result.title || "",
+        };
+      });
+      transformed.content[i] = {
+        ...block,
+        content: transformedResults,
+      };
+    }
+  }
+
+  return transformed;
 }
 
 /**
@@ -246,6 +339,18 @@ export function rewriteResponse(params: {
       body: Buffer.from(JSON.stringify(rewrittenBody), "utf-8"),
       rewritten: true,
       source: directParsed ? "json" : "sse",
+    };
+  }
+
+  // 处理 web_search 响应：为 web_search_result 添加 snippet 字段
+  // 仅处理非 SSE 的 JSON 响应（stream: false 的请求）
+  if (directParsed && hasWebSearchToolResult(directParsed)) {
+    const transformed = transformWebSearchResponse(directParsed);
+    return {
+      meta: params.meta,
+      body: Buffer.from(JSON.stringify(transformed), "utf-8"),
+      rewritten: true,
+      source: "json",
     };
   }
 
