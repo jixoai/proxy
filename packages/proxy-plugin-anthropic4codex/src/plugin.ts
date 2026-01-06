@@ -12,6 +12,9 @@ import type {
   RequestHookResult,
   ResponseHookParams,
   ResponseHookResult,
+  RequestMeta,
+  ResponseMeta,
+  PrecheckResult,
   PluginLogger,
 } from "@jixo/proxy-plugin";
 import {
@@ -83,6 +86,30 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
   return {
     name: "anthropic4codex",
     storeSchema: CodexStoreSchema,
+
+    shouldProcessRequest(meta: RequestMeta): PrecheckResult {
+      const headers = normalizeHeaders(meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+      if (!contentType.includes("application/json")) {
+        return false;
+      }
+      return true;
+    },
+
+    shouldProcessResponse(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult {
+      const reqHeaders = normalizeHeaders(requestMeta?.headers) ?? {};
+      const reqContentType = (reqHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (!reqContentType.includes("application/json")) {
+        return false;
+      }
+      const resHeaders = normalizeHeaders(meta.headers) ?? {};
+      const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();
+      // Handle both JSON errors and SSE responses
+      if (resContentType.includes("application/json") || resContentType.includes("text/event-stream")) {
+        return true;
+      }
+      return false;
+    },
 
     async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       const headers = normalizeHeaders(params.meta.headers) ?? {};

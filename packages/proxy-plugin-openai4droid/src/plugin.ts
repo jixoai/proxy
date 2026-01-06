@@ -13,6 +13,9 @@ import type {
   RequestHookResult,
   ResponseHookParams,
   ResponseHookResult,
+  RequestMeta,
+  ResponseMeta,
+  PrecheckResult,
   PluginLogger,
 } from "@jixo/proxy-plugin";
 import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
@@ -62,6 +65,33 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
   return {
     name: "openai4droid",
     storeSchema: DroidStoreSchema,
+
+    shouldProcessRequest(meta: RequestMeta): PrecheckResult {
+      const headers = normalizeHeaders(meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+      // Only process JSON requests (potential Droid requests)
+      if (!contentType.includes("application/json")) {
+        return false;
+      }
+      return true;
+    },
+
+    shouldProcessResponse(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult {
+      // Always need to check response for activated requests (determined by store in onResponse)
+      // Since we can't access store here, we check if request had JSON content-type
+      const reqHeaders = normalizeHeaders(requestMeta?.headers) ?? {};
+      const reqContentType = (reqHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (!reqContentType.includes("application/json")) {
+        return false;
+      }
+      // Check response content-type: we handle both JSON and SSE
+      const resHeaders = normalizeHeaders(meta.headers) ?? {};
+      const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (resContentType.includes("application/json") || resContentType.includes("text/event-stream")) {
+        return true;
+      }
+      return false;
+    },
 
     async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       const headers = normalizeHeaders(params.meta.headers) ?? {};

@@ -1,10 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
-import {
+import type {
   RawContentBlockDelta,
   TextBlockParam,
   ThinkingBlockParam,
 } from "@anthropic-ai/sdk/resources";
-Anthropic.Messages;
 /**
  * Droid 请求相关类型定义
  */

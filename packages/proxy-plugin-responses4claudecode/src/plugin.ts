@@ -12,6 +12,9 @@ import {
   type RequestHookResult,
   type ResponseHookParams,
   type ResponseHookResult,
+  type RequestMeta,
+  type ResponseMeta,
+  type PrecheckResult,
   type ProxyPlugin,
   type PluginLogger,
   normalizeHeaders,
@@ -86,6 +89,29 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
   return {
     name: "responses4claudecode",
     storeSchema: Responses4ClaudeCodeStoreSchema,
+
+    shouldProcessRequest(meta: RequestMeta): PrecheckResult {
+      const headers = normalizeHeaders(meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+      if (!contentType.includes("application/json")) {
+        return false;
+      }
+      return true;
+    },
+
+    shouldProcessResponse(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult {
+      const reqHeaders = normalizeHeaders(requestMeta?.headers) ?? {};
+      const reqContentType = (reqHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (!reqContentType.includes("application/json")) {
+        return false;
+      }
+      const resHeaders = normalizeHeaders(meta.headers) ?? {};
+      const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (resContentType.includes("application/json") || resContentType.includes("text/event-stream")) {
+        return true;
+      }
+      return false;
+    },
 
     async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       const { meta } = params;

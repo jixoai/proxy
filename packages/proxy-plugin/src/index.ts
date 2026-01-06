@@ -14,6 +14,7 @@ export type {
   ResponseHookResult,
   PluginConfig,
   ProxyPlugin,
+  PrecheckResult,
 } from "./types";
 
 // Envelope

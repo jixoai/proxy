@@ -1,5 +1,5 @@
 import { spawn, type Subprocess } from "bun";
-import type { ProxyPlugin, PluginStore } from "@jixo/proxy-plugin";
+import type { ProxyPlugin, PluginStore, PrecheckResult, RequestMeta, ResponseMeta } from "@jixo/proxy-plugin";
 import { createPluginStore } from "@jixo/proxy-plugin";
 import type { HookConfig, HooksConfig, HookLayer } from "../types/proxy";
 
@@ -137,6 +137,16 @@ export interface ResponseHooksExecutionResult {
   hasChanges: boolean;
 }
 
+/** 预检结果汇总 */
+export interface PrecheckSummary {
+  /** 是否需要缓冲 body（任一插件返回 true） */
+  needsBuffer: boolean;
+  /** 需要处理的插件列表 */
+  activePlugins: string[];
+  /** 全部返回 passthrough 或 false */
+  canPassthrough: boolean;
+}
+
 export class HooksExecutor {
   private instanceHooksLoaded: LoadedHook[] = [];
   private forwardHooksLoaded: LoadedHook[] = [];
@@ -159,6 +169,80 @@ export class HooksExecutor {
   async setForwardHooks(_forwardName: string, hooks: HooksConfig | null | undefined): Promise<void> {
     const configs = normalizeHooksConfig(hooks);
     this.forwardHooksLoaded = await loadHooks(configs);
+  }
+
+  /** 请求预检：决定是否需要缓冲请求 body */
+  async precheckRequest(meta: RequestMeta): Promise<PrecheckSummary> {
+    const allHooks = [...this.instanceHooksLoaded, ...this.forwardHooksLoaded];
+    const activePlugins: string[] = [];
+    let needsBuffer = false;
+    let allPassthrough = true;
+
+    for (const hook of allHooks) {
+      if (!hook.plugin.onRequest) continue;
+
+      let result: PrecheckResult;
+      if (hook.plugin.shouldProcessRequest) {
+        result = await hook.plugin.shouldProcessRequest(meta);
+      } else {
+        // 向后兼容：没有预检方法则默认需要处理
+        result = true;
+      }
+
+      if (result === true) {
+        needsBuffer = true;
+        allPassthrough = false;
+        activePlugins.push(hook.pluginName);
+      } else if (result === 'passthrough') {
+        // passthrough 不需要缓冲，但不算 false
+      } else {
+        // false - 跳过
+        allPassthrough = false;
+      }
+    }
+
+    return {
+      needsBuffer,
+      activePlugins,
+      canPassthrough: allPassthrough && !needsBuffer,
+    };
+  }
+
+  /** 响应预检：决定是否需要缓冲响应 body */
+  async precheckResponse(meta: ResponseMeta, requestMeta?: RequestMeta): Promise<PrecheckSummary> {
+    const allHooks = [...this.forwardHooksLoaded, ...this.instanceHooksLoaded];
+    const activePlugins: string[] = [];
+    let needsBuffer = false;
+    let allPassthrough = true;
+
+    for (const hook of allHooks) {
+      if (!hook.plugin.onResponse) continue;
+
+      let result: PrecheckResult;
+      if (hook.plugin.shouldProcessResponse) {
+        result = await hook.plugin.shouldProcessResponse(meta, requestMeta);
+      } else {
+        // 向后兼容：没有预检方法则默认需要处理
+        result = true;
+      }
+
+      if (result === true) {
+        needsBuffer = true;
+        allPassthrough = false;
+        activePlugins.push(hook.pluginName);
+      } else if (result === 'passthrough') {
+        // passthrough 不需要缓冲
+      } else {
+        // false - 跳过
+        allPassthrough = false;
+      }
+    }
+
+    return {
+      needsBuffer,
+      activePlugins,
+      canPassthrough: allPassthrough && !needsBuffer,
+    };
   }
 
   /** 执行请求 hooks 并返回层层记录 */

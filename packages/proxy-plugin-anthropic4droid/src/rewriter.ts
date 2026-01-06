@@ -124,17 +124,17 @@ export function mergeDuplicateSystemReminders(messages: Message[] | undefined): 
 
     const secondSysTexts = secondContent
       .filter(
-        (c) =>
-          c?.type === "text" && typeof c.text === "string" && c.text.includes("<system-reminder>"),
+        (c): c is { type: "text"; text: string } =>
+          c?.type === "text" && typeof (c as any).text === "string" && (c as any).text.includes("<system-reminder>"),
       )
       .map((c) => c.text);
 
     if (firstSysIndex !== -1 && secondSysTexts.length > 0) {
-      const target = firstContent[firstSysIndex];
+      const target = firstContent[firstSysIndex] as { type: "text"; text: string } | undefined;
       if (target?.text) {
         const replacement = replaceSystemReminderSection(target.text, secondSysTexts.join("\n\n"));
         if (replacement) {
-          target.text = replacement;
+          (target as any).text = replacement;
           messages.splice(i + 1, 1);
           merged = true;
           continue;

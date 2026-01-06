@@ -13,6 +13,9 @@ import type {
   RequestHookResult,
   ResponseHookParams,
   ResponseHookResult,
+  RequestMeta,
+  ResponseMeta,
+  PrecheckResult,
   PluginLogger,
 } from "@jixo/proxy-plugin";
 import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
@@ -64,6 +67,33 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
   return {
     name: "anthropic4droid",
     storeSchema: DroidStoreSchema,
+
+    shouldProcessRequest(meta: RequestMeta): PrecheckResult {
+      const headers = normalizeHeaders(meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+      if (!contentType.includes("application/json")) {
+        return false;
+      }
+      return true;
+    },
+
+    shouldProcessResponse(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult {
+      const reqHeaders = normalizeHeaders(requestMeta?.headers) ?? {};
+      const reqContentType = (reqHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (!reqContentType.includes("application/json")) {
+        return false;
+      }
+      // Only handle non-SSE JSON responses
+      const resHeaders = normalizeHeaders(meta.headers) ?? {};
+      const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (resContentType.includes("text/event-stream")) {
+        return false;
+      }
+      if (resContentType.includes("application/json")) {
+        return true;
+      }
+      return false;
+    },
 
     async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       const headers = normalizeHeaders(params.meta.headers) ?? {};

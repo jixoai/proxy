@@ -11,14 +11,14 @@ import {
   updateProxyRequest,
   updateStreamingProgress,
   type AbortReason,
-} from "./lib/db-requests";
+} from "./lib/db-requests-v7";
 import { dbNotifier } from "./lib/db-notifier";
 import { setDataDir } from "./lib/runtime-paths";
 import { initDatabase } from "./lib/db";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
-import { HooksExecutor, stopAllHooks } from "./lib/hooks-executor";
-import { streamFromBuffer, readStreamToBuffer } from "@jixo/proxy-plugin";
+import { HooksExecutor, stopAllHooks, type PrecheckSummary } from "./lib/hooks-executor";
+import { streamFromBuffer, readStreamToBuffer, teeStream } from "@jixo/proxy-plugin";
 import { nodeReadableToWebStream, pipeWebStreamToNodeResponse } from "./lib/node-stream-adapter";
 import type { HooksConfig, HookLayer } from "./types/proxy";
 import type {
@@ -648,6 +648,16 @@ async function main(argv: string[]) {
           ? bufferToDataUrl(hookedRequestBody, requestContentType)
           : null;
 
+      // 将 hooked body 填充到 requestHookLayers 的最后一个 modified=true 的 layer
+      if (requestHookLayers && hookedRequestBodyDataUrl) {
+        for (let i = requestHookLayers.length - 1; i >= 0; i--) {
+          if (requestHookLayers[i]!.modified) {
+            requestHookLayers[i]!.bodyDataUrl = hookedRequestBodyDataUrl;
+            break;
+          }
+        }
+      }
+
       if (hookedForwardHeaders["content-length"] !== undefined) {
         if (hookedRequestBody.length > 0) {
           hookedForwardHeaders["content-length"] = hookedRequestBody.length;
@@ -693,7 +703,7 @@ async function main(argv: string[]) {
         // 注册到活跃请求 Map，支持外部中断
         activeRequests.set(dbRecordId, abortController);
         debugNotifier("about to notify insert, dbRecordId: %d", dbRecordId);
-        dbNotifier.notify("insert", "proxy_requests", dbRecordId);
+        dbNotifier.notify("insert", "requests", dbRecordId);
         debugNotifier("notify insert completed");
       }
 
@@ -765,26 +775,43 @@ async function main(argv: string[]) {
 
               try {
                 const upstreamStream = nodeReadableToWebStream(proxyRes);
+                const requestMeta = {
+                  method: hookedMethod,
+                  url: hookedTargetUrl.href,
+                  headers: hookedForwardHeaders as Record<string, string | string[]>,
+                };
+
+                // 预检：决定是否需要处理响应 body
+                let responsePrecheckResult: PrecheckSummary = { needsBuffer: false, activePlugins: [], canPassthrough: true };
+                if (hooksExecutor?.hasResponseHooks) {
+                  responsePrecheckResult = await hooksExecutor.precheckResponse(
+                    { statusCode, statusMessage, headers: responseHeaders as Record<string, string | string[]> },
+                    requestMeta,
+                  );
+                }
+
                 let outStatusCode = statusCode;
                 let outStatusMessage = statusMessage;
                 let outHeaders: http.IncomingHttpHeaders = { ...responseHeaders };
-                let outStream: ReadableStream<Uint8Array> = upstreamStream;
+                let outStream: ReadableStream<Uint8Array>;
+                let storageStream: ReadableStream<Uint8Array> | null = null;
                 let hasResponseHookChanges = false;
                 let responseHookLayers: HookLayer[] | undefined;
+                const originalChunks: Buffer[] = [];
 
-                if (hooksExecutor?.hasResponseHooks) {
+                if (responsePrecheckResult.needsBuffer && hooksExecutor?.hasResponseHooks) {
+                  // 需要处理：tee stream，一份存储原始，一份给 hook
+                  const { left: forStorage, right: forHooks } = teeStream(upstreamStream);
+                  storageStream = forStorage;
+
                   const hookExecResult = await hooksExecutor.executeResponseHooksWithLayers(
                     {
                       statusCode,
                       statusMessage,
                       headers: responseHeaders as Record<string, string | string[]>,
-                      body: upstreamStream,
+                      body: forHooks,
                       signal: abortSignal,
-                      requestMeta: {
-                        method: hookedMethod,
-                        url: hookedTargetUrl.href,
-                        headers: hookedForwardHeaders as Record<string, string | string[]>,
-                      },
+                      requestMeta,
                     },
                     () => null,
                     (headers) => (headers["content-type"] as string) ?? null,
@@ -797,10 +824,25 @@ async function main(argv: string[]) {
                   outStatusMessage = hookResult.statusMessage;
                   outHeaders = hookResult.headers as http.IncomingHttpHeaders;
                   outStream = hookResult.body;
+                } else {
+                  // 不需要处理：直接透传
+                  outStream = upstreamStream;
                 }
 
                 const streamingHeaders = sanitizeResponseHeadersForStreaming(outHeaders);
                 res.writeHead(outStatusCode, outStatusMessage, streamingHeaders);
+
+                // 并行：pipe 到客户端 + 收集原始数据（如果有 storageStream）
+                const storagePromise = storageStream
+                  ? (async () => {
+                      const reader = storageStream!.getReader();
+                      while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        if (value) originalChunks.push(Buffer.from(value));
+                      }
+                    })()
+                  : Promise.resolve();
 
                 await pipeWebStreamToNodeResponse({
                   stream: outStream,
@@ -820,14 +862,18 @@ async function main(argv: string[]) {
                         outStatusMessage,
                         outHeaders as Record<string, string | string[]>,
                       );
-                      dbNotifier.notify("update", "proxy_requests", dbRecordId);
+                      dbNotifier.notify("update", "requests", dbRecordId);
                     }
                   },
                 });
 
+                await storagePromise;
+
                 const bodyMs = Date.now() - responseStartTime;
-                const bodyBuffer: Buffer<ArrayBufferLike> = Buffer.concat(responseChunks);
+                const bodyBuffer = Buffer.concat(responseChunks);
+                const originalBodyBuffer = originalChunks.length > 0 ? Buffer.concat(originalChunks) : undefined;
                 const contentType = (outHeaders["content-type"] as string) ?? null;
+                const originalContentType = (responseHeaders["content-type"] as string) ?? null;
                 const cleanedHeaders = sanitizeResponseHeadersForBuffered(outHeaders, bodyBuffer.length);
 
                 resolve({
@@ -843,8 +889,8 @@ async function main(argv: string[]) {
                   originalStatusCode: hasResponseHookChanges ? statusCode : undefined,
                   originalStatusMessage: hasResponseHookChanges ? statusMessage : undefined,
                   originalHeaders: hasResponseHookChanges ? responseHeaders : undefined,
-                  originalBodyBuffer: hasResponseHookChanges ? Buffer.alloc(0) : undefined,
-                  originalContentType: hasResponseHookChanges ? ((responseHeaders["content-type"] as string) ?? null) : undefined,
+                  originalBodyBuffer,
+                  originalContentType: hasResponseHookChanges ? originalContentType : undefined,
                 });
                 return;
               } catch (error) {
@@ -881,7 +927,7 @@ async function main(argv: string[]) {
                   statusMessage,
                   responseHeaders as Record<string, string | string[]>,
                 );
-                dbNotifier.notify("update", "proxy_requests", dbRecordId);
+                dbNotifier.notify("update", "requests", dbRecordId);
               }
             });
 
@@ -1145,9 +1191,21 @@ async function main(argv: string[]) {
             contentType: finalResult.contentType ?? null,
           }
         : undefined,
-      responseHookLayers: finalResult.responseHookLayers,
+      // 将 hooked body 填充到 responseHookLayers 的最后一个 modified=true 的 layer
+      responseHookLayers: (() => {
+        const layers = finalResult.responseHookLayers;
+        if (layers && responseBodyDataUrl && finalResult.hasResponseHookChanges) {
+          for (let i = layers.length - 1; i >= 0; i--) {
+            if (layers[i]!.modified) {
+              layers[i]!.bodyDataUrl = responseBodyDataUrl;
+              break;
+            }
+          }
+        }
+        return layers;
+      })(),
     });
-    dbNotifier.notify("update", "proxy_requests", dbRecordId);
+    dbNotifier.notify("update", "requests", dbRecordId);
 
     // 清理活跃请求 Map
     activeRequests.delete(dbRecordId);

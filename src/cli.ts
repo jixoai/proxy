@@ -8,7 +8,7 @@ import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import * as path from "node:path";
 import { initDatabase, DatabaseSchemaError } from "./lib/db";
-import { cleanupOrphanStreamingRequests } from "./lib/db-requests";
+import { cleanupOrphanStreamingRequests } from "./lib/db-requests-v7";
 import {
   initConfigStore,
   loadConfig,
