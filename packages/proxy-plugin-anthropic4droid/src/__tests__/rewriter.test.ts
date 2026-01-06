@@ -217,6 +217,46 @@ describe("rewriteRequestBody", () => {
 
     expect(result!.metadata).toEqual({ custom: "value" });
   });
+
+  it("should not rewrite model by default", () => {
+    const body: RequestBody = {
+      model: "claude-opus-4-5-20251101",
+      system: "You are Droid.",
+      messages: [],
+    };
+
+    const result = rewriteRequestBody(body);
+
+    expect(result!.model).toBe("claude-opus-4-5-20251101");
+  });
+
+  it("should rewrite model via exact match", () => {
+    const body: RequestBody = {
+      model: "claude-opus-4-5-20251101",
+      system: "You are Droid.",
+      messages: [],
+    };
+
+    const result = rewriteRequestBody(body, {
+      model: { "claude-opus-4-5-20251101": "gemini-claude-opus-4-5-thinking" },
+    });
+
+    expect(result!.model).toBe("gemini-claude-opus-4-5-thinking");
+  });
+
+  it("should rewrite model via regex rule", () => {
+    const body: RequestBody = {
+      model: "claude-opus-4-5-20251101",
+      system: "You are Droid.",
+      messages: [],
+    };
+
+    const result = rewriteRequestBody(body, {
+      model: { "/claude-(opus)-4-5-(\\d{8})/": "gemini-claude-$1-4-5-$2-thinking" },
+    });
+
+    expect(result!.model).toBe("gemini-claude-opus-4-5-20251101-thinking");
+  });
 });
 
 describe("rewriteHeaders", () => {

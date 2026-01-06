@@ -121,6 +121,41 @@ describe("createDroidPlugin", () => {
     expect(result).toBeNull();
   });
 
+  it("should rewrite model when configured", async () => {
+    const plugin = createDroidPlugin({
+      model: {
+        "claude-opus-4-5-20251101": "gemini-claude-opus-4-5-thinking",
+      },
+    });
+
+    const body = JSON.stringify({
+      model: "claude-opus-4-5-20251101",
+      system: "You are Droid, an AI assistant.",
+      messages: [{ role: "user", content: "Hello" }],
+    });
+
+    const params = createRequestParams({
+      method: "POST",
+      url: "https://api.anthropic.com/v1/messages",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "sk-ant-123",
+      },
+      body: Buffer.from(body),
+    });
+
+    const result = await plugin.onRequest!(params);
+    expect(result).not.toBeNull();
+
+    const modifiedResult = result as {
+      meta?: { headers?: Record<string, string> };
+      body?: ReadableStream<Uint8Array>;
+    };
+
+    const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
+    expect(parsedBody.model).toBe("gemini-claude-opus-4-5-thinking");
+  });
+
   it("should rewrite upstream request failed error response", async () => {
     const plugin = createDroidPlugin();
     const body = JSON.stringify({

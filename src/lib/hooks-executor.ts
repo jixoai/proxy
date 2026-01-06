@@ -53,11 +53,35 @@ async function importPlugin(config: HookConfig): Promise<ProxyPlugin> {
     throw new Error(`Hook config missing package arg (@jixo/*): ${config.command}`);
   }
   const mod = await import(entryArg);
-  const plugin = (mod.default ?? mod.plugin ?? mod.createPlugin?.() ?? mod.createDroidPlugin?.() ?? mod.createResponses4ClaudeCodePlugin?.() ?? mod) as ProxyPlugin;
-  if (!plugin || typeof plugin !== "object" || typeof (plugin as any).name !== "string") {
-    throw new Error(`Invalid plugin module export for ${entryArg}`);
+
+  const pluginConfig =
+    config.config && typeof config.config === "object" && !Array.isArray(config.config)
+      ? config.config
+      : undefined;
+
+  const candidates: Array<() => unknown> = [
+    () => (typeof (mod as any).default === "function" ? (mod as any).default(pluginConfig) : (mod as any).default),
+    () => (typeof (mod as any).plugin === "function" ? (mod as any).plugin(pluginConfig) : (mod as any).plugin),
+    () => (typeof (mod as any).createPlugin === "function" ? (mod as any).createPlugin(pluginConfig) : undefined),
+    () =>
+      typeof (mod as any).createDroidPlugin === "function"
+        ? (mod as any).createDroidPlugin(pluginConfig)
+        : undefined,
+    () =>
+      typeof (mod as any).createResponses4ClaudeCodePlugin === "function"
+        ? (mod as any).createResponses4ClaudeCodePlugin(pluginConfig)
+        : undefined,
+    () => mod,
+  ];
+
+  for (const getCandidate of candidates) {
+    const value = getCandidate();
+    if (value && typeof value === "object" && typeof (value as any).name === "string") {
+      return value as ProxyPlugin;
+    }
   }
-  return plugin;
+
+  throw new Error(`Invalid plugin module export for ${entryArg}`);
 }
 
 export interface RequestHookParams {
