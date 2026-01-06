@@ -25,7 +25,6 @@ import type {
   AnthropicErrorResponse,
   ResponseConversionResult,
 } from "./types";
-import { executeWebSearch } from "./web-search";
 
 /**
  * 生成唯一 ID
@@ -40,6 +39,13 @@ function generateId(): string {
 function generateToolUseId(): string {
   return `toolu_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 11)}`;
 }
+
+/**
+ * 工具名映射：Gemini -> Anthropic
+ */
+const TOOL_NAME_TO_ANTHROPIC: Record<string, string> = {
+  google_web_search: "WebSearch",
+};
 
 /**
  * 转换 Gemini finish_reason 到 Anthropic stop_reason
@@ -106,7 +112,7 @@ function convertPart(part: GeminiPart): AnthropicContentBlock | null {
     return {
       type: "tool_use",
       id: generateToolUseId(),
-      name: part.function_call.name,
+      name: TOOL_NAME_TO_ANTHROPIC[part.function_call.name] || part.function_call.name,
       input: part.function_call.args,
     };
   }
@@ -116,7 +122,7 @@ function convertPart(part: GeminiPart): AnthropicContentBlock | null {
     return {
       type: "tool_use",
       id: generateToolUseId(),
-      name: part.functionCall.name,
+      name: TOOL_NAME_TO_ANTHROPIC[part.functionCall.name] || part.functionCall.name,
       input: part.functionCall.args,
     };
   }
@@ -256,10 +262,6 @@ export interface StreamConverterState {
   inputTokens: number;
   /** 当前工作目录，用于修复相对路径 */
   cwd: string | null;
-  /** API Key（用于 web search） */
-  apiKey: string | null;
-  /** 上游 base URL（用于 web search） */
-  upstreamUrl: string | null;
   outputTokens: number;
   started: boolean;
   finished: boolean;
@@ -267,8 +269,6 @@ export interface StreamConverterState {
   inThinkingBlock: boolean;
   /** 当前 block 类型 */
   currentBlockType: "text" | "thinking" | "tool_use" | null;
-  /** 是否执行了 server tool（如 websearch），用于决定 stop_reason */
-  hasServerToolUse: boolean;
 }
 
 /**
@@ -277,8 +277,6 @@ export interface StreamConverterState {
 export function createStreamState(
   model: string = "gemini-2.5-pro",
   cwd: string | null = null,
-  apiKey: string | null = null,
-  upstreamUrl: string | null = null
 ): StreamConverterState {
   return {
     messageId: generateId(),
@@ -287,14 +285,11 @@ export function createStreamState(
     currentToolUseId: null,
     inputTokens: 0,
     cwd,
-    apiKey,
-    upstreamUrl,
     outputTokens: 0,
     started: false,
     finished: false,
     inThinkingBlock: false,
     currentBlockType: null,
-    hasServerToolUse: false,
   };
 }
 
@@ -561,35 +556,9 @@ export function convertStreamChunk(
       const toolUseId = generateToolUseId();
       state.currentToolUseId = toolUseId;
 
-      // 特殊处理 google_web_search：执行搜索，返回 text 结果
-      // 注意：Droid 的 websearch UI 只在非流式模式下工作
-      // 在流式模式下，我们直接返回搜索结果作为 text
-      if (funcCall.name === "google_web_search" && state.apiKey && state.upstreamUrl) {
-        const query = (funcCall.args as { query?: string })?.query || "";
-        
-        // 执行搜索
-        const searchResponse = executeWebSearch(query, state.apiKey, state.upstreamUrl);
-        
-        // 返回搜索结果作为 text block
-        output += generateContentBlockStart(state.contentBlockIndex, {
-          type: "text",
-          text: "",
-        });
-        output += generateTextDelta(state.contentBlockIndex, searchResponse.responseText);
-        output += generateContentBlockStop(state.contentBlockIndex);
-        state.contentBlockIndex++;
-        
-        state.currentBlockType = null;
-        state.hasServerToolUse = true; // stop_reason: end_turn
-        continue;
-      }
-
       state.currentBlockType = "tool_use";
 
       // 工具名转换：Gemini -> Anthropic
-      const TOOL_NAME_TO_ANTHROPIC: Record<string, string> = {
-        google_web_search: "WebSearch",
-      };
       const anthropicToolName = TOOL_NAME_TO_ANTHROPIC[funcCall.name] || funcCall.name;
 
       // Anthropic 格式：start 中 input 为空，通过 delta 传输完整 JSON
@@ -633,12 +602,9 @@ export function convertStreamChunk(
     }
 
     // 如果是 server tool（websearch），stop_reason 应为 end_turn
-    // 否则检查是否有普通 tool_use
-    const stopReason = state.hasServerToolUse
-      ? "end_turn"
-      : hasToolUse(candidate)
-        ? "tool_use"
-        : convertFinishReason(candidate.finishReason);
+    const stopReason = hasToolUse(candidate)
+      ? "tool_use"
+      : convertFinishReason(candidate.finishReason);
 
     output += generateMessageDelta(stopReason, state.outputTokens);
     output += generateMessageStop();
@@ -654,10 +620,8 @@ export function convertStreamResponse(
   geminiSSE: string,
   model: string = "gemini-2.5-pro",
   cwd: string | null = null,
-  apiKey: string | null = null,
-  upstreamUrl: string | null = null
 ): string {
-  const state = createStreamState(model, cwd, apiKey, upstreamUrl);
+  const state = createStreamState(model, cwd);
   let output = "";
 
   const lines = geminiSSE.split("\n");
@@ -670,7 +634,10 @@ export function convertStreamResponse(
 
   // 如果没有正常结束，补充结束事件
   if (state.started && !state.finished) {
-    output += generateContentBlockStop(state.contentBlockIndex);
+    // 仅当确实存在未关闭的 content block 时才补 stop，避免客户端出现 undefined content_block
+    if (state.currentBlockType !== null) {
+      output += generateContentBlockStop(state.contentBlockIndex);
+    }
     output += generateMessageDelta("end_turn", state.outputTokens);
     output += generateMessageStop();
   }
@@ -705,6 +672,238 @@ export function looksLikeSSE(text: string): boolean {
 }
 
 /**
+ * 合并 SSE chunks 成完整的 Gemini 响应
+ */
+function mergeSSEChunks(text: string): GeminiResponseBody | null {
+  const lines = text.split("\n");
+  let merged: GeminiResponseBody | null = null;
+  
+  for (const line of lines) {
+    const chunk = parseGeminiSSELine(line);
+    if (!chunk) continue;
+    
+    if (!merged) {
+      merged = chunk;
+    } else {
+      // 合并 candidates
+      if (chunk.candidates?.[0]?.content?.parts) {
+        if (!merged.candidates) {
+          merged.candidates = chunk.candidates;
+        } else if (merged.candidates[0]) {
+          if (!merged.candidates[0].content) {
+            merged.candidates[0].content = { role: "model", parts: [] };
+          }
+          merged.candidates[0].content.parts.push(...chunk.candidates[0].content.parts);
+          // 更新 finishReason
+          if (chunk.candidates[0].finishReason) {
+            merged.candidates[0].finishReason = chunk.candidates[0].finishReason;
+          }
+          // 合并 groundingMetadata (包括 groundingChunks 和 groundingSupports)
+          const chunkGrounding = (chunk.candidates[0] as unknown as {
+            groundingMetadata?: { 
+              groundingChunks?: unknown[];
+              groundingSupports?: Array<{ 
+                segment?: { text?: string };
+                groundingChunkIndices?: number[];
+              }>;
+            };
+          }).groundingMetadata;
+          if (chunkGrounding) {
+            const mergedCandidate = merged.candidates[0] as unknown as {
+              groundingMetadata?: { 
+                groundingChunks?: unknown[];
+                groundingSupports?: Array<{ 
+                  segment?: { text?: string };
+                  groundingChunkIndices?: number[];
+                }>;
+              };
+            };
+            if (!mergedCandidate.groundingMetadata) {
+              mergedCandidate.groundingMetadata = chunkGrounding;
+            } else {
+              // 计算当前的 chunk 偏移量
+              const currentChunkOffset = mergedCandidate.groundingMetadata.groundingChunks?.length || 0;
+
+              // 合并 groundingChunks
+              if (chunkGrounding.groundingChunks) {
+                mergedCandidate.groundingMetadata.groundingChunks = [
+                  ...(mergedCandidate.groundingMetadata.groundingChunks || []),
+                  ...chunkGrounding.groundingChunks,
+                ];
+              }
+              // 合并 groundingSupports 并调整 indices
+              if (chunkGrounding.groundingSupports) {
+                const adjustedSupports = chunkGrounding.groundingSupports.map(support => ({
+                  ...support,
+                  groundingChunkIndices: support.groundingChunkIndices?.map(idx => idx + currentChunkOffset)
+                }));
+                
+                mergedCandidate.groundingMetadata.groundingSupports = [
+                  ...(mergedCandidate.groundingMetadata.groundingSupports || []),
+                  ...adjustedSupports,
+                ];
+              }
+            }
+          }
+        }
+      }
+      // 更新 usageMetadata
+      if (chunk.usageMetadata) {
+        merged.usageMetadata = chunk.usageMetadata;
+      }
+    }
+  }
+  
+  return merged;
+}
+
+/**
+ * 构建 websearch 响应（web_search_tool_result 格式）
+ */
+function buildWebSearchResponse(
+  geminiResponse: GeminiResponseBody,
+  model: string,
+  searchQuery: string | null
+): ResponseConversionResult {
+  const candidate = geminiResponse.candidates?.[0];
+  if (!candidate) {
+    return { converted: false };
+  }
+  
+  const parts = candidate.content?.parts ?? [];
+  
+  // 提取文本内容（跳过 thinking）
+  let responseText = "";
+  for (const part of parts) {
+    const p = part as GeminiTextPart;
+    if (typeof p.text === "string" && p.text && p.thought !== true) {
+      responseText += p.text;
+    }
+  }
+  
+  // 尝试从 groundingMetadata 提取结果
+  const groundingMetadata = (candidate as unknown as {
+    groundingMetadata?: { 
+      groundingChunks?: Array<{ web?: { uri?: string; title?: string; domain?: string } }>;
+      groundingSupports?: Array<{ 
+        segment?: { text?: string };
+        groundingChunkIndices?: number[];
+      }>;
+    };
+  }).groundingMetadata;
+  
+  const groundingChunks = groundingMetadata?.groundingChunks;
+  const groundingSupports = groundingMetadata?.groundingSupports;
+  
+  // 构建 chunk 索引到支持文本的映射
+  const chunkTextMap = new Map<number, string[]>();
+  if (Array.isArray(groundingSupports)) {
+    for (const support of groundingSupports) {
+      const text = support.segment?.text;
+      const indices = support.groundingChunkIndices;
+      if (text && Array.isArray(indices)) {
+        for (const idx of indices) {
+          if (!chunkTextMap.has(idx)) {
+            chunkTextMap.set(idx, []);
+          }
+          chunkTextMap.get(idx)!.push(text);
+        }
+      }
+    }
+  }
+  
+  const results: Array<{
+    type: "web_search_result";
+    title: string;
+    url: string;
+    encrypted_content: string;
+    page_age: string | null;
+    snippet: string;
+    text: string;
+  }> = [];
+  
+  if (Array.isArray(groundingChunks)) {
+    for (let i = 0; i < groundingChunks.length; i++) {
+      const chunk = groundingChunks[i];
+      const web = chunk?.web;
+      if (!web?.uri && !web?.title) continue;
+      
+      // 获取该 chunk 的支持文本作为 snippet
+      const supportTexts = chunkTextMap.get(i) || [];
+      const snippet = supportTexts.length > 0 
+        ? supportTexts.join("\n\n")
+        : (web.title || web.domain || "");
+      
+      results.push({
+        type: "web_search_result",
+        title: web.title || web.domain || "Result",
+        url: web.uri || "",
+        encrypted_content: Buffer.from(snippet.substring(0, 2000)).toString("base64"),
+        page_age: null,
+        snippet: snippet.substring(0, 500),
+        text: snippet,
+      });
+    }
+  }
+  
+  // 如果没有 grounding 结果，使用响应文本创建一个合成结果
+  if (results.length === 0 && responseText) {
+    results.push({
+      type: "web_search_result",
+      title: `Search results for: ${searchQuery || "query"}`,
+      url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery || "")}`,
+      encrypted_content: Buffer.from(responseText.substring(0, 2000)).toString("base64"),
+      page_age: null,
+      snippet: responseText.substring(0, 500),
+      text: responseText,
+    });
+  }
+  
+  const msgId = `msg_ws_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const serverToolUseId = `srvtoolu_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  
+  const webSearchResponse = {
+    id: msgId,
+    type: "message" as const,
+    role: "assistant" as const,
+    content: [
+      {
+        type: "server_tool_use" as const,
+        id: serverToolUseId,
+        name: "web_search",
+        input: { query: searchQuery || "" },
+      },
+      {
+        type: "web_search_tool_result" as const,
+        tool_use_id: serverToolUseId,
+        content: results,
+      },
+    ],
+    model,
+    stop_reason: "end_turn" as const,
+    stop_sequence: null,
+    usage: {
+      input_tokens: geminiResponse.usageMetadata?.promptTokenCount ?? 0,
+      output_tokens: geminiResponse.usageMetadata?.candidatesTokenCount ?? 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: geminiResponse.usageMetadata?.cachedContentTokenCount ?? 0,
+      server_tool_use: {
+        web_search_requests: 1,
+      },
+    },
+  };
+  
+  return {
+    statusCode: 200,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+    },
+    body: Buffer.from(JSON.stringify(webSearchResponse), "utf-8"),
+    converted: true,
+  };
+}
+
+/**
  * 重写响应
  */
 export function rewriteResponse(params: {
@@ -712,10 +911,10 @@ export function rewriteResponse(params: {
   body: Buffer;
   model?: string;
   cwd?: string | null;
-  apiKey?: string | null;
-  upstreamUrl?: string | null;
+  isWebSearch?: boolean;
+  searchQuery?: string | null;
 }): ResponseConversionResult {
-  const { meta, body, model = "gemini-2.5-pro", cwd = null, apiKey = null, upstreamUrl = null } = params;
+  const { meta, body, model = "gemini-2.5-pro", cwd = null, isWebSearch = false, searchQuery = null } = params;
   const headers = normalizeHeaders(meta.headers) ?? {};
   const contentType = headers["content-type"];
   const text = body.toString("utf-8");
@@ -726,7 +925,15 @@ export function rewriteResponse(params: {
 
   // 检测是否为 SSE 流式响应
   if (isEventStreamContentType(contentType) || looksLikeSSE(text)) {
-    const anthropicSSE = convertStreamResponse(text, model, cwd, apiKey, upstreamUrl);
+    // 如果是 websearch 请求，需要收集所有 SSE chunks 然后构建 web_search_tool_result 格式
+    if (isWebSearch) {
+      const mergedResponse = mergeSSEChunks(text);
+      if (mergedResponse && isGeminiResponse(mergedResponse)) {
+        return buildWebSearchResponse(mergedResponse, model, searchQuery);
+      }
+    }
+    
+    const anthropicSSE = convertStreamResponse(text, model, cwd);
     return {
       statusCode: 200,
       headers: {
@@ -743,6 +950,11 @@ export function rewriteResponse(params: {
   const parsed = safeParseJson(text);
   if (!parsed) {
     return { converted: false };
+  }
+
+  // 处理 websearch 响应：转换为 web_search_tool_result 格式
+  if (isWebSearch && isGeminiResponse(parsed)) {
+    return buildWebSearchResponse(parsed, model, searchQuery);
   }
 
   // 处理错误响应

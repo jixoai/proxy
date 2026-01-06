@@ -59,9 +59,28 @@ export function extractCwd(body: AnthropicRequestBody): string | null {
 }
 
 /**
+ * 检测是否包含 web_search 服务端工具
+ */
+function hasWebSearchTool(body: AnthropicRequestBody): boolean {
+  if (!Array.isArray(body.tools)) return false;
+  return body.tools.some(
+    (tool) => "type" in tool && tool.type === "web_search_20250305"
+  );
+}
+
+/**
  * 检测是否为 Droid 请求
+ * 
+ * 注意：如果请求包含 web_search_20250305 工具（如 websearch-native 发起的搜索请求），
+ * 也视为需要处理的请求，这与 anthropic4droid 的行为一致。
  */
 export function isDroidRequest(body: AnthropicRequestBody): boolean {
+  // 如果包含 web_search 工具，也视为需要处理的请求
+  // 这是 websearch-native 发起的搜索请求
+  if (hasWebSearchTool(body)) {
+    return true;
+  }
+
   if (!body.system) return false;
 
   const systemText = extractSystemText(body.system);
@@ -402,39 +421,71 @@ export function convertRequestBody(
 
   // 转换 tools (使用 camelCase: functionDeclarations)
   if (body.tools && body.tools.length > 0) {
-    // 转换工具，将 WebSearch 转换为 google_web_search
-    const convertedTools = body.tools.map(tool => {
-      if (tool.name === "WebSearch") {
-        // 转换为 Gemini CLI 的 google_web_search 格式
-        return {
-          name: "google_web_search",
-          description: "Performs a web search using Google Search (via the Gemini API) and returns the results. This tool is useful for finding information on the internet based on a query.",
-          parametersJsonSchema: {
-            type: "object" as const,
-            properties: {
-              query: {
-                type: "string",
-                description: "The search query to find information on the web.",
-              },
-            },
-            required: ["query"],
-          },
-        };
-      }
-      return convertTool(tool);
-    });
-    
-    geminiBody.tools = [
-      {
-        functionDeclarations: convertedTools,
-      },
-    ];
-  }
+    // 检测是否有 web_search_20250305 服务端工具（如 websearch-native 请求）
+    const hasServerWebSearch = body.tools.some(
+      (t) => "type" in t && t.type === "web_search_20250305"
+    );
 
-  // 转换 tool_choice (使用 camelCase: toolConfig)
-  const toolConfig = convertToolChoice(body.tool_choice);
-  if (toolConfig) {
-    geminiBody.toolConfig = toolConfig;
+    // 处理"工具声明"类对象（需要 name 字段但不是 web_search_20250305 类型）
+    const declaredTools = body.tools.filter(
+      (t): t is AnthropicTool => {
+        // 排除 web_search_20250305 类型的工具
+        if ("type" in t && t.type === "web_search_20250305") return false;
+        return Boolean(t && typeof (t as AnthropicTool).name === "string");
+      }
+    );
+
+    const toolsArray: GeminiRequestBody["tools"] = [];
+
+    // 如果有 web_search_20250305，添加 Gemini 的 googleSearch grounding 工具
+    // 注意：对于 Gemini 2.0+ 模型，只能使用 googleSearch，模型自动决定是否搜索
+    // google_search_retrieval 只适用于 Gemini 1.5 模型
+    if (hasServerWebSearch) {
+      toolsArray.push({ googleSearch: {} });
+    }
+
+    // 转换其他工具声明
+    if (declaredTools.length > 0) {
+      const convertedTools = declaredTools.map(tool => {
+        if (tool.name === "WebSearch") {
+          // 转换为 Gemini CLI 的 google_web_search 格式
+          return {
+            name: "google_web_search",
+            description: "Performs a web search using Google Search (via the Gemini API) and returns the results. This tool is useful for finding information on the internet based on a query.",
+            parametersJsonSchema: {
+              type: "object" as const,
+              properties: {
+                query: {
+                  type: "string",
+                  description: "The search query to find information on the web.",
+                },
+              },
+              required: ["query"],
+            },
+          };
+        }
+        return convertTool(tool);
+      });
+
+      toolsArray.push({
+        functionDeclarations: convertedTools,
+      });
+    }
+
+    if (toolsArray.length > 0) {
+      geminiBody.tools = toolsArray;
+    }
+
+    // 注意：如果只有 googleSearch grounding 工具（没有 function declarations），
+    // 不应该设置 toolConfig，因为 googleSearch 不支持 toolConfig.functionCallingConfig
+    // 转换 tool_choice (使用 camelCase: toolConfig)
+    // 只有在有 function declarations 时才设置 toolConfig
+    if (declaredTools.length > 0) {
+      const toolConfig = convertToolChoice(body.tool_choice);
+      if (toolConfig) {
+        geminiBody.toolConfig = toolConfig;
+      }
+    }
   }
 
   // 构建 generationConfig (使用 camelCase)

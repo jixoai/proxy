@@ -20,22 +20,20 @@ import type {
 import { normalizeHeaders, createLogger } from "@jixo/proxy-plugin";
 import { convertRequest, isDroidRequest, extractCwd } from "./request-converter";
 import { rewriteResponse } from "./response-converter";
-import { executeWebSearch } from "./web-search";
 import type { AnthropicRequestBody } from "./types";
 
 /**
- * 检测是否为 Droid 的 websearch 请求
- * 特征：stream: false, tools 只有 web_search_20250305
+ * 检测是否为 websearch 请求 (web_search_20250305 工具)
  */
 function isWebSearchRequest(body: AnthropicRequestBody): boolean {
-  if (body.stream !== false) return false;
-  if (!Array.isArray(body.tools) || body.tools.length !== 1) return false;
-  const tool = body.tools[0] as { type?: string };
-  return tool.type === "web_search_20250305";
+  if (!Array.isArray(body.tools)) return false;
+  return body.tools.some(
+    (t) => "type" in t && t.type === "web_search_20250305"
+  );
 }
 
 /**
- * 从 websearch 请求中提取搜索 query
+ * 从请求中提取搜索 query
  */
 function extractSearchQuery(body: AnthropicRequestBody): string | null {
   const messages = body.messages || [];
@@ -55,84 +53,6 @@ function extractSearchQuery(body: AnthropicRequestBody): string | null {
   return match && match[1] ? match[1].trim() : content;
 }
 
-/**
- * 处理 websearch 请求，返回非流式响应
- */
-function handleWebSearchRequest(
-  query: string,
-  apiKey: string,
-  upstreamUrl: string,
-  model: string
-): { body: string; headers: Record<string, string> } {
-  // 执行搜索
-  const searchResponse = executeWebSearch(query, apiKey, upstreamUrl);
-  
-  // 生成唯一 ID
-  const msgId = `msg_ws_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-  const serverToolUseId = `srvtoolu_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-  
-  // 构建搜索结果条目
-  const webSearchResults = searchResponse.results.map((r, i) => ({
-    type: "web_search_result",
-    title: r.title || `Result ${i + 1}`,
-    url: r.url || `https://search.result/${i + 1}`,
-    encrypted_content: Buffer.from(r.snippet || "").toString("base64"),
-  }));
-  
-  // 如果没有结果，使用原始响应创建一个
-  if (webSearchResults.length === 0) {
-    webSearchResults.push({
-      type: "web_search_result",
-      title: `Search results for: ${query}`,
-      url: "https://search.result/1",
-      encrypted_content: Buffer.from(searchResponse.responseText).toString("base64"),
-    });
-  }
-  
-  // 构建非流式 JSON 响应
-  const response = {
-    id: msgId,
-    type: "message",
-    role: "assistant",
-    content: [
-      {
-        type: "server_tool_use",
-        id: serverToolUseId,
-        name: "web_search",
-        input: { query },
-      },
-      {
-        type: "web_search_tool_result",
-        tool_use_id: serverToolUseId,
-        content: webSearchResults,
-      },
-      {
-        type: "text",
-        text: searchResponse.responseText,
-      },
-    ],
-    model,
-    stop_reason: "end_turn",
-    stop_sequence: null,
-    usage: {
-      input_tokens: 100,
-      output_tokens: searchResponse.responseText.length,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      server_tool_use: {
-        web_search_requests: 1,
-      },
-    },
-  };
-  
-  return {
-    body: JSON.stringify(response),
-    headers: {
-      "content-type": "application/json",
-    },
-  };
-}
-
 /** 插件存储 schema */
 const GeminiStoreSchema = z.object({
   /** 请求已被插件转换 */
@@ -143,10 +63,10 @@ const GeminiStoreSchema = z.object({
   requestBodyLength: z.number().int().nonnegative(),
   /** 当前工作目录，用于修复相对路径 */
   cwd: z.string().nullable(),
-  /** API Key（用于 web search） */
-  apiKey: z.string().nullable(),
-  /** 上游 base URL（用于 web search） */
-  upstreamUrl: z.string().nullable(),
+  /** 是否为 websearch 请求 */
+  isWebSearch: z.boolean().optional(),
+  /** websearch 查询 */
+  searchQuery: z.string().nullable().optional(),
 });
 
 type GeminiStore = z.infer<typeof GeminiStoreSchema>;
@@ -213,7 +133,7 @@ export function createGeminiPlugin(
         return null;
       }
 
-      // 确定上游 base URL（websearch 和普通请求都需要）
+      // 确定上游 base URL
       let effectiveBaseUrl = upstreamBaseUrl;
       if (!effectiveBaseUrl && params.meta.url) {
         try {
@@ -221,41 +141,6 @@ export function createGeminiPlugin(
           effectiveBaseUrl = `${targetUrl.protocol}//${targetUrl.host}/v1beta`;
         } catch {
           // ignore
-        }
-      }
-
-      // 提取 API key
-      const apiKey = headers["x-api-key"] || null;
-
-      // 特殊处理：Droid 的 websearch 请求
-      // 直接执行搜索并返回非流式响应，不经过 Gemini
-      if (isWebSearchRequest(requestBody) && apiKey && effectiveBaseUrl) {
-        const query = extractSearchQuery(requestBody);
-        if (query) {
-          logger.debug(`Handling websearch request: ${query}`);
-          
-          const wsResult = handleWebSearchRequest(
-            query,
-            apiKey,
-            effectiveBaseUrl,
-            requestBody.model || "gemini-2.5-pro"
-          );
-          
-          if (debug) {
-            logger.logToFile("websearch-intercept", {
-              query,
-              responsePreview: wsResult.body.substring(0, 500),
-            });
-          }
-          
-          // 返回拦截响应（短路请求，直接返回响应）
-          return {
-            respondWith: {
-              statusCode: 200,
-              headers: wsResult.headers,
-              body: Buffer.from(wsResult.body, "utf-8"),
-            },
-          };
         }
       }
 
@@ -297,20 +182,22 @@ export function createGeminiPlugin(
       }
 
       // 更新 API key（从转换后的 headers 获取）
-      const finalApiKey = result.headers?.["x-goog-api-key"] || apiKey;
-
       // 使用 store 标记请求已被转换
       const requestBodyLength = result.body
         ? Buffer.byteLength(result.body, "utf-8")
         : params.body.length;
+
+      // 检测是否为 websearch 请求
+      const isWebSearch = isWebSearchRequest(requestBody);
+      const searchQuery = isWebSearch ? extractSearchQuery(requestBody) : null;
 
       const storeData: GeminiStore = {
         activated: true,
         model: requestBody.model || "gemini-2.5-pro",
         requestBodyLength,
         cwd,
-        apiKey: finalApiKey,
-        upstreamUrl: effectiveBaseUrl || null,
+        isWebSearch,
+        searchQuery,
       };
 
       const finalHeaders = params.store
@@ -350,8 +237,8 @@ export function createGeminiPlugin(
         body: params.body,
         model: storeData.model,
         cwd: storeData.cwd,
-        apiKey: storeData.apiKey,
-        upstreamUrl: storeData.upstreamUrl,
+        isWebSearch: storeData.isWebSearch,
+        searchQuery: storeData.searchQuery,
       });
 
       if (!result.converted) {

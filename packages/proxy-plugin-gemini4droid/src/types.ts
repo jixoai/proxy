@@ -249,9 +249,10 @@ export type GeminiRequestBody = {
   systemInstruction?: {
     parts: GeminiTextPart[];
   };
-  tools?: {
-    functionDeclarations?: GeminiFunctionDeclaration[];
-  }[];
+  tools?: Array<
+    | { functionDeclarations?: GeminiFunctionDeclaration[] }
+    | { googleSearch: Record<string, never> }
+  >;
   toolConfig?: GeminiToolConfig;
   generationConfig?: GeminiGenerationConfig;
   safetySettings?: GeminiSafetySettings;
