@@ -76,19 +76,12 @@ if (import.meta.main) {
     debug,
   });
 
-  definePlugin(
-    createAnthropicPingPlugin({
-      debug,
-      maxKeepAliveDurationMs: config.maxKeepAliveDurationMs,
-      idleThresholdMs,
-      pollingIntervalMs: config.pollingIntervalMs,
-      onPing: (sessionId, pingCount) => {
-        console.log(`[AnthropicPing] Ping sent: session=${sessionId}, count=${pingCount}`);
-      },
-      onExpire: (sessionId, reason) => {
-        console.log(`[AnthropicPing] Session expired: session=${sessionId}, reason=${reason}`);
-      },
-    }),
-    { debug }
+  void idleThresholdMs;
+  void config;
+  void debug;
+  void definePlugin;
+  void createAnthropicPingPlugin;
+  throw new Error(
+    `[anthropic-ping] standalone plugin server mode is no longer supported: hooks are now in-process and streaming-native.`,
   );
 }

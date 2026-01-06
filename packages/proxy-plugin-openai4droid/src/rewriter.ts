@@ -23,7 +23,7 @@ export function hasWebSearchTool(requestBody: RequestBody): boolean {
 export function isDroidRequest(requestBody: RequestBody): boolean {
   if (!requestBody.instructions) return false;
   return requestBody.instructions.startsWith(
-    "You are Droid, an AI software engineering agent built by Factory."
+    "You are Droid, an AI software engineering agent built by Factory.",
   );
 }
 
@@ -92,14 +92,6 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
     max_output_tokens?: number;
   };
 
-  // WebSearch 请求：只需替换 instructions
-  if (isWebSearch && !isDroid) {
-    return {
-      ...safeRequestBody,
-      instructions: CODEX_INSTRUCTIONS,
-    };
-  }
-
   // Droid 请求：将 Droid instructions 注入到 input 中
   let rewriteInput = structuredClone(requestBody.input);
   const droidInstructions = requestBody.instructions || "";
@@ -135,7 +127,7 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
  */
 export function rewriteHeaders(
   headers: Record<string, string>,
-  options?: { sessionId?: string; hasWebSearch?: boolean }
+  options?: { sessionId?: string; hasWebSearch?: boolean },
 ): Record<string, string> {
   const newHeaders: Record<string, string> = { ...headers };
 
@@ -190,9 +182,10 @@ export function rewriteRequest(params: {
     if (firstItem && "content" in firstItem && Array.isArray(firstItem.content)) {
       const content = firstItem.content as Array<Record<string, unknown>>;
       const firstContent = content[0];
-      sessionInput = firstContent && "text" in firstContent && typeof firstContent.text === "string" 
-        ? firstContent.text 
-        : "";
+      sessionInput =
+        firstContent && "text" in firstContent && typeof firstContent.text === "string"
+          ? firstContent.text
+          : "";
     } else {
       sessionInput = "";
     }

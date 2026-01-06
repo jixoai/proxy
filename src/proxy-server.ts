@@ -18,6 +18,8 @@ import { initDatabase } from "./lib/db";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
 import { HooksExecutor, stopAllHooks } from "./lib/hooks-executor";
+import { streamFromBuffer, readStreamToBuffer } from "@jixo/proxy-plugin";
+import { nodeReadableToWebStream, pipeWebStreamToNodeResponse } from "./lib/node-stream-adapter";
 import type { HooksConfig, HookLayer } from "./types/proxy";
 import type {
   WorkerMessage,
@@ -591,7 +593,7 @@ async function main(argv: string[]) {
 
       let hookedMethod = method;
       let hookedTargetUrl = targetUrl;
-      let hookedRequestBody = originalRequestBody;
+      let hookedRequestBody: Buffer<ArrayBufferLike> = originalRequestBody;
       let hookedForwardHeaders: http.OutgoingHttpHeaders = { ...forwardHeaders };
       let hasRequestHookChanges = false;
       let requestHookLayers: HookLayer[] | undefined;
@@ -608,7 +610,7 @@ async function main(argv: string[]) {
               method,
               url: targetUrl.href,
               headers: headersForHooks,
-              body: hookedRequestBody,
+              body: streamFromBuffer(hookedRequestBody),
               signal: abortSignal,
             },
             (body) => body.length > 0 ? bufferToDataUrl(body, requestContentType) : null,
@@ -634,7 +636,7 @@ async function main(argv: string[]) {
             hookedTargetUrl = new URL(hookResult.url);
             hookedForwardHeaders = hookResult.headers as http.OutgoingHttpHeaders;
             hookedForwardHeaders.host = hookedTargetUrl.host;
-            hookedRequestBody = Buffer.from(hookResult.body);
+            hookedRequestBody = await readStreamToBuffer(hookResult.body);
           }
         } catch (err) {
           console.error("[Hooks] Request hook error:", err);
@@ -738,25 +740,131 @@ async function main(argv: string[]) {
             // TTFB: 收到响应头的时间
             const responseStartTime = Date.now();
             const ttfbMs = responseStartTime - attemptStart;
+
             const responseChunks: Buffer[] = [];
 
             let responseHeaders = { ...proxyRes.headers };
             let statusCode = proxyRes.statusCode || 502;
             let statusMessage = proxyRes.statusMessage || "";
 
-            // 如果存在 hooks，则必须缓存完整响应以支持修改，因此不允许直接流式写回客户端
-            // 注意：直接检查配置而不是 hasResponseHooks，避免并发请求之间的 race condition
-            const hasConfiguredHooks = !!(instanceHooks || forwardRule.hooks);
-            const allowStreamingToClient = !hasConfiguredHooks;
+            // Streaming rule:
+            // - If we might retry (failover), we must not stream.
+            // - Otherwise we can stream even with hooks (hooks are streaming-native).
             const isFailureStatus = statusCode >= 400 && statusCode <= 599;
             const hasMoreCandidates = i < candidateIndexes.length - 1;
             const shouldRetryOnFailure = isFailureStatus && hasMoreCandidates;
-            const shouldStreamToClient = allowStreamingToClient && !shouldRetryOnFailure;
+            const shouldStreamToClient = !shouldRetryOnFailure;
 
             // 流式进度更新（每秒最多更新一次）
             let totalReceivedBytes = 0;
             let lastProgressUpdate = 0;
             const PROGRESS_THROTTLE_MS = 1000;
+
+            if (shouldStreamToClient && !didStreamResponseToClient && !isClientDisconnected) {
+              didStreamResponseToClient = true;
+
+              try {
+                const upstreamStream = nodeReadableToWebStream(proxyRes);
+                let outStatusCode = statusCode;
+                let outStatusMessage = statusMessage;
+                let outHeaders: http.IncomingHttpHeaders = { ...responseHeaders };
+                let outStream: ReadableStream<Uint8Array> = upstreamStream;
+                let hasResponseHookChanges = false;
+                let responseHookLayers: HookLayer[] | undefined;
+
+                if (hooksExecutor?.hasResponseHooks) {
+                  const hookExecResult = await hooksExecutor.executeResponseHooksWithLayers(
+                    {
+                      statusCode,
+                      statusMessage,
+                      headers: responseHeaders as Record<string, string | string[]>,
+                      body: upstreamStream,
+                      signal: abortSignal,
+                      requestMeta: {
+                        method: hookedMethod,
+                        url: hookedTargetUrl.href,
+                        headers: hookedForwardHeaders as Record<string, string | string[]>,
+                      },
+                    },
+                    () => null,
+                    (headers) => (headers["content-type"] as string) ?? null,
+                  );
+                  const hookResult = hookExecResult.params;
+                  hasResponseHookChanges = hookExecResult.hasChanges;
+                  responseHookLayers = hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
+
+                  outStatusCode = hookResult.statusCode;
+                  outStatusMessage = hookResult.statusMessage;
+                  outHeaders = hookResult.headers as http.IncomingHttpHeaders;
+                  outStream = hookResult.body;
+                }
+
+                const streamingHeaders = sanitizeResponseHeadersForStreaming(outHeaders);
+                res.writeHead(outStatusCode, outStatusMessage, streamingHeaders);
+
+                await pipeWebStreamToNodeResponse({
+                  stream: outStream,
+                  res,
+                  onChunk: (chunk) => {
+                    responseChunks.push(Buffer.from(chunk));
+                    totalReceivedBytes += chunk.byteLength;
+
+                    const now = Date.now();
+                    if (dbRecordId !== null && now - lastProgressUpdate >= PROGRESS_THROTTLE_MS) {
+                      lastProgressUpdate = now;
+                      updateStreamingProgress(
+                        dbRecordId,
+                        totalReceivedBytes,
+                        ttfbMs,
+                        outStatusCode,
+                        outStatusMessage,
+                        outHeaders as Record<string, string | string[]>,
+                      );
+                      dbNotifier.notify("update", "proxy_requests", dbRecordId);
+                    }
+                  },
+                });
+
+                const bodyMs = Date.now() - responseStartTime;
+                const bodyBuffer: Buffer<ArrayBufferLike> = Buffer.concat(responseChunks);
+                const contentType = (outHeaders["content-type"] as string) ?? null;
+                const cleanedHeaders = sanitizeResponseHeadersForBuffered(outHeaders, bodyBuffer.length);
+
+                resolve({
+                  statusCode: outStatusCode,
+                  statusMessage: outStatusMessage,
+                  headers: cleanedHeaders,
+                  bodyBuffer,
+                  contentType,
+                  ttfbMs,
+                  bodyMs,
+                  hasResponseHookChanges,
+                  responseHookLayers,
+                  originalStatusCode: hasResponseHookChanges ? statusCode : undefined,
+                  originalStatusMessage: hasResponseHookChanges ? statusMessage : undefined,
+                  originalHeaders: hasResponseHookChanges ? responseHeaders : undefined,
+                  originalBodyBuffer: hasResponseHookChanges ? Buffer.alloc(0) : undefined,
+                  originalContentType: hasResponseHookChanges ? ((responseHeaders["content-type"] as string) ?? null) : undefined,
+                });
+                return;
+              } catch (error) {
+                if (!res.writableEnded) {
+                  res.destroy(error as Error);
+                }
+                const bodyMs = Date.now() - responseStartTime;
+                resolve({
+                  statusCode: 502,
+                  statusMessage: "Bad Gateway",
+                  headers: { "content-type": "application/json" },
+                  bodyBuffer: Buffer.alloc(0),
+                  contentType: "application/json",
+                  errorMessage: error instanceof Error ? error.message : String(error),
+                  ttfbMs,
+                  bodyMs,
+                });
+                return;
+              }
+            }
 
             proxyRes.on("data", (chunk: Buffer) => {
               responseChunks.push(Buffer.from(chunk));
@@ -777,17 +885,9 @@ async function main(argv: string[]) {
               }
             });
 
-            // 只在确定不会 failover，且不需要 response hooks 时，才把上游响应流式写回客户端
-            if (shouldStreamToClient && !didStreamResponseToClient && !isClientDisconnected) {
-              didStreamResponseToClient = true;
-              const streamingHeaders = sanitizeResponseHeadersForStreaming(responseHeaders);
-              res.writeHead(statusCode, statusMessage, streamingHeaders);
-              proxyRes.pipe(res);
-            }
-
             proxyRes.on("end", async () => {
               const bodyMs = Date.now() - responseStartTime;
-              let bodyBuffer = Buffer.concat(responseChunks);
+              let bodyBuffer: Buffer<ArrayBufferLike> = Buffer.concat(responseChunks);
               let contentType = (responseHeaders["content-type"] as string) ?? null;
 
               // 保存原始响应数据（用于与 hooked 对比）
@@ -806,7 +906,7 @@ async function main(argv: string[]) {
                       statusCode,
                       statusMessage,
                       headers: responseHeaders as Record<string, string | string[]>,
-                      body: bodyBuffer,
+                      body: streamFromBuffer(bodyBuffer),
                       signal: abortSignal,
                       // 传递请求元数据给响应 hooks
                       requestMeta: {
@@ -826,7 +926,7 @@ async function main(argv: string[]) {
                     statusCode = hookResult.statusCode;
                     statusMessage = hookResult.statusMessage;
                     responseHeaders = hookResult.headers as http.IncomingHttpHeaders;
-                    bodyBuffer = Buffer.from(hookResult.body);
+                    bodyBuffer = await readStreamToBuffer(hookResult.body);
                   }
                   contentType = (responseHeaders["content-type"] as string) ?? contentType;
                 } catch (err) {

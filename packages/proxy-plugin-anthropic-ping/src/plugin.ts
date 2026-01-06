@@ -4,7 +4,7 @@
  */
 
 import type { ProxyPlugin, RequestHookParams, RequestHookResult } from "@jixo/proxy-plugin";
-import { safeParseJson, PrivateHeaders } from "@jixo/proxy-plugin";
+import { safeParseJson, PrivateHeaders, readStreamToText } from "@jixo/proxy-plugin";
 import { AnthropicPingMiddleware } from "./ping-middleware";
 import type { PingPluginOptions, AnthropicRequestBody } from "./types";
 
@@ -25,13 +25,13 @@ export function createAnthropicPingPlugin(
     async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       if (!enabled) return null;
 
-      const { meta, body } = params;
+      const { meta } = params;
 
       if (!isAnthropicMessagesRequest(meta.url)) {
         return null;
       }
 
-      const bodyText = body.toString("utf-8");
+      const bodyText = await readStreamToText(params.body);
       const parsed = safeParseJson<AnthropicRequestBody>(bodyText);
 
       if (!parsed || !parsed.messages || parsed.messages.length === 0) {

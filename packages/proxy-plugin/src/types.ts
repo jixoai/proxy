@@ -8,7 +8,6 @@ export interface RequestMeta {
   method?: string;
   url?: string;
   headers?: Record<string, string | string[]>;
-  bodyLength?: number;
 }
 
 /**
@@ -18,7 +17,6 @@ export interface ResponseMeta {
   statusCode?: number;
   statusMessage?: string;
   headers?: Record<string, string | string[]>;
-  bodyLength?: number;
 }
 
 /**
@@ -26,7 +24,7 @@ export interface ResponseMeta {
  */
 export interface RequestHookParams<TStore = unknown> {
   meta: RequestMeta;
-  body: Buffer;
+  body: ReadableStream<Uint8Array>;
   /** 插件存储（需定义 storeSchema 才能使用，框架自动注入） */
   store?: PluginStore<TStore>;
 }
@@ -40,7 +38,7 @@ export interface RequestHookParams<TStore = unknown> {
  */
 export type RequestHookResult = 
   | { modified: false }
-  | { modified?: true; meta?: Partial<RequestMeta>; body?: Buffer }
+  | { modified?: true; meta?: Partial<RequestMeta>; body?: ReadableStream<Uint8Array> }
   | { respondWith: { statusCode: number; body?: string | Buffer; headers?: Record<string, string> } };
 
 /**
@@ -48,7 +46,7 @@ export type RequestHookResult =
  */
 export interface ResponseHookParams<TStore = unknown> {
   meta: ResponseMeta;
-  body: Buffer;
+  body: ReadableStream<Uint8Array>;
   /** 原始请求的元数据（不含 body，框架自动注入） */
   requestMeta?: {
     method?: string;
@@ -67,7 +65,7 @@ export interface ResponseHookParams<TStore = unknown> {
  */
 export type ResponseHookResult = 
   | { modified: false }
-  | { modified?: true; meta?: Partial<ResponseMeta>; body?: Buffer };
+  | { modified?: true; meta?: Partial<ResponseMeta>; body?: ReadableStream<Uint8Array> };
 
 /**
  * 插件配置

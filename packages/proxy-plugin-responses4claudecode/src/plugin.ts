@@ -17,6 +17,8 @@ import {
   normalizeHeaders,
   safeParseJson,
   createLogger,
+  readStreamToBuffer,
+  streamFromBuffer,
 } from "@jixo/proxy-plugin";
 import { isClaudeRequest, rewriteRequest } from "./request-converter";
 import { convertSSEResponse, convertErrorResponse, convertSuccessResponse } from "./response-converter";
@@ -86,16 +88,23 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
     storeSchema: Responses4ClaudeCodeStoreSchema,
 
     async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
-      const { meta, body } = params;
+      const { meta } = params;
       const headers = normalizeHeaders(meta.headers) ?? {};
 
+      const contentType = (headers["content-type"] ?? "").toString();
+      if (!contentType.toLowerCase().includes("application/json")) {
+        return null;
+      }
+
+      const bodyBuffer = await readStreamToBuffer(params.body);
+
       // 检查是否有请求体
-      if (!body || body.length === 0) {
+      if (!bodyBuffer || bodyBuffer.length === 0) {
         logger.debug("No body in request");
         return null;
       }
 
-      const parsedBody = safeParseJson(body.toString("utf-8"));
+      const parsedBody = safeParseJson(bodyBuffer.toString("utf-8"));
       if (!parsedBody) {
         logger.debug("Failed to parse request body as JSON");
         return null;
@@ -192,7 +201,7 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
               method: meta.method,
               url: meta.url,
               headers,
-              bodyPreview: body.toString("utf-8").substring(0, 1000),
+              bodyPreview: bodyBuffer.toString("utf-8").substring(0, 1000),
             },
             rewritten: {
               model: parsedResult.model,
@@ -215,7 +224,7 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
 
         return {
           meta: { url: stripBetaQueryParam(meta.url), headers: finalHeaders ?? headers },
-          body: Buffer.from(result.body, "utf-8"),
+          body: streamFromBuffer(Buffer.from(result.body, "utf-8")),
         };
       } catch (error) {
         logger.debug(`Error converting request: ${error}`);
@@ -223,7 +232,7 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
       }
     },
 
-    onResponse(params: ResponseHookParams): ResponseHookResult | null {
+    async onResponse(params: ResponseHookParams): Promise<ResponseHookResult | null> {
       // 检查请求是否被 responses4claudecode 插件处理过
       const storeData = params.store?.get() as Responses4ClaudeCodeStore | null;
       if (!storeData?.activated) {
@@ -231,10 +240,11 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
         return null;
       }
 
-      const { meta, body } = params;
+      const { meta } = params;
       const headers = normalizeHeaders(meta.headers) ?? {};
       const contentType = headers["content-type"] || "";
-      const bodyText = body.toString("utf-8");
+      const bodyBuffer = await readStreamToBuffer(params.body);
+      const bodyText = bodyBuffer.toString("utf-8");
 
       logger.debug(`Processing response: ${meta.statusCode}, content-type: ${contentType}`);
 
@@ -268,7 +278,7 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
 
           return {
             meta,
-            body: Buffer.from(JSON.stringify(convertedSuccess), "utf-8"),
+            body: streamFromBuffer(Buffer.from(JSON.stringify(convertedSuccess), "utf-8")),
           };
         }
 
@@ -287,7 +297,7 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
 
           return {
             meta,
-            body: Buffer.from(JSON.stringify(convertedError), "utf-8"),
+            body: streamFromBuffer(Buffer.from(JSON.stringify(convertedError), "utf-8")),
           };
         }
 
@@ -332,7 +342,7 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
 
         return {
           meta,
-          body: Buffer.from(convertedSSE, "utf-8"),
+          body: streamFromBuffer(Buffer.from(convertedSSE, "utf-8")),
         };
       } catch (error) {
         logger.debug(`Error converting SSE response: ${error}`);
@@ -348,5 +358,8 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
 export async function startPlugin(): Promise<void> {
   const debug = process.env.DEBUG_RESPONSES4CLAUDECODE === "1";
   const plugin = createResponses4ClaudeCodePlugin({ debug });
-  await startPluginServer({ plugin });
+  void plugin;
+  throw new Error(
+    `[responses4claudecode] startPlugin is no longer supported: hooks are now in-process and streaming-native.`,
+  );
 }

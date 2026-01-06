@@ -76,7 +76,7 @@ export function normalizeContentArray(message: Message | undefined): void {
  */
 export function replaceSystemReminderSection(
   originalText: string,
-  newReminderText: string
+  newReminderText: string,
 ): string | null {
   const startTag = "<system-reminder>";
   const endTag = "</system-reminder>";
@@ -119,13 +119,13 @@ export function mergeDuplicateSystemReminders(messages: Message[] | undefined): 
 
     const firstSysIndex = firstContent.findIndex(
       (c) =>
-        c?.type === "text" && typeof c.text === "string" && c.text.includes("<system-reminder>")
+        c?.type === "text" && typeof c.text === "string" && c.text.includes("<system-reminder>"),
     );
 
     const secondSysTexts = secondContent
       .filter(
         (c) =>
-          c?.type === "text" && typeof c.text === "string" && c.text.includes("<system-reminder>")
+          c?.type === "text" && typeof c.text === "string" && c.text.includes("<system-reminder>"),
       )
       .map((c) => c.text);
 
@@ -184,6 +184,24 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
     };
   }
 
+  /// 遍历 messages，对非法的 thinking 做改装
+  for (const msg of requestBody.messages ?? []) {
+    if (msg.role === "assistant") {
+      if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part.type === "thinking" && typeof part.signature === "string") {
+            if (part.signature.startsWith("{")) {
+              msg.content[msg.content.indexOf(part)] = {
+                type: "text",
+                text: `<thinking>${part.thinking}</thinking>`,
+              };
+            }
+          }
+        }
+      }
+    }
+  }
+
   // web_search 工具会自动保留在 tools 数组中，无需特殊处理
   // Claude Code 格式支持 web_search_20250305 server tool
 
@@ -192,25 +210,25 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
 
 /**
  * 重写请求头
- * 
+ *
  * @param headers - 原始请求头
  * @param options - 可选配置
  * @param options.hasWebSearch - 是否包含 web_search 工具
  */
 export function rewriteHeaders(
   headers: Record<string, string>,
-  options?: { hasWebSearch?: boolean }
+  options?: { hasWebSearch?: boolean },
 ): Record<string, string> {
   const newHeaders: Record<string, string> = { ...headers };
 
   // 基础 beta features
   let betaFeatures = "claude-code-20250219,interleaved-thinking-2025-05-14";
-  
+
   // 如果包含 web_search 工具，添加 web-search-2025-03-05 beta
   if (options?.hasWebSearch) {
     betaFeatures += ",web-search-2025-03-05";
   }
-  
+
   newHeaders["anthropic-beta"] = betaFeatures;
 
   if (newHeaders["x-api-key"] && !newHeaders["authorization"]) {
