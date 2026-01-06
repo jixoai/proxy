@@ -26,7 +26,7 @@ import {
   setDataDir,
   getDefaultDataDir,
 } from "./lib/runtime-paths";
-import openBrowser from "react-dev-utils/openBrowser";
+import open from "open";
 
 /** 默认前端端口 */
 const DEFAULT_PORT = 33000;
@@ -177,7 +177,7 @@ async function main() {
   // 打开浏览器
   if (argv.open) {
     const url = `http://localhost:${actualPort}`;
-    openBrowser(url);
+    open(url);
   }
 
   // 优雅退出处理
