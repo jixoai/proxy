@@ -94,8 +94,10 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
 
   // Droid 请求：将 Droid instructions 注入到 input 中
   let rewriteInput = structuredClone(requestBody.input);
-  const droidInstructions = requestBody.instructions || "";
-
+  const droidInstructions = requestBody.instructions;
+  if (!droidInstructions) {
+    return null;
+  }
   if (typeof requestBody.input === "string") {
     rewriteInput = `IMPORTANT:<system>${droidInstructions}</system>\n\n${requestBody.input}`;
   } else if (Array.isArray(requestBody.input) && requestBody.input.length > 0) {

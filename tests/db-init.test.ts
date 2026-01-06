@@ -60,7 +60,7 @@ describe("Database Initialization", () => {
     `).get() as { value: string } | null;
     
     expect(version).not.toBeNull();
-    expect(parseInt(version!.value, 10)).toBe(7);
+    expect(parseInt(version!.value, 10)).toBe(9);
   });
 
   test("requests table should have all required columns", () => {
@@ -80,13 +80,13 @@ describe("Database Initialization", () => {
     expect(columnNames).toContain("response_body_size");
   });
 
-  test("db-requests-v7 module should work after initialization", async () => {
+  test("db-requests module should work after initialization", async () => {
     // 动态导入以确保在初始化后使用
     const { 
       createProxyRequest, 
       getProxyRequestById,
       clearAllRequests 
-    } = await import("../src/lib/db-requests-v7");
+    } = await import("../src/lib/db-requests");
     
     // 清理
     clearAllRequests();
@@ -130,7 +130,7 @@ describe("Database Initialization", () => {
       updateProxyRequest,
       getProxyRequestById,
       clearAllRequests 
-    } = await import("../src/lib/db-requests-v7");
+    } = await import("../src/lib/db-requests");
     const { bufferToDataUrl } = await import("../src/lib/data-url");
     
     // 清理
@@ -207,7 +207,7 @@ describe("Database Initialization", () => {
       updateProxyRequest,
       getProxyRequestById,
       clearAllRequests 
-    } = await import("../src/lib/db-requests-v7");
+    } = await import("../src/lib/db-requests");
     const { bufferToDataUrl } = await import("../src/lib/data-url");
     
     // 清理
@@ -314,7 +314,7 @@ describe("Database Initialization", () => {
       createProxyRequest, 
       getProxyRequestById,
       clearAllRequests 
-    } = await import("../src/lib/db-requests-v7");
+    } = await import("../src/lib/db-requests");
     const { bufferToDataUrl } = await import("../src/lib/data-url");
     
     // 清理
@@ -395,7 +395,7 @@ describe("Database Initialization", () => {
       updateProxyRequest,
       getProxyRequestById,
       clearAllRequests 
-    } = await import("../src/lib/db-requests-v7");
+    } = await import("../src/lib/db-requests");
     const { bufferToDataUrl } = await import("../src/lib/data-url");
     
     // 清理
@@ -478,7 +478,7 @@ describe("Database Initialization", () => {
   test("should handle hooked_response_body without hooked_response_headers", async () => {
     // 这个测试模拟实际情况：response_hooked body 存在，但 response_hooked headers 不存在
     const { db } = await import("../src/lib/db");
-    const { getProxyRequestById, clearAllRequests } = await import("../src/lib/db-requests-v7");
+    const { getProxyRequestById, clearAllRequests } = await import("../src/lib/db-requests");
     const { bufferToDataUrl, dataUrlToBuffer } = await import("../src/lib/data-url");
     
     clearAllRequests();
@@ -538,7 +538,7 @@ describe("Database Initialization", () => {
       updateProxyRequest,
       getProxyRequestById,
       clearAllRequests 
-    } = await import("../src/lib/db-requests-v7");
+    } = await import("../src/lib/db-requests");
     const { bufferToDataUrl, dataUrlToBuffer } = await import("../src/lib/data-url");
     
     // 清理

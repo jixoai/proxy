@@ -1,5 +1,5 @@
 /**
- * Database Schema v7 - 分表架构
+ * Database Schema - 分表架构
  * 
  * 设计目标：
  * 1. 列表查询极快：requests 表只存元数据，不存 body
@@ -10,7 +10,7 @@
 
 import type { Database } from "bun:sqlite";
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 9;
 
 /**
  * Body 阶段类型
@@ -23,10 +23,7 @@ export type BodyStage =
   | `request_layer_${number}`   // 请求 hook 第 N 层
   | `response_layer_${number}`; // 响应 hook 第 N 层
 
-/**
- * 创建 v7 schema
- */
-export function createSchemaV7(db: Database): void {
+export function createSchema(db: Database): void {
   db.exec(`
     -- 主表：轻量元数据，用于列表查询
     CREATE TABLE IF NOT EXISTS requests (
@@ -40,6 +37,9 @@ export function createSchemaV7(db: Database): void {
       -- 请求基础信息
       method TEXT NOT NULL,
       url TEXT NOT NULL,
+      target_url TEXT,
+      hooked_method TEXT,
+      hooked_url TEXT,
       url_lc TEXT,
       path_lc TEXT,
       
@@ -146,21 +146,15 @@ export function createSchemaV7(db: Database): void {
   `);
 }
 
-/**
- * 检查是否需要迁移到 v7
- */
-export function needsMigrationToV7(db: Database): boolean {
+export function needsMigration(db: Database): boolean {
   const row = db.query("SELECT value FROM schema_meta WHERE key = 'version'").get() as { value: string } | null;
   if (!row) return true;
   const version = parseInt(row.value, 10);
   return version < SCHEMA_VERSION;
 }
 
-/**
- * 从旧版本迁移到 v7（破坏性：清空数据）
- */
-export function migrateToV7(db: Database): void {
-  console.log("[Database] Migrating to schema v7 (destructive)...");
+export function migrateToLatest(db: Database): void {
+  console.log(`[Database] Migrating to schema v${SCHEMA_VERSION} (destructive)...`);
   
   // 删除旧表
   db.exec(`
@@ -174,10 +168,10 @@ export function migrateToV7(db: Database): void {
   `);
   
   // 创建新 schema
-  createSchemaV7(db);
+  createSchema(db);
   
   // 更新版本号
   db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [String(SCHEMA_VERSION)]);
   
-  console.log("[Database] Migration to v7 complete");
+  console.log("[Database] Migration to v9 complete");
 }

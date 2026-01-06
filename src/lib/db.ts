@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { clearDataDir, getDataDir, getDbPath, ensureDataDir } from "./runtime-paths";
-import { createSchemaV7, SCHEMA_VERSION, needsMigrationToV7, migrateToV7 } from "./db-schema-v7";
+import { SCHEMA_VERSION, needsMigration, migrateToLatest } from "./db-schema";
 
 // 延迟初始化数据库实例
 // 必须在 setDataDir() 调用之后才能访问
@@ -126,8 +126,8 @@ export async function initDatabase() {
     )
   `);
 
-  // 检查是否需要迁移到 v7
-  if (needsMigrationToV7(_db)) {
+  // 检查是否需要迁移到最新 schema
+  if (needsMigration(_db)) {
     // 检查是否有旧数据
     const versionRow = _db.query("SELECT value FROM schema_meta WHERE key = 'version'").get() as {
       value: string;
@@ -164,7 +164,7 @@ export async function initDatabase() {
     }
     
     // 执行迁移（新数据库或破坏性升级）
-    migrateToV7(_db);
+    migrateToLatest(_db);
   }
 
   console.log("[Database] Schema version", SCHEMA_VERSION, "OK");

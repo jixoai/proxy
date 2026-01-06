@@ -11,7 +11,7 @@ import {
   updateProxyRequest,
   updateStreamingProgress,
   type AbortReason,
-} from "./lib/db-requests-v7";
+} from "./lib/db-requests";
 import { dbNotifier } from "./lib/db-notifier";
 import { setDataDir } from "./lib/runtime-paths";
 import { initDatabase } from "./lib/db";

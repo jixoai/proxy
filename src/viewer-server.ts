@@ -38,7 +38,7 @@ import {
   requestEvents,
   type LoggedRequest,
   type ListSummary,
-} from "./lib/db-requests-v7";
+} from "./lib/db-requests";
 import { dbListener, dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, isDataUrl } from "./lib/data-url";
 import { extractContentTypeFromHeaders, isTextLikeMime } from "./lib/http-utils";

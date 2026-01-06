@@ -12,7 +12,7 @@ import {
   getRequestsCountFuzzy,
   getRequestsAfterId,
   type LoggedRequest,
-} from "../src/lib/db-requests-v7";
+} from "../src/lib/db-requests";
 
 describe("db-requests logging pipeline", () => {
   const TEST_DATA_DIR = path.join(process.cwd(), ".tmp", "db-requests-tests", "data");
@@ -60,7 +60,15 @@ describe("db-requests logging pipeline", () => {
       makeRequestPayload({ request_id: "req-1", status: "pending" }),
     );
     const secondId = createProxyRequest(
-      makeRequestPayload({ request_id: "req-2", status: "pending" }),
+      makeRequestPayload({
+        request_id: "req-2",
+        status: "pending",
+        request: {
+          ...makeRequestPayload().request,
+          url: "http://localhost/test",
+          targetUrl: "http://upstream.example/test",
+        },
+      }),
     );
 
     expect(firstId).toBeLessThan(secondId);
@@ -76,6 +84,7 @@ describe("db-requests logging pipeline", () => {
     expect(fetched?.id).toBe(secondId);
     expect(fetched?.request_id).toBe("req-2");
     expect(fetched?.request.url).toBe("http://localhost/test");
+    expect(fetched?.request.targetUrl).toBe("http://upstream.example/test");
     // 注意：在 v7 中，创建请求时状态始终是 pending，需要通过 finalizeResponse 更新为 completed
     expect(fetched?.status).toBe("pending");
   });
