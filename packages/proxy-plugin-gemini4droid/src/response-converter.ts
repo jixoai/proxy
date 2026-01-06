@@ -226,6 +226,16 @@ export function convertErrorResponse(
 /**
  * Anthropic SSE 事件类型
  */
+/**
+ * Anthropic SSE usage（在不同 event 中字段可能不完整；droid 侧会读取 input/cache 字段）
+ */
+type AnthropicSSEUsage = {
+  output_tokens: number;
+  input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
+
 type AnthropicSSEEvent =
   | { type: "message_start"; message: Partial<AnthropicResponseBody> }
   | {
@@ -245,7 +255,7 @@ type AnthropicSSEEvent =
   | {
       type: "message_delta";
       delta: { stop_reason: AnthropicStopReason | null; stop_sequence: string | null };
-      usage: { output_tokens: number };
+      usage: AnthropicSSEUsage;
     }
   | { type: "message_stop" }
   | { type: "ping" }
@@ -260,6 +270,8 @@ export interface StreamConverterState {
   contentBlockIndex: number;
   currentToolUseId: string | null;
   inputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
   /** 当前工作目录，用于修复相对路径 */
   cwd: string | null;
   outputTokens: number;
@@ -284,6 +296,8 @@ export function createStreamState(
     contentBlockIndex: 0,
     currentToolUseId: null,
     inputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
     cwd,
     outputTokens: 0,
     started: false,
@@ -316,6 +330,8 @@ function generateMessageStart(state: StreamConverterState): string {
       stop_sequence: null,
       usage: {
         input_tokens: state.inputTokens,
+        cache_read_input_tokens: state.cacheReadInputTokens,
+        cache_creation_input_tokens: state.cacheCreationInputTokens,
         output_tokens: 0,
       },
     },
@@ -389,13 +405,18 @@ function generateContentBlockStop(index: number): string {
  * 生成 message_delta 事件
  */
 function generateMessageDelta(
+  state: StreamConverterState,
   stopReason: AnthropicStopReason | null,
-  outputTokens: number
 ): string {
   const event: AnthropicSSEEvent = {
     type: "message_delta",
     delta: { stop_reason: stopReason, stop_sequence: null },
-    usage: { output_tokens: outputTokens },
+    usage: {
+      input_tokens: state.inputTokens,
+      cache_read_input_tokens: state.cacheReadInputTokens,
+      cache_creation_input_tokens: state.cacheCreationInputTokens,
+      output_tokens: state.outputTokens,
+    },
   };
   return formatSSE(event);
 }
@@ -424,6 +445,24 @@ function parseGeminiSSELine(line: string): GeminiResponseBody | null {
   }
 }
 
+function updateUsageFromGeminiChunk(
+  geminiChunk: GeminiResponseBody,
+  state: StreamConverterState
+): void {
+  const usage = geminiChunk.usageMetadata;
+  if (!usage) return;
+
+  if (typeof usage.promptTokenCount === "number") {
+    state.inputTokens = usage.promptTokenCount;
+  }
+  if (typeof usage.candidatesTokenCount === "number") {
+    state.outputTokens = usage.candidatesTokenCount;
+  }
+  if (typeof usage.cachedContentTokenCount === "number") {
+    state.cacheReadInputTokens = usage.cachedContentTokenCount;
+  }
+}
+
 /**
  * 已知需要路径参数的工具和对应的参数名
  */
@@ -439,25 +478,52 @@ const PATH_PARAMS: Record<string, string[]> = {
 };
 
 /**
- * 修复工具调用中的相对路径为绝对路径
+ * 常见参数名错误映射
  */
-function fixRelativePaths(
+const PARAM_ALIASES: Record<string, Record<string, string>> = {
+  Read: { path: "file_path", filename: "file_path" },
+  Create: { path: "file_path", filename: "file_path" },
+  Edit: { path: "file_path", filename: "file_path" },
+  LS: { path: "directory_path", dir: "directory_path" },
+  Grep: { file_path: "path" },
+};
+
+/**
+ * 修复工具参数：
+ * 1. 修正参数名 (如 path -> file_path)
+ * 2. 修复相对路径为绝对路径
+ */
+function fixToolArgs(
   toolName: string,
   args: Record<string, unknown> | undefined,
   cwd: string | null
 ): Record<string, unknown> | undefined {
-  if (!args || !cwd) return args;
-  
-  const pathParams = PATH_PARAMS[toolName];
-  if (!pathParams || pathParams.length === 0) return args;
+  if (!args) return args;
   
   const fixedArgs = { ...args };
   
-  for (const paramName of pathParams) {
-    const value = fixedArgs[paramName];
-    if (typeof value === "string" && value && !value.startsWith("/")) {
-      // 相对路径，转换为绝对路径
-      fixedArgs[paramName] = `${cwd}/${value}`;
+  // 1. 修正参数名
+  const aliases = PARAM_ALIASES[toolName];
+  if (aliases) {
+    for (const [wrongName, correctName] of Object.entries(aliases)) {
+      if (wrongName in fixedArgs && !(correctName in fixedArgs)) {
+        fixedArgs[correctName] = fixedArgs[wrongName];
+        delete fixedArgs[wrongName];
+      }
+    }
+  }
+
+  // 2. 修复相对路径
+  if (cwd) {
+    const pathParams = PATH_PARAMS[toolName];
+    if (pathParams && pathParams.length > 0) {
+      for (const paramName of pathParams) {
+        const value = fixedArgs[paramName];
+        if (typeof value === "string" && value && !value.startsWith("/")) {
+          // 相对路径，转换为绝对路径
+          fixedArgs[paramName] = `${cwd}/${value}`;
+        }
+      }
     }
   }
   
@@ -473,12 +539,12 @@ export function convertStreamChunk(
 ): string {
   let output = "";
 
+  // usageMetadata 可能只在最后一个 chunk 出现，但 droid 需要完整 token 信息
+  updateUsageFromGeminiChunk(geminiChunk, state);
+
   // 首次收到数据时发送 message_start
   if (!state.started) {
     state.started = true;
-    if (geminiChunk.usageMetadata?.promptTokenCount) {
-      state.inputTokens = geminiChunk.usageMetadata.promptTokenCount;
-    }
     output += generateMessageStart(state);
   }
 
@@ -569,8 +635,8 @@ export function convertStreamChunk(
         input: {},  // 空的，通过 delta 传
       });
       
-      // 修复相对路径为绝对路径
-      const fixedArgs = fixRelativePaths(
+      // 修复工具参数（参数名修正 + 相对路径修复）
+      const fixedArgs = fixToolArgs(
         anthropicToolName,
         funcCall.args as Record<string, unknown> | undefined,
         state.cwd
@@ -596,21 +662,39 @@ export function convertStreamChunk(
       output += generateContentBlockStop(state.contentBlockIndex);
     }
     
-    // 更新 token 计数 (使用 camelCase)
-    if (geminiChunk.usageMetadata?.candidatesTokenCount) {
-      state.outputTokens = geminiChunk.usageMetadata.candidatesTokenCount;
-    }
-
     // 如果是 server tool（websearch），stop_reason 应为 end_turn
     const stopReason = hasToolUse(candidate)
       ? "tool_use"
       : convertFinishReason(candidate.finishReason);
 
-    output += generateMessageDelta(stopReason, state.outputTokens);
+    output += generateMessageDelta(state, stopReason);
     output += generateMessageStop();
   }
 
   return output;
+}
+
+function extractUsageFromGeminiSSE(geminiSSE: string): {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+} {
+  const lines = geminiSSE.split("\n");
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadInputTokens = 0;
+
+  for (const line of lines) {
+    const chunk = parseGeminiSSELine(line);
+    if (!chunk?.usageMetadata) continue;
+
+    const usage = chunk.usageMetadata;
+    if (typeof usage.promptTokenCount === "number") inputTokens = usage.promptTokenCount;
+    if (typeof usage.candidatesTokenCount === "number") outputTokens = usage.candidatesTokenCount;
+    if (typeof usage.cachedContentTokenCount === "number") cacheReadInputTokens = usage.cachedContentTokenCount;
+  }
+
+  return { inputTokens, outputTokens, cacheReadInputTokens };
 }
 
 /**
@@ -621,7 +705,12 @@ export function convertStreamResponse(
   model: string = "gemini-2.5-pro",
   cwd: string | null = null,
 ): string {
+  // 由于插件侧拿到的是完整 body（非真流式透传），这里先预扫描一遍 usageMetadata，确保 message_start 能拿到 input/cache token
+  const usage = extractUsageFromGeminiSSE(geminiSSE);
   const state = createStreamState(model, cwd);
+  state.inputTokens = usage.inputTokens;
+  state.outputTokens = usage.outputTokens;
+  state.cacheReadInputTokens = usage.cacheReadInputTokens;
   let output = "";
 
   const lines = geminiSSE.split("\n");
@@ -638,7 +727,7 @@ export function convertStreamResponse(
     if (state.currentBlockType !== null) {
       output += generateContentBlockStop(state.contentBlockIndex);
     }
-    output += generateMessageDelta("end_turn", state.outputTokens);
+    output += generateMessageDelta(state, "end_turn");
     output += generateMessageStop();
   }
 

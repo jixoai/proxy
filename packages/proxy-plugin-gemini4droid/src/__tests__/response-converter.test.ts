@@ -1,8 +1,74 @@
 import { describe, expect, test } from "bun:test";
 
-import { convertErrorResponse, convertStreamChunk, createStreamState } from "../response-converter";
+import {
+  convertErrorResponse,
+  convertStreamChunk,
+  convertStreamResponse,
+  createStreamState,
+} from "../response-converter";
+
+function parseSseEvents(text: string): Array<{ event: string; data: any }> {
+  const blocks = text.split("\n\n").filter((b) => b.trim().length > 0);
+  const events: Array<{ event: string; data: any }> = [];
+
+  for (const block of blocks) {
+    let eventName = "";
+    let dataJson = "";
+
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) eventName = line.slice("event:".length).trim();
+      if (line.startsWith("data:")) dataJson = line.slice("data:".length);
+    }
+
+    if (!eventName || !dataJson) continue;
+    events.push({ event: eventName, data: JSON.parse(dataJson) });
+  }
+
+  return events;
+}
 
 describe("response-converter", () => {
+  test("stream response: fills input/cache tokens even when usageMetadata only appears in last chunk", () => {
+    const geminiSSE = [
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "Hello" }] },
+          },
+        ],
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: { role: "model", parts: [] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 10,
+          candidatesTokenCount: 5,
+          cachedContentTokenCount: 3,
+        },
+      })}`,
+      "",
+    ].join("\n");
+
+    const out = convertStreamResponse(geminiSSE, "gemini-2.5-pro");
+    const events = parseSseEvents(out);
+
+    const msgStart = events.find((e) => e.event === "message_start");
+    expect(msgStart?.data?.message?.usage?.input_tokens).toBe(10);
+    expect(msgStart?.data?.message?.usage?.cache_read_input_tokens).toBe(3);
+    expect(msgStart?.data?.message?.usage?.cache_creation_input_tokens).toBe(0);
+
+    const msgDelta = events.find((e) => e.event === "message_delta");
+    expect(msgDelta?.data?.usage?.input_tokens).toBe(10);
+    expect(msgDelta?.data?.usage?.cache_read_input_tokens).toBe(3);
+    expect(msgDelta?.data?.usage?.cache_creation_input_tokens).toBe(0);
+    expect(msgDelta?.data?.usage?.output_tokens).toBe(5);
+  });
+
   test("converts plain text stream chunk into text_delta and end_turn", () => {
     const state = createStreamState("gemini-2.5-pro");
     const chunk = {
@@ -91,4 +157,3 @@ describe("response-converter", () => {
     expect(out.error.code).toBe("rate_limit_exceeded");
   });
 });
-
