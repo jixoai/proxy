@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "bun:test";
 import { createResponses4ClaudeCodePlugin } from "../plugin";
+import { streamFromBuffer, readStreamToBuffer } from "@jixo/proxy-plugin";
 
 describe("Responses4ClaudeCode Plugin", () => {
   it("forwards injected TaskOutput tool_result into rewriteRequest", async () => {
@@ -35,14 +36,14 @@ describe("Responses4ClaudeCode Plugin", () => {
         url: "http://example.com/messages",
         headers: { "content-type": "application/json" },
       },
-      body: Buffer.from(JSON.stringify(claudeRequest), "utf-8"),
+      body: streamFromBuffer(Buffer.from(JSON.stringify(claudeRequest), "utf-8")),
     });
 
     expect(result).not.toBeNull();
     expect(result && "body" in result).toBe(true);
     expect(result && "respondWith" in result).toBe(false);
 
-    const rewritten = JSON.parse((result as { body: Buffer }).body.toString("utf-8"));
+    const rewritten = JSON.parse((await readStreamToBuffer((result as { body: ReadableStream<Uint8Array> }).body)).toString("utf-8"));
     expect(Array.isArray(rewritten.input)).toBe(true);
 
     const hasInjectedToolResult = rewritten.input.some(

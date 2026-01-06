@@ -13,9 +13,12 @@ import type {
   RequestHookResult,
   ResponseHookParams,
   ResponseHookResult,
+  RequestMeta,
+  ResponseMeta,
+  PrecheckResult,
   PluginLogger,
 } from "@jixo/proxy-plugin";
-import { normalizeHeaders, createLogger } from "@jixo/proxy-plugin";
+import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
 import { rewriteRequest } from "./rewriter";
 import { rewriteResponse } from "./response-rewriter";
 
@@ -65,9 +68,43 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
     name: "anthropic4droid",
     storeSchema: DroidStoreSchema,
 
-    onRequest(params: RequestHookParams): RequestHookResult | null {
+    shouldProcessRequest(meta: RequestMeta): PrecheckResult {
+      const headers = normalizeHeaders(meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+      if (!contentType.includes("application/json")) {
+        return false;
+      }
+      return true;
+    },
+
+    shouldProcessResponse(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult {
+      const reqHeaders = normalizeHeaders(requestMeta?.headers) ?? {};
+      const reqContentType = (reqHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (!reqContentType.includes("application/json")) {
+        return false;
+      }
+      // Only handle non-SSE JSON responses
+      const resHeaders = normalizeHeaders(meta.headers) ?? {};
+      const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (resContentType.includes("text/event-stream")) {
+        return false;
+      }
+      if (resContentType.includes("application/json")) {
+        return true;
+      }
+      return false;
+    },
+
+    async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       const headers = normalizeHeaders(params.meta.headers) ?? {};
-      const bodyText = params.body.toString("utf-8");
+
+      const contentType = (headers["content-type"] ?? "").toString();
+      if (!contentType.toLowerCase().includes("application/json")) {
+        return null;
+      }
+
+      const bodyBuffer = await readStreamToBuffer(params.body);
+      const bodyText = bodyBuffer.toString("utf-8");
 
       logger.debug(`Processing request: ${params.meta.method} ${params.meta.url}`);
 
@@ -99,18 +136,18 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       // 使用 store 标记请求已被转换（用于 onResponse 判断）
       const requestBodyLength = result.body
         ? Buffer.byteLength(result.body, "utf-8")
-        : params.body.length;
+        : bodyBuffer.length;
       const finalHeaders = params.store
         ? params.store.set({ activated: true, requestBodyLength }, result.headers ?? headers)
         : result.headers;
 
       return {
         meta: finalHeaders ? { headers: finalHeaders } : undefined,
-        body: result.body ? Buffer.from(result.body, "utf-8") : undefined,
+        body: result.body ? streamFromBuffer(Buffer.from(result.body, "utf-8")) : undefined,
       };
     },
 
-    onResponse(params: ResponseHookParams): ResponseHookResult | null {
+    async onResponse(params: ResponseHookParams): Promise<ResponseHookResult | null> {
       // 检查请求是否被 Droid 插件处理过
       const storeData = params.store?.get() as DroidStore | null;
       if (!storeData?.activated) {
@@ -123,9 +160,17 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       // 优先使用 store 中记录的真实请求体大小，避免 content-length 缺失/不准确导致误判
       const requestContentLength = storeData.requestBodyLength;
 
+      const headers = normalizeHeaders(params.meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+      if (contentType.includes("text/event-stream")) {
+        return null;
+      }
+
+      const bodyBuffer = await readStreamToBuffer(params.body);
+
       const result = rewriteResponse({
         meta: params.meta,
-        body: params.body,
+        body: bodyBuffer,
         requestContentLength,
         serverAnomalyThreshold,
       });
@@ -147,7 +192,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       // 记录重写详情
       logger.logToFile("response-rewrite", {
         originalMeta: params.meta,
-        originalBodyPreview: params.body.toString("utf-8").substring(0, 500),
+        originalBodyPreview: bodyBuffer.toString("utf-8").substring(0, 500),
         rewrittenMeta: result.meta,
         rewrittenBody: JSON.parse(result.body.toString("utf-8")),
         source: result.source,
@@ -155,7 +200,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       return {
         meta: result.meta,
-        body: result.body,
+        body: streamFromBuffer(result.body),
       };
     },
   };

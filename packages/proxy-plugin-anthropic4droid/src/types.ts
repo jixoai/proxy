@@ -1,20 +1,23 @@
+import Anthropic from "@anthropic-ai/sdk";
+import type {
+  RawContentBlockDelta,
+  TextBlockParam,
+  ThinkingBlockParam,
+} from "@anthropic-ai/sdk/resources";
 /**
  * Droid 请求相关类型定义
  */
 
 export type CacheControl = { type: "ephemeral" };
 
-export type TextBlock = {
-  type: "text";
-  text: string;
-  cache_control?: CacheControl;
-};
+export type TextBlock = TextBlockParam;
+export type ThinkingBlock = ThinkingBlockParam;
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
 export type Message = {
   role: MessageRole;
-  content?: string | TextBlock[];
+  content?: string | Array<TextBlock | ThinkingBlock>;
 };
 
 export type ToolParamSchema = { description?: string };

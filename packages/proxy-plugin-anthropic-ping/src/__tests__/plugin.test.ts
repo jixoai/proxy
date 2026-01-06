@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createAnthropicPingPlugin } from "../plugin";
 import { createMockStore, type RequestHookParams } from "@jixo/proxy-plugin";
+import { streamFromBuffer } from "@jixo/proxy-plugin";
 import {
   sampleHeaders,
   sampleHeadersWithSessionId,
@@ -21,7 +22,7 @@ function createRequestParams(params: {
       url: params.url,
       headers: params.headers,
     },
-    body: params.body,
+    body: streamFromBuffer(params.body),
     store: createMockStore(),
   };
 }

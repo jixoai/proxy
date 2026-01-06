@@ -12,9 +12,18 @@ import type {
   RequestHookResult,
   ResponseHookParams,
   ResponseHookResult,
+  RequestMeta,
+  ResponseMeta,
+  PrecheckResult,
   PluginLogger,
 } from "@jixo/proxy-plugin";
-import { normalizeHeaders, createLogger, safeParseJson } from "@jixo/proxy-plugin";
+import {
+  normalizeHeaders,
+  createLogger,
+  safeParseJson,
+  readStreamToBuffer,
+  streamFromBuffer,
+} from "@jixo/proxy-plugin";
 import { isCodexRequest, rewriteRequest } from "./request-converter";
 import {
   convertSSEResponse,
@@ -78,9 +87,40 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
     name: "anthropic4codex",
     storeSchema: CodexStoreSchema,
 
-    onRequest(params: RequestHookParams): RequestHookResult | null {
+    shouldProcessRequest(meta: RequestMeta): PrecheckResult {
+      const headers = normalizeHeaders(meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+      if (!contentType.includes("application/json")) {
+        return false;
+      }
+      return true;
+    },
+
+    shouldProcessResponse(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult {
+      const reqHeaders = normalizeHeaders(requestMeta?.headers) ?? {};
+      const reqContentType = (reqHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (!reqContentType.includes("application/json")) {
+        return false;
+      }
+      const resHeaders = normalizeHeaders(meta.headers) ?? {};
+      const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();
+      // Handle both JSON errors and SSE responses
+      if (resContentType.includes("application/json") || resContentType.includes("text/event-stream")) {
+        return true;
+      }
+      return false;
+    },
+
+    async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       const headers = normalizeHeaders(params.meta.headers) ?? {};
-      const bodyText = params.body.toString("utf-8");
+
+      const contentType = (headers["content-type"] ?? "").toString();
+      if (!contentType.toLowerCase().includes("application/json")) {
+        return null;
+      }
+
+      const bodyBuffer = await readStreamToBuffer(params.body);
+      const bodyText = bodyBuffer.toString("utf-8");
 
       logger.debug(`Processing request: ${params.meta.method} ${params.meta.url}`);
 
@@ -128,11 +168,11 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
 
       return {
         meta: finalHeaders ? { headers: finalHeaders } : undefined,
-        body: result.body ? Buffer.from(result.body, "utf-8") : undefined,
+        body: result.body ? streamFromBuffer(Buffer.from(result.body, "utf-8")) : undefined,
       };
     },
 
-    onResponse(params: ResponseHookParams): ResponseHookResult | null {
+    async onResponse(params: ResponseHookParams): Promise<ResponseHookResult | null> {
       // 检查请求是否被 Codex 插件处理过
       const storeData = params.store?.get() as CodexStore | null;
       if (!storeData?.activated) {
@@ -142,7 +182,8 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
 
       const headers = normalizeHeaders(params.meta.headers) ?? {};
       const contentType = headers["content-type"] || "";
-      const bodyText = params.body.toString("utf-8");
+      const bodyBuffer = await readStreamToBuffer(params.body);
+      const bodyText = bodyBuffer.toString("utf-8");
 
       logger.debug(`Processing response: ${params.meta.statusCode}, content-type: ${contentType}`);
 
@@ -171,7 +212,7 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
               statusMessage: "Bad Request",
               headers: { "content-type": "application/json; charset=utf-8" },
             },
-            body: Buffer.from(JSON.stringify(codexError), "utf-8"),
+            body: streamFromBuffer(Buffer.from(JSON.stringify(codexError), "utf-8")),
           };
         }
 
@@ -211,7 +252,7 @@ export function createCodexPlugin(options: CodexPluginOptions = {}): ProxyPlugin
 
         return {
           meta: params.meta,
-          body: Buffer.from(convertedSSE, "utf-8"),
+          body: streamFromBuffer(Buffer.from(convertedSSE, "utf-8")),
         };
       } catch (error) {
         logger.debug(`SSE conversion error: ${error}`);

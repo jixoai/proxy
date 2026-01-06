@@ -164,6 +164,7 @@ export function transformWebSearchResponse(parsed: ClaudeResponse): ClaudeRespon
 
   for (let i = 0; i < transformed.content.length; i++) {
     const block = transformed.content[i];
+    if (!block) continue;
     if (block.type === "web_search_tool_result" && Array.isArray(block.content)) {
       const toolResult = block as unknown as WebSearchToolResult;
       const transformedResults = toolResult.content.map((result) => {
@@ -178,9 +179,10 @@ export function transformWebSearchResponse(parsed: ClaudeResponse): ClaudeRespon
         };
       });
       transformed.content[i] = {
-        ...block,
+        ...(block as ContentBlock),
+        type: (block as ContentBlock).type,
         content: transformedResults,
-      };
+      } as ContentBlock;
     }
   }
 

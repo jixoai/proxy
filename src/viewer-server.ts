@@ -32,13 +32,13 @@ import {
   getRequestsAfterId,
   getRequestsByIdRange,
   getRequestsCount,
-  clearAllRequests as dbClearAllRequests,
+  clearAllProxyRequests as dbClearAllRequests,
   deleteProxyRequest as dbDeleteProxyRequest,
   updateProxyRequest,
   requestEvents,
   type LoggedRequest,
   type ListSummary,
-} from "./lib/db-requests";
+} from "./lib/db-requests-v7";
 import { dbListener, dbNotifier } from "./lib/db-notifier";
 import { bufferToDataUrl, dataUrlToBuffer, isDataUrl } from "./lib/data-url";
 import { extractContentTypeFromHeaders, isTextLikeMime } from "./lib/http-utils";
@@ -1124,7 +1124,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
                 abort_reason: "user_abort",
                 error_message: "Request aborted by user",
               });
-              dbNotifier.notify("update", "proxy_requests", id);
+              dbNotifier.notify("update", "requests", id);
               return Response.json({ success: true, message: "Request aborted" });
             } else {
               return Response.json(
@@ -1436,7 +1436,8 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
   let lastRequestId = 0;
 
   const initListener = () => {
-    const query = db.query("SELECT MAX(id) as maxId FROM proxy_requests");
+    // v7: 使用 requests 表替代 proxy_requests
+    const query = db.query("SELECT MAX(id) as maxId FROM requests");
     const result = query.get() as { maxId: number | null };
     lastRequestId = result.maxId || 0;
 
@@ -1444,9 +1445,10 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
     dbListener.start();
 
-    dbListener.on("proxy_requests:insert", (notification) => {
+    // v7: 监听 requests 表的变更
+    dbListener.on("requests:insert", (notification) => {
       debugDbListener(
-        "dbListener event 'proxy_requests:insert' triggered, id: %d",
+        "dbListener event 'requests:insert' triggered, id: %d",
         notification.id,
       );
       log.debug(`[DbListener] Received insert notification for request #${notification.id}`);
@@ -1459,7 +1461,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
       }
     });
 
-    dbListener.on("proxy_requests:update", (notification) => {
+    dbListener.on("requests:update", (notification) => {
       log.debug(`[DbListener] Received update notification for request #${notification.id}`);
 
       const updatedRequest =

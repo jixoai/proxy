@@ -13,9 +13,12 @@ import type {
   RequestHookResult,
   ResponseHookParams,
   ResponseHookResult,
+  RequestMeta,
+  ResponseMeta,
+  PrecheckResult,
   PluginLogger,
 } from "@jixo/proxy-plugin";
-import { normalizeHeaders, createLogger } from "@jixo/proxy-plugin";
+import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
 import { rewriteRequest } from "./rewriter";
 import { rewriteResponse } from "./response-rewriter";
 
@@ -63,11 +66,48 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
     name: "openai4droid",
     storeSchema: DroidStoreSchema,
 
-    onRequest(params: RequestHookParams): RequestHookResult | null {
+    shouldProcessRequest(meta: RequestMeta): PrecheckResult {
+      const headers = normalizeHeaders(meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+      // Only process JSON requests (potential Droid requests)
+      if (!contentType.includes("application/json")) {
+        return false;
+      }
+      return true;
+    },
+
+    shouldProcessResponse(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult {
+      // Always need to check response for activated requests (determined by store in onResponse)
+      // Since we can't access store here, we check if request had JSON content-type
+      const reqHeaders = normalizeHeaders(requestMeta?.headers) ?? {};
+      const reqContentType = (reqHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (!reqContentType.includes("application/json")) {
+        return false;
+      }
+      // Check response content-type: we handle both JSON and SSE
+      const resHeaders = normalizeHeaders(meta.headers) ?? {};
+      const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();
+      if (resContentType.includes("application/json") || resContentType.includes("text/event-stream")) {
+        return true;
+      }
+      return false;
+    },
+
+    async onRequest(params: RequestHookParams): Promise<RequestHookResult | null> {
       const headers = normalizeHeaders(params.meta.headers) ?? {};
-      const bodyText = params.body.toString("utf-8");
+
+      // Only read body when it might be a droid request (best-effort heuristic)
+      const contentType = (headers["content-type"] ?? "").toString();
+      if (!contentType.toLowerCase().includes("application/json")) {
+        return null;
+      }
+
+      const bodyBufferPromise = readStreamToBuffer(params.body);
 
       logger.debug(`Processing request: ${params.meta.method} ${params.meta.url}`);
+
+      const bodyBuffer = await bodyBufferPromise;
+      const bodyText = bodyBuffer.toString("utf-8");
 
       const result = rewriteRequest({ headers, body: bodyText });
 
@@ -97,18 +137,18 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       // 使用 store 标记请求已被转换（用于 onResponse 判断）
       const requestBodyLength = result.body
         ? Buffer.byteLength(result.body, "utf-8")
-        : params.body.length;
+        : bodyBuffer.length;
       const finalHeaders = params.store
         ? params.store.set({ activated: true, requestBodyLength }, result.headers ?? headers)
         : result.headers;
 
       return {
         meta: finalHeaders ? { headers: finalHeaders } : undefined,
-        body: result.body ? Buffer.from(result.body, "utf-8") : undefined,
+        body: result.body ? streamFromBuffer(Buffer.from(result.body, "utf-8")) : undefined,
       };
     },
 
-    onResponse(params: ResponseHookParams<DroidStore>): ResponseHookResult | null {
+    async onResponse(params: ResponseHookParams<DroidStore>): Promise<ResponseHookResult | null> {
       // 只处理被 onRequest 转换过的请求
       const store = params.store?.get();
       if (!store?.activated) {
@@ -117,9 +157,121 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       logger.debug(`Processing response: ${params.meta.statusCode}`);
 
+      const headers = normalizeHeaders(params.meta.headers) ?? {};
+      const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+
+      // SSE: only inspect the first event; if it's error, rewrite to single error event and close.
+      if (contentType.includes("text/event-stream")) {
+        const reader = params.body.getReader();
+        const decoder = new TextDecoder();
+        let bufferedText = "";
+        let bufferedBytes: Uint8Array[] = [];
+        let bufferedLen = 0;
+        const MAX_PEEK_BYTES = 64 * 1024;
+
+        const tryExtractFirstBlock = () => {
+          const normalized = bufferedText.replace(/\r\n/g, "\n");
+          const idx = normalized.indexOf("\n\n");
+          if (idx === -1) return null;
+          return { normalized, idx };
+        };
+
+        while (bufferedLen < MAX_PEEK_BYTES) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            bufferedBytes.push(value);
+            bufferedLen += value.byteLength;
+            bufferedText += decoder.decode(value, { stream: true });
+          }
+          const extracted = tryExtractFirstBlock();
+          if (extracted) {
+            const { normalized, idx } = extracted;
+            const firstBlock = normalized.slice(0, idx);
+            const lines = firstBlock.split("\n").filter((l) => l.length > 0);
+            let eventName: string | undefined;
+            const dataLines: string[] = [];
+            for (const line of lines) {
+              if (line.startsWith(":")) continue;
+              const sep = line.indexOf(":");
+              if (sep === -1) continue;
+              const field = line.slice(0, sep).trim();
+              let value = line.slice(sep + 1);
+              if (value.startsWith(" ")) value = value.slice(1);
+              if (field === "event") eventName = value;
+              if (field === "data") dataLines.push(value);
+            }
+
+            if (eventName === "error" && dataLines.length > 0) {
+              const data = dataLines.join("\n");
+              const result = rewriteResponse({
+                meta: params.meta,
+                body: Buffer.from(data, "utf-8"),
+                requestContentLength: store.requestBodyLength,
+                serverAnomalyThreshold: SERVER_ANOMALY_THRESHOLD,
+              });
+
+              const payloadText = result.rewritten ? result.body.toString("utf-8") : data;
+              const sseLines = payloadText.split("\n").map((l) => `data: ${l}`);
+              const out = [`event: error`, ...sseLines, "", ""].join("\n");
+
+              await reader.cancel().catch(() => undefined);
+              return {
+                meta: {
+                  headers: {
+                    ...(params.meta.headers ?? {}),
+                    "content-type": "text/event-stream; charset=utf-8",
+                  },
+                },
+                body: streamFromBuffer(Buffer.from(out, "utf-8")),
+              };
+            }
+
+            // Not error: passthrough, re-create stream with buffered bytes + remaining reader
+            const passthrough = new ReadableStream<Uint8Array>({
+              start(controller) {
+                for (const chunk of bufferedBytes) controller.enqueue(chunk);
+              },
+              async pull(controller) {
+                const { value, done } = await reader.read();
+                if (done) {
+                  controller.close();
+                  return;
+                }
+                if (value) controller.enqueue(value);
+              },
+              cancel(reason) {
+                return reader.cancel(reason);
+              },
+            });
+            return { body: passthrough };
+          }
+        }
+
+        // Peek limit reached or stream ended before block: passthrough
+        const passthrough = new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const chunk of bufferedBytes) controller.enqueue(chunk);
+          },
+          async pull(controller) {
+            const { value, done } = await reader.read();
+            if (done) {
+              controller.close();
+              return;
+            }
+            if (value) controller.enqueue(value);
+          },
+          cancel(reason) {
+            return reader.cancel(reason);
+          },
+        });
+        return { body: passthrough };
+      }
+
+      const bodyBuffer = await readStreamToBuffer(params.body);
       const result = rewriteResponse({
         meta: params.meta,
-        body: params.body,
+        body: bodyBuffer,
         requestContentLength: store.requestBodyLength,
         serverAnomalyThreshold: SERVER_ANOMALY_THRESHOLD,
       });
@@ -135,7 +287,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
         logger.logToFile("response-rewrite", {
           original: {
             statusCode: params.meta.statusCode,
-            bodyPreview: params.body.toString("utf-8").substring(0, 500),
+            bodyPreview: bodyBuffer.toString("utf-8").substring(0, 500),
           },
           rewritten: {
             statusCode: result.meta.statusCode,
@@ -147,7 +299,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       return {
         meta: result.meta,
-        body: result.body,
+        body: streamFromBuffer(result.body),
       };
     },
   };

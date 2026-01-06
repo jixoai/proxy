@@ -2,7 +2,7 @@ import * as http from "node:http";
 import * as https from "node:https";
 import { URL } from "node:url";
 import type { Socket } from "node:net";
-import { createWebSocketMessage } from "./db-requests";
+import { createWebSocketMessage } from "./db-requests-v7";
 import { createLogger } from "./logger";
 import type { Duplex } from "node:stream";
 

@@ -8,7 +8,6 @@ export interface RequestMeta {
   method?: string;
   url?: string;
   headers?: Record<string, string | string[]>;
-  bodyLength?: number;
 }
 
 /**
@@ -18,7 +17,6 @@ export interface ResponseMeta {
   statusCode?: number;
   statusMessage?: string;
   headers?: Record<string, string | string[]>;
-  bodyLength?: number;
 }
 
 /**
@@ -26,7 +24,7 @@ export interface ResponseMeta {
  */
 export interface RequestHookParams<TStore = unknown> {
   meta: RequestMeta;
-  body: Buffer;
+  body: ReadableStream<Uint8Array>;
   /** 插件存储（需定义 storeSchema 才能使用，框架自动注入） */
   store?: PluginStore<TStore>;
 }
@@ -40,7 +38,7 @@ export interface RequestHookParams<TStore = unknown> {
  */
 export type RequestHookResult = 
   | { modified: false }
-  | { modified?: true; meta?: Partial<RequestMeta>; body?: Buffer }
+  | { modified?: true; meta?: Partial<RequestMeta>; body?: ReadableStream<Uint8Array> }
   | { respondWith: { statusCode: number; body?: string | Buffer; headers?: Record<string, string> } };
 
 /**
@@ -48,7 +46,7 @@ export type RequestHookResult =
  */
 export interface ResponseHookParams<TStore = unknown> {
   meta: ResponseMeta;
-  body: Buffer;
+  body: ReadableStream<Uint8Array>;
   /** 原始请求的元数据（不含 body，框架自动注入） */
   requestMeta?: {
     method?: string;
@@ -67,7 +65,7 @@ export interface ResponseHookParams<TStore = unknown> {
  */
 export type ResponseHookResult = 
   | { modified: false }
-  | { modified?: true; meta?: Partial<ResponseMeta>; body?: Buffer };
+  | { modified?: true; meta?: Partial<ResponseMeta>; body?: ReadableStream<Uint8Array> };
 
 /**
  * 插件配置
@@ -80,6 +78,14 @@ export interface PluginConfig {
 }
 
 /**
+ * 预检结果
+ * - true: 需要处理 body（框架会 tee stream）
+ * - false: 不需要处理 body（跳过此插件）
+ * - 'passthrough': 不需要处理，但允许流式透传（不缓冲）
+ */
+export type PrecheckResult = boolean | 'passthrough';
+
+/**
  * 插件接口
  */
 export interface ProxyPlugin<TStore = unknown> {
@@ -88,6 +94,29 @@ export interface ProxyPlugin<TStore = unknown> {
 
   /** 插件存储 schema（定义后才能使用 store） */
   readonly storeSchema?: z.ZodType<TStore>;
+
+  /**
+   * 请求预检：决定是否需要处理此请求的 body
+   * 
+   * 返回值：
+   * - true: 需要处理 body，框架会缓冲请求体并调用 onRequest
+   * - false: 不需要处理，跳过此插件
+   * - 'passthrough': 不需要处理，流式透传（不缓冲，不调用 onRequest）
+   * - undefined: 等同于 true（向后兼容，默认需要处理）
+   * 
+   * 注意：预检只接收元数据（headers/url/method），不读取 body
+   */
+  shouldProcessRequest?(meta: RequestMeta): PrecheckResult | Promise<PrecheckResult>;
+
+  /**
+   * 响应预检：决定是否需要处理此响应的 body
+   * 
+   * 返回值同 shouldProcessRequest
+   * 
+   * @param meta 响应元数据
+   * @param requestMeta 原始请求元数据（可用于关联判断）
+   */
+  shouldProcessResponse?(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult | Promise<PrecheckResult>;
 
   /**
    * 处理请求 hook

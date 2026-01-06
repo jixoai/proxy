@@ -14,6 +14,7 @@ export type {
   ResponseHookResult,
   PluginConfig,
   ProxyPlugin,
+  PrecheckResult,
 } from "./types";
 
 // Envelope
@@ -80,3 +81,12 @@ export {
   createMockStore,
   type PluginStore,
 } from "./plugin-store";
+
+// Stream helpers (used by plugins and proxy)
+export type { StreamUtils } from "./stream-utils";
+export {
+  streamFromBuffer,
+  readStreamToBuffer,
+  readStreamToText,
+  teeStream,
+} from "./stream-utils";

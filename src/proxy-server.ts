@@ -11,13 +11,15 @@ import {
   updateProxyRequest,
   updateStreamingProgress,
   type AbortReason,
-} from "./lib/db-requests";
+} from "./lib/db-requests-v7";
 import { dbNotifier } from "./lib/db-notifier";
 import { setDataDir } from "./lib/runtime-paths";
 import { initDatabase } from "./lib/db";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
-import { HooksExecutor, stopAllHooks } from "./lib/hooks-executor";
+import { HooksExecutor, stopAllHooks, type PrecheckSummary } from "./lib/hooks-executor";
+import { streamFromBuffer, readStreamToBuffer, teeStream } from "@jixo/proxy-plugin";
+import { nodeReadableToWebStream, pipeWebStreamToNodeResponse } from "./lib/node-stream-adapter";
 import type { HooksConfig, HookLayer } from "./types/proxy";
 import type {
   WorkerMessage,
@@ -591,7 +593,7 @@ async function main(argv: string[]) {
 
       let hookedMethod = method;
       let hookedTargetUrl = targetUrl;
-      let hookedRequestBody = originalRequestBody;
+      let hookedRequestBody: Buffer<ArrayBufferLike> = originalRequestBody;
       let hookedForwardHeaders: http.OutgoingHttpHeaders = { ...forwardHeaders };
       let hasRequestHookChanges = false;
       let requestHookLayers: HookLayer[] | undefined;
@@ -608,7 +610,7 @@ async function main(argv: string[]) {
               method,
               url: targetUrl.href,
               headers: headersForHooks,
-              body: hookedRequestBody,
+              body: streamFromBuffer(hookedRequestBody),
               signal: abortSignal,
             },
             (body) => body.length > 0 ? bufferToDataUrl(body, requestContentType) : null,
@@ -634,7 +636,7 @@ async function main(argv: string[]) {
             hookedTargetUrl = new URL(hookResult.url);
             hookedForwardHeaders = hookResult.headers as http.OutgoingHttpHeaders;
             hookedForwardHeaders.host = hookedTargetUrl.host;
-            hookedRequestBody = Buffer.from(hookResult.body);
+            hookedRequestBody = await readStreamToBuffer(hookResult.body);
           }
         } catch (err) {
           console.error("[Hooks] Request hook error:", err);
@@ -645,6 +647,16 @@ async function main(argv: string[]) {
         hookedRequestBody.length > 0
           ? bufferToDataUrl(hookedRequestBody, requestContentType)
           : null;
+
+      // 将 hooked body 填充到 requestHookLayers 的最后一个 modified=true 的 layer
+      if (requestHookLayers && hookedRequestBodyDataUrl) {
+        for (let i = requestHookLayers.length - 1; i >= 0; i--) {
+          if (requestHookLayers[i]!.modified) {
+            requestHookLayers[i]!.bodyDataUrl = hookedRequestBodyDataUrl;
+            break;
+          }
+        }
+      }
 
       if (hookedForwardHeaders["content-length"] !== undefined) {
         if (hookedRequestBody.length > 0) {
@@ -691,7 +703,7 @@ async function main(argv: string[]) {
         // 注册到活跃请求 Map，支持外部中断
         activeRequests.set(dbRecordId, abortController);
         debugNotifier("about to notify insert, dbRecordId: %d", dbRecordId);
-        dbNotifier.notify("insert", "proxy_requests", dbRecordId);
+        dbNotifier.notify("insert", "requests", dbRecordId);
         debugNotifier("notify insert completed");
       }
 
@@ -738,25 +750,167 @@ async function main(argv: string[]) {
             // TTFB: 收到响应头的时间
             const responseStartTime = Date.now();
             const ttfbMs = responseStartTime - attemptStart;
+
             const responseChunks: Buffer[] = [];
 
             let responseHeaders = { ...proxyRes.headers };
             let statusCode = proxyRes.statusCode || 502;
             let statusMessage = proxyRes.statusMessage || "";
 
-            // 如果存在 hooks，则必须缓存完整响应以支持修改，因此不允许直接流式写回客户端
-            // 注意：直接检查配置而不是 hasResponseHooks，避免并发请求之间的 race condition
-            const hasConfiguredHooks = !!(instanceHooks || forwardRule.hooks);
-            const allowStreamingToClient = !hasConfiguredHooks;
+            // Streaming rule:
+            // - If we might retry (failover), we must not stream.
+            // - Otherwise we can stream even with hooks (hooks are streaming-native).
             const isFailureStatus = statusCode >= 400 && statusCode <= 599;
             const hasMoreCandidates = i < candidateIndexes.length - 1;
             const shouldRetryOnFailure = isFailureStatus && hasMoreCandidates;
-            const shouldStreamToClient = allowStreamingToClient && !shouldRetryOnFailure;
+            const shouldStreamToClient = !shouldRetryOnFailure;
 
             // 流式进度更新（每秒最多更新一次）
             let totalReceivedBytes = 0;
             let lastProgressUpdate = 0;
             const PROGRESS_THROTTLE_MS = 1000;
+
+            if (shouldStreamToClient && !didStreamResponseToClient && !isClientDisconnected) {
+              didStreamResponseToClient = true;
+
+              try {
+                const upstreamStream = nodeReadableToWebStream(proxyRes);
+                const requestMeta = {
+                  method: hookedMethod,
+                  url: hookedTargetUrl.href,
+                  headers: hookedForwardHeaders as Record<string, string | string[]>,
+                };
+
+                // 预检：决定是否需要处理响应 body
+                let responsePrecheckResult: PrecheckSummary = { needsBuffer: false, activePlugins: [], canPassthrough: true };
+                if (hooksExecutor?.hasResponseHooks) {
+                  responsePrecheckResult = await hooksExecutor.precheckResponse(
+                    { statusCode, statusMessage, headers: responseHeaders as Record<string, string | string[]> },
+                    requestMeta,
+                  );
+                }
+
+                let outStatusCode = statusCode;
+                let outStatusMessage = statusMessage;
+                let outHeaders: http.IncomingHttpHeaders = { ...responseHeaders };
+                let outStream: ReadableStream<Uint8Array>;
+                let storageStream: ReadableStream<Uint8Array> | null = null;
+                let hasResponseHookChanges = false;
+                let responseHookLayers: HookLayer[] | undefined;
+                const originalChunks: Buffer[] = [];
+
+                if (responsePrecheckResult.needsBuffer && hooksExecutor?.hasResponseHooks) {
+                  // 需要处理：tee stream，一份存储原始，一份给 hook
+                  const { left: forStorage, right: forHooks } = teeStream(upstreamStream);
+                  storageStream = forStorage;
+
+                  const hookExecResult = await hooksExecutor.executeResponseHooksWithLayers(
+                    {
+                      statusCode,
+                      statusMessage,
+                      headers: responseHeaders as Record<string, string | string[]>,
+                      body: forHooks,
+                      signal: abortSignal,
+                      requestMeta,
+                    },
+                    () => null,
+                    (headers) => (headers["content-type"] as string) ?? null,
+                  );
+                  const hookResult = hookExecResult.params;
+                  hasResponseHookChanges = hookExecResult.hasChanges;
+                  responseHookLayers = hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
+
+                  outStatusCode = hookResult.statusCode;
+                  outStatusMessage = hookResult.statusMessage;
+                  outHeaders = hookResult.headers as http.IncomingHttpHeaders;
+                  outStream = hookResult.body;
+                } else {
+                  // 不需要处理：直接透传
+                  outStream = upstreamStream;
+                }
+
+                const streamingHeaders = sanitizeResponseHeadersForStreaming(outHeaders);
+                res.writeHead(outStatusCode, outStatusMessage, streamingHeaders);
+
+                // 并行：pipe 到客户端 + 收集原始数据（如果有 storageStream）
+                const storagePromise = storageStream
+                  ? (async () => {
+                      const reader = storageStream!.getReader();
+                      while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        if (value) originalChunks.push(Buffer.from(value));
+                      }
+                    })()
+                  : Promise.resolve();
+
+                await pipeWebStreamToNodeResponse({
+                  stream: outStream,
+                  res,
+                  onChunk: (chunk) => {
+                    responseChunks.push(Buffer.from(chunk));
+                    totalReceivedBytes += chunk.byteLength;
+
+                    const now = Date.now();
+                    if (dbRecordId !== null && now - lastProgressUpdate >= PROGRESS_THROTTLE_MS) {
+                      lastProgressUpdate = now;
+                      updateStreamingProgress(
+                        dbRecordId,
+                        totalReceivedBytes,
+                        ttfbMs,
+                        outStatusCode,
+                        outStatusMessage,
+                        outHeaders as Record<string, string | string[]>,
+                      );
+                      dbNotifier.notify("update", "requests", dbRecordId);
+                    }
+                  },
+                });
+
+                await storagePromise;
+
+                const bodyMs = Date.now() - responseStartTime;
+                const bodyBuffer = Buffer.concat(responseChunks);
+                const originalBodyBuffer = originalChunks.length > 0 ? Buffer.concat(originalChunks) : undefined;
+                const contentType = (outHeaders["content-type"] as string) ?? null;
+                const originalContentType = (responseHeaders["content-type"] as string) ?? null;
+                const cleanedHeaders = sanitizeResponseHeadersForBuffered(outHeaders, bodyBuffer.length);
+
+                resolve({
+                  statusCode: outStatusCode,
+                  statusMessage: outStatusMessage,
+                  headers: cleanedHeaders,
+                  bodyBuffer,
+                  contentType,
+                  ttfbMs,
+                  bodyMs,
+                  hasResponseHookChanges,
+                  responseHookLayers,
+                  originalStatusCode: hasResponseHookChanges ? statusCode : undefined,
+                  originalStatusMessage: hasResponseHookChanges ? statusMessage : undefined,
+                  originalHeaders: hasResponseHookChanges ? responseHeaders : undefined,
+                  originalBodyBuffer,
+                  originalContentType: hasResponseHookChanges ? originalContentType : undefined,
+                });
+                return;
+              } catch (error) {
+                if (!res.writableEnded) {
+                  res.destroy(error as Error);
+                }
+                const bodyMs = Date.now() - responseStartTime;
+                resolve({
+                  statusCode: 502,
+                  statusMessage: "Bad Gateway",
+                  headers: { "content-type": "application/json" },
+                  bodyBuffer: Buffer.alloc(0),
+                  contentType: "application/json",
+                  errorMessage: error instanceof Error ? error.message : String(error),
+                  ttfbMs,
+                  bodyMs,
+                });
+                return;
+              }
+            }
 
             proxyRes.on("data", (chunk: Buffer) => {
               responseChunks.push(Buffer.from(chunk));
@@ -773,21 +927,13 @@ async function main(argv: string[]) {
                   statusMessage,
                   responseHeaders as Record<string, string | string[]>,
                 );
-                dbNotifier.notify("update", "proxy_requests", dbRecordId);
+                dbNotifier.notify("update", "requests", dbRecordId);
               }
             });
 
-            // 只在确定不会 failover，且不需要 response hooks 时，才把上游响应流式写回客户端
-            if (shouldStreamToClient && !didStreamResponseToClient && !isClientDisconnected) {
-              didStreamResponseToClient = true;
-              const streamingHeaders = sanitizeResponseHeadersForStreaming(responseHeaders);
-              res.writeHead(statusCode, statusMessage, streamingHeaders);
-              proxyRes.pipe(res);
-            }
-
             proxyRes.on("end", async () => {
               const bodyMs = Date.now() - responseStartTime;
-              let bodyBuffer = Buffer.concat(responseChunks);
+              let bodyBuffer: Buffer<ArrayBufferLike> = Buffer.concat(responseChunks);
               let contentType = (responseHeaders["content-type"] as string) ?? null;
 
               // 保存原始响应数据（用于与 hooked 对比）
@@ -806,7 +952,7 @@ async function main(argv: string[]) {
                       statusCode,
                       statusMessage,
                       headers: responseHeaders as Record<string, string | string[]>,
-                      body: bodyBuffer,
+                      body: streamFromBuffer(bodyBuffer),
                       signal: abortSignal,
                       // 传递请求元数据给响应 hooks
                       requestMeta: {
@@ -826,7 +972,7 @@ async function main(argv: string[]) {
                     statusCode = hookResult.statusCode;
                     statusMessage = hookResult.statusMessage;
                     responseHeaders = hookResult.headers as http.IncomingHttpHeaders;
-                    bodyBuffer = Buffer.from(hookResult.body);
+                    bodyBuffer = await readStreamToBuffer(hookResult.body);
                   }
                   contentType = (responseHeaders["content-type"] as string) ?? contentType;
                 } catch (err) {
@@ -1045,9 +1191,21 @@ async function main(argv: string[]) {
             contentType: finalResult.contentType ?? null,
           }
         : undefined,
-      responseHookLayers: finalResult.responseHookLayers,
+      // 将 hooked body 填充到 responseHookLayers 的最后一个 modified=true 的 layer
+      responseHookLayers: (() => {
+        const layers = finalResult.responseHookLayers;
+        if (layers && responseBodyDataUrl && finalResult.hasResponseHookChanges) {
+          for (let i = layers.length - 1; i >= 0; i--) {
+            if (layers[i]!.modified) {
+              layers[i]!.bodyDataUrl = responseBodyDataUrl;
+              break;
+            }
+          }
+        }
+        return layers;
+      })(),
     });
-    dbNotifier.notify("update", "proxy_requests", dbRecordId);
+    dbNotifier.notify("update", "requests", dbRecordId);
 
     // 清理活跃请求 Map
     activeRequests.delete(dbRecordId);

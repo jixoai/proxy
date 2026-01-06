@@ -4,13 +4,16 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 
 // 测试数据库路径
-const TEST_DB_PATH = path.join(__dirname, ".tmp/test-proxy-server.db");
+const TEST_DB_DIR = path.join(process.cwd(), ".tmp", "proxy-server-tests");
+const TEST_DB_PATH = path.join(TEST_DB_DIR, "test-proxy-server.db");
 
 // 清理测试数据库
 function cleanupTestDb() {
   if (fs.existsSync(TEST_DB_PATH)) {
     fs.unlinkSync(TEST_DB_PATH);
   }
+  // 确保目录存在
+  fs.mkdirSync(TEST_DB_DIR, { recursive: true });
 }
 
 // 初始化测试数据库

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { createDroidPlugin } from "../plugin";
 import { createMockStore, type RequestHookParams, type ResponseHookParams } from "@jixo/proxy-plugin";
+import { streamFromBuffer, readStreamToBuffer } from "@jixo/proxy-plugin";
 
 /** 创建测试用的 RequestHookParams */
 function createRequestParams(params: {
@@ -15,7 +16,7 @@ function createRequestParams(params: {
       url: params.url,
       headers: params.headers,
     },
-    body: params.body,
+    body: streamFromBuffer(params.body),
     store: createMockStore(),
   };
 }
@@ -35,7 +36,7 @@ function createResponseParams(params: {
       statusCode: params.statusCode,
       headers: params.headers,
     },
-    body: params.body,
+    body: streamFromBuffer(params.body),
     store: createMockStore(
       params.activated !== false
         ? {
@@ -88,7 +89,7 @@ describe("createDroidPlugin", () => {
     // 检查不是 { modified: false }（跳过）
     expect(!("modified" in result!) || result!.modified !== false).toBe(true);
 
-    const modifiedResult = result as { meta?: { headers?: Record<string, string> }; body?: Buffer };
+    const modifiedResult = result as { meta?: { headers?: Record<string, string> }; body?: ReadableStream<Uint8Array> };
     expect(modifiedResult.meta?.headers).toBeDefined();
     expect(modifiedResult.body).toBeDefined();
 
@@ -96,7 +97,7 @@ describe("createDroidPlugin", () => {
     expect(headers["anthropic-beta"]).toContain("claude-code");
     expect(headers["authorization"]).toBe("Bearer sk-ant-123");
 
-    const parsedBody = JSON.parse(modifiedResult.body!.toString("utf-8"));
+    const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
     expect(Array.isArray(parsedBody.system)).toBe(true);
     expect(parsedBody.system[0].text).toContain("Claude Code");
   });
@@ -143,10 +144,10 @@ describe("createDroidPlugin", () => {
     // 检查不是 { modified: false }（跳过）
     expect(!("modified" in result!) || result!.modified !== false).toBe(true);
 
-    const modifiedResult = result as { meta?: { statusCode?: number }; body?: Buffer };
+    const modifiedResult = result as { meta?: { statusCode?: number }; body?: ReadableStream<Uint8Array> };
     expect(modifiedResult.meta?.statusCode).toBe(400);
 
-    const parsedBody = JSON.parse(modifiedResult.body!.toString("utf-8"));
+    const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
     expect(parsedBody.error.code).toBe("context_length_exceeded");
     expect(parsedBody.error.type).toBe("invalid_request_error");
   });
