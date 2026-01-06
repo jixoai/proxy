@@ -26,7 +26,7 @@ import {
   setDataDir,
   getDefaultDataDir,
 } from "./lib/runtime-paths";
-import open from "open";
+import { openBrowser } from "./lib/open-browser";
 
 /** 默认前端端口 */
 const DEFAULT_PORT = 33000;
@@ -177,7 +177,7 @@ async function main() {
   // 打开浏览器
   if (argv.open) {
     const url = `http://localhost:${actualPort}`;
-    open(url);
+    openBrowser(url);
   }
 
   // 优雅退出处理
