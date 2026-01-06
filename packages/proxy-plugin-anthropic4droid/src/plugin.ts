@@ -19,7 +19,7 @@ import type {
   PluginLogger,
 } from "@jixo/proxy-plugin";
 import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
-import { rewriteRequest } from "./rewriter";
+import { rewriteRequest, type ModelRewriteConfig } from "./rewriter";
 import { rewriteResponse } from "./response-rewriter";
 
 /** 插件存储 schema - 标记请求是否被转换 */
@@ -40,6 +40,8 @@ export interface DroidPluginOptions {
   debug?: boolean;
   /** 日志目录（可选） */
   logDir?: string;
+  /** model 字段 rewrite 规则 */
+  model?: ModelRewriteConfig;
   /** 服务器异常检测阈值（字节），小于此值的请求收到 context_length_exceeded 会被视为服务器异常，默认 680KB */
   serverAnomalyThreshold?: number;
 }
@@ -56,7 +58,7 @@ export interface DroidPluginOptions {
  * ```
  */
 export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin<DroidStore> {
-  const { debug, logDir, serverAnomalyThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD } = options;
+  const { debug, logDir, model, serverAnomalyThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD } = options;
 
   const logger: PluginLogger = createLogger({
     name: "anthropic4droid",
@@ -108,7 +110,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       logger.debug(`Processing request: ${params.meta.method} ${params.meta.url}`);
 
-      const result = rewriteRequest({ headers, body: bodyText });
+      const result = rewriteRequest({ headers, body: bodyText, config: { model } });
 
       if (!result.headers && !result.body) {
         logger.debug("Not a Droid request, passing through");

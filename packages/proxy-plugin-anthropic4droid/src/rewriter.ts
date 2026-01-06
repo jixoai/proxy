@@ -7,6 +7,56 @@
 import type { RequestBody, Message, TextBlock, RewriteResult, AnyTool } from "./types";
 import { isWebSearchTool } from "./types";
 
+export type ModelRewriteConfig = string | Record<string, string>;
+export type DroidRewriteConfig = {
+  model?: ModelRewriteConfig;
+};
+
+const DEFAULT_MODEL_REWRITE: Record<string, string> = {};
+
+function parseRegexRule(pattern: string): RegExp | null {
+  if (!pattern.startsWith("/")) return null;
+  const lastSlash = pattern.lastIndexOf("/");
+  if (lastSlash <= 0) return null;
+  const source = pattern.slice(1, lastSlash);
+  const flags = pattern.slice(lastSlash + 1);
+  if (!source) return null;
+  try {
+    return new RegExp(source, flags);
+  } catch {
+    return null;
+  }
+}
+
+function rewriteModel(model: string | undefined, config?: ModelRewriteConfig): string | undefined {
+  if (!model) return model;
+
+  const effectiveConfig = config ?? DEFAULT_MODEL_REWRITE;
+  if (typeof effectiveConfig === "string") {
+    return effectiveConfig;
+  }
+
+  for (const [pattern, replacement] of Object.entries(effectiveConfig)) {
+    if (pattern === "*") {
+      return replacement;
+    }
+
+    const regex = parseRegexRule(pattern);
+    if (regex) {
+      if (regex.test(model)) {
+        return model.replace(regex, replacement);
+      }
+      continue;
+    }
+
+    if (model === pattern) {
+      return replacement;
+    }
+  }
+
+  return model;
+}
+
 /**
  * 检测请求是否包含 web_search 工具
  */
@@ -125,7 +175,9 @@ export function mergeDuplicateSystemReminders(messages: Message[] | undefined): 
     const secondSysTexts = secondContent
       .filter(
         (c): c is { type: "text"; text: string } =>
-          c?.type === "text" && typeof (c as any).text === "string" && (c as any).text.includes("<system-reminder>"),
+          c?.type === "text" &&
+          typeof (c as any).text === "string" &&
+          (c as any).text.includes("<system-reminder>"),
       )
       .map((c) => c.text);
 
@@ -152,10 +204,15 @@ export function mergeDuplicateSystemReminders(messages: Message[] | undefined): 
  *
  * @returns 重写后的请求体，如果无需重写则返回 null
  */
-export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null {
+export function rewriteRequestBody(
+  requestBody: RequestBody,
+  config: DroidRewriteConfig = {},
+): RequestBody | null {
   if (!isDroidRequest(requestBody)) {
     return null;
   }
+
+  requestBody.model = rewriteModel(requestBody.model, config.model);
 
   const droidSystemText = extractSystemText(requestBody.system);
 
@@ -251,8 +308,9 @@ export function rewriteHeaders(
 export function rewriteRequest(params: {
   headers: Record<string, string>;
   body: string;
+  config?: DroidRewriteConfig;
 }): RewriteResult {
-  const { headers, body } = params;
+  const { headers, body, config } = params;
 
   if (!body) {
     return {};
@@ -268,7 +326,7 @@ export function rewriteRequest(params: {
   // 检测是否包含 web_search 工具（在重写前检测）
   const hasWebSearch = hasWebSearchTool(requestBody);
 
-  const rewrittenBody = rewriteRequestBody(requestBody);
+  const rewrittenBody = rewriteRequestBody(requestBody, config);
   if (!rewrittenBody) {
     return {};
   }
