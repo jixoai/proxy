@@ -17,7 +17,12 @@ import type {
   ResponseHookResult,
   PluginLogger,
 } from "@jixo/proxy-plugin";
-import { normalizeHeaders, createLogger } from "@jixo/proxy-plugin";
+import {
+  normalizeHeaders,
+  createLogger,
+  readStreamToBuffer,
+  streamFromBuffer,
+} from "@jixo/proxy-plugin";
 import { convertRequest, isDroidRequest, extractCwd } from "./request-converter";
 import { rewriteResponse } from "./response-converter";
 import type { AnthropicRequestBody } from "./types";
@@ -112,9 +117,10 @@ export function createGeminiPlugin(
     name: "gemini4droid",
     storeSchema: GeminiStoreSchema,
 
-    onRequest(params: RequestHookParams<GeminiStore>): RequestHookResult | null {
+    async onRequest(params: RequestHookParams<GeminiStore>) {
       const headers = normalizeHeaders(params.meta.headers) ?? {};
-      const bodyText = params.body.toString("utf-8");
+      const bodyBuffer = await readStreamToBuffer(params.body);
+      const bodyText = bodyBuffer.toString("utf-8");
 
       logger.debug(`Processing request: ${params.meta.method} ${params.meta.url}`);
 
@@ -185,7 +191,7 @@ export function createGeminiPlugin(
       // 使用 store 标记请求已被转换
       const requestBodyLength = result.body
         ? Buffer.byteLength(result.body, "utf-8")
-        : params.body.length;
+        : bodyBuffer.length;
 
       // 检测是否为 websearch 请求
       const isWebSearch = isWebSearchRequest(requestBody);
@@ -204,25 +210,17 @@ export function createGeminiPlugin(
         ? params.store.set(storeData, result.headers ?? headers)
         : result.headers;
 
-      // 构建返回结果
-      const hookResult: RequestHookResult = {
-        body: result.body ? Buffer.from(result.body, "utf-8") : undefined,
+      const meta: { headers?: Record<string, string | string[]>; url?: string } = {};
+      if (finalHeaders) meta.headers = finalHeaders;
+      if (result.url) meta.url = result.url;
+
+      return {
+        meta: Object.keys(meta).length > 0 ? meta : undefined,
+        body: result.body ? streamFromBuffer(Buffer.from(result.body, "utf-8")) : undefined,
       };
-
-      if (finalHeaders || result.url) {
-        hookResult.meta = {};
-        if (finalHeaders) {
-          hookResult.meta.headers = finalHeaders;
-        }
-        if (result.url) {
-          hookResult.meta.url = result.url;
-        }
-      }
-
-      return hookResult;
     },
 
-    onResponse(params: ResponseHookParams<GeminiStore>): ResponseHookResult | null {
+    async onResponse(params: ResponseHookParams<GeminiStore>): Promise<ResponseHookResult | null> {
       // 检查请求是否被插件处理过
       const storeData = params.store?.get();
       if (!storeData?.activated) {
@@ -232,9 +230,11 @@ export function createGeminiPlugin(
 
       logger.debug(`Processing response: ${params.meta.statusCode}`);
 
+      const bodyBuffer = await readStreamToBuffer(params.body);
+
       const result = rewriteResponse({
         meta: params.meta,
-        body: params.body,
+        body: bodyBuffer,
         model: storeData.model,
         cwd: storeData.cwd,
         isWebSearch: storeData.isWebSearch,
@@ -253,7 +253,7 @@ export function createGeminiPlugin(
         logger.logToFile("response-convert", {
           original: {
             statusCode: params.meta.statusCode,
-            bodyPreview: params.body.toString("utf-8").substring(0, 500),
+            bodyPreview: bodyBuffer.toString("utf-8").substring(0, 500),
           },
           converted: {
             statusCode: result.statusCode,
@@ -267,7 +267,7 @@ export function createGeminiPlugin(
           statusCode: result.statusCode,
           headers: result.headers,
         },
-        body: result.body,
+        body: result.body ? streamFromBuffer(result.body) : undefined,
       };
     },
   };

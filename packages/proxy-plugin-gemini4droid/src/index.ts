@@ -75,6 +75,7 @@ export type {
   RequestConversionResult,
   ResponseConversionResult,
 } from "./types";
+export const createPlugin=createGeminiPlugin
 
 // 作为独立进程运行时启动服务器
 if (import.meta.main) {

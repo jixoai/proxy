@@ -48,9 +48,9 @@ async function importPlugin(config: HookConfig): Promise<ProxyPlugin> {
     throw new Error(`Unsupported hook type: ${config.type}`);
   }
   const args = config.args ?? [];
-  const entryArg = args.find((a) => a.startsWith("@jixo/"));
+  const entryArg = args.find((a) => a.startsWith("@jixo/")||a.endsWith(".ts"));
   if (!entryArg) {
-    throw new Error(`Hook config missing package arg (@jixo/*): ${config.command}`);
+    throw new Error(`Hook config missing package entry: ${config.command} ${args.join(" ")}`);
   }
   const mod = await import(entryArg);
 
