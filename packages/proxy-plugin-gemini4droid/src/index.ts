@@ -10,7 +10,7 @@
  * droid --provider anthropic → proxy → gemini4droid → 用户的 Gemini 服务
  */
 
-import { definePlugin } from "@jixo/proxy-plugin";
+import { createProxyServer } from "@jixo/proxy-plugin-server";
 import { createGeminiPlugin } from "./plugin";
 
 // 导出插件工厂
@@ -75,35 +75,27 @@ export type {
   RequestConversionResult,
   ResponseConversionResult,
 } from "./types";
-export const createPlugin=createGeminiPlugin
+
+export const createPlugin = createGeminiPlugin;
 
 // 作为独立进程运行时启动服务器
 if (import.meta.main) {
-  const debug = process.env.DEBUG === "true" || process.env.DEBUG === "1";
+  const config = JSON.parse(process.env.PLUGIN_CONFIG || "{}");
+  const debug = process.env.DEBUG === "true" || process.env.DEBUG === "1" || config.debug;
   
-  // 从环境变量或 PLUGIN_CONFIG 读取配置
-  let upstreamBaseUrl = process.env.GEMINI_UPSTREAM_URL;
-  
-  // 尝试从 PLUGIN_CONFIG 读取（proxy hook config 传递）
-  if (!upstreamBaseUrl && process.env.PLUGIN_CONFIG) {
-    try {
-      const pluginConfig = JSON.parse(process.env.PLUGIN_CONFIG);
-      upstreamBaseUrl = pluginConfig.upstreamBaseUrl;
-    } catch {
-      // ignore parse errors
-    }
-  }
+  // 从环境变量或 config 读取 upstream URL
+  const upstreamBaseUrl = process.env.GEMINI_UPSTREAM_URL || config.upstreamBaseUrl;
 
   console.log("Starting gemini4droid plugin server...");
   if (upstreamBaseUrl) {
     console.log(`Upstream URL: ${upstreamBaseUrl}`);
   }
 
-  definePlugin(
-    createGeminiPlugin({
+  createProxyServer({
+    plugin: createGeminiPlugin({
+      ...config,
       debug,
       upstreamBaseUrl,
     }),
-    { debug }
-  );
+  });
 }

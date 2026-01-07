@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
-    "@jixo/proxy-plugin": "workspace:*"
+    "@jixo/proxy-plugin": "workspace:*",
+    "@jixo/proxy-plugin-server": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest",

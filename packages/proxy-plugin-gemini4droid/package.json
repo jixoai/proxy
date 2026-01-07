@@ -19,7 +19,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@jixo/proxy-plugin": "workspace:*"
+    "@jixo/proxy-plugin": "workspace:*",
+    "@jixo/proxy-plugin-server": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest",

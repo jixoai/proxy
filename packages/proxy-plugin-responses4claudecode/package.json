@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@jixo/proxy-plugin": "workspace:*",
+    "@jixo/proxy-plugin-server": "workspace:*",
     "zod": "^4.1.12"
   },
   "devDependencies": {
