@@ -7,6 +7,7 @@
  * - Response Hook: 将 Claude Messages SSE 响应转换为 Codex Responses SSE 响应
  */
 
+import { createProxyServer } from "@jixo/proxy-plugin-server";
 import { createCodexPlugin } from "./plugin";
 
 // Plugin
@@ -93,9 +94,10 @@ export type {
 
 // 作为独立进程运行时启动服务器
 if (import.meta.main) {
-  const debug = process.env.DEBUG === "true" || process.env.DEBUG === "1";
-  void debug;
-  throw new Error(
-    `[anthropic4codex] standalone plugin server mode is no longer supported: hooks are now in-process and streaming-native.`,
-  );
+  const config = JSON.parse(process.env.PLUGIN_CONFIG || "{}");
+  const debug = process.env.DEBUG === "true" || process.env.DEBUG === "1" || config.debug;
+
+  createProxyServer({
+    plugin: createCodexPlugin({ ...config, debug }),
+  });
 }

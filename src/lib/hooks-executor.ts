@@ -1,26 +1,19 @@
+/**
+ * Hooks 执行器
+ *
+ * 使用进程模式启动插件，通过 HTTP 代理链式调用
+ */
+
+import * as http from "node:http";
 import { spawn, type Subprocess } from "bun";
-import type { ProxyPlugin, PluginStore, PrecheckResult, RequestMeta, ResponseMeta } from "@jixo/proxy-plugin";
-import { createPluginStore } from "@jixo/proxy-plugin";
-import type { HookConfig, HooksConfig, HookLayer } from "../types/proxy";
+import { createHash } from "node:crypto";
+import type { HookConfig, HooksConfig } from "../types/proxy";
 
-/** 私有 header：记录处理过该请求的插件列表 */
-const HEADER_PLUGIN_PROCESSED = "-x-jixo-proxy-plugin-processed";
+const CALLBACK_TIMEOUT_MS = 15000;
 
-function addPluginProcessedHeader(
-  headers: Record<string, string | string[]>,
-  pluginName: string,
-): Record<string, string | string[]> {
-  const existing = headers[HEADER_PLUGIN_PROCESSED];
-  const list = existing
-    ? (Array.isArray(existing) ? existing.join(",") : existing).split(",")
-    : [];
-  if (!list.includes(pluginName)) {
-    list.push(pluginName);
-  }
-  return {
-    ...headers,
-    [HEADER_PLUGIN_PROCESSED]: list.join(","),
-  };
+function computeConfigHash(config: HookConfig, nextHopUrl: string | undefined): string {
+  const data = JSON.stringify({ config, nextHopUrl });
+  return createHash("sha256").update(data).digest("hex").slice(0, 16);
 }
 
 function normalizeHooksConfig(hooks: HooksConfig | null | undefined): HookConfig[] {
@@ -29,398 +22,261 @@ function normalizeHooksConfig(hooks: HooksConfig | null | undefined): HookConfig
   return list.filter((hook) => hook.disabled !== true);
 }
 
-function getPluginName(config: HookConfig): string {
-  if (config.config && typeof config.config === "object" && "name" in config.config) {
-    return String((config.config as any).name);
-  }
-  const args = config.args ?? [];
-  for (const arg of args) {
-    if (arg.startsWith("@jixo/")) return arg.replace("@jixo/", "");
-    if (arg.includes("proxy-plugin-") || arg.includes("proxy-anthropic-")) {
-      return arg.split("/").pop() ?? arg;
-    }
-  }
-  return config.command;
-}
-
-async function importPlugin(config: HookConfig): Promise<ProxyPlugin> {
-  if (config.type !== "http") {
-    throw new Error(`Unsupported hook type: ${config.type}`);
-  }
-  const args = config.args ?? [];
-  const entryArg = args.find((a) => a.startsWith("@jixo/")||a.endsWith(".ts"));
-  if (!entryArg) {
-    throw new Error(`Hook config missing package entry: ${config.command} ${args.join(" ")}`);
-  }
-  const mod = await import(entryArg);
-
-  const pluginConfig =
-    config.config && typeof config.config === "object" && !Array.isArray(config.config)
-      ? config.config
-      : undefined;
-
-  const candidates: Array<() => unknown> = [
-    () => (typeof (mod as any).default === "function" ? (mod as any).default(pluginConfig) : (mod as any).default),
-    () => (typeof (mod as any).plugin === "function" ? (mod as any).plugin(pluginConfig) : (mod as any).plugin),
-    () => (typeof (mod as any).createPlugin === "function" ? (mod as any).createPlugin(pluginConfig) : undefined),
-    () =>
-      typeof (mod as any).createDroidPlugin === "function"
-        ? (mod as any).createDroidPlugin(pluginConfig)
-        : undefined,
-    () =>
-      typeof (mod as any).createResponses4ClaudeCodePlugin === "function"
-        ? (mod as any).createResponses4ClaudeCodePlugin(pluginConfig)
-        : undefined,
-    () => mod,
-  ];
-
-  for (const getCandidate of candidates) {
-    const value = getCandidate();
-    if (value && typeof value === "object" && typeof (value as any).name === "string") {
-      return value as ProxyPlugin;
-    }
-  }
-
-  throw new Error(`Invalid plugin module export for ${entryArg}`);
-}
-
-export interface RequestHookParams {
-  method: string;
+interface CallbackServer {
   url: string;
-  headers: Record<string, string | string[]>;
-  body: ReadableStream<Uint8Array>;
-  signal?: AbortSignal;
+  waitForUrl(): Promise<string>;
+  close(): void;
 }
 
-export interface RequestHookResult {
-  skipped?: boolean;
-  modified?: boolean;
-  respondWith?: { statusCode: number; headers?: Record<string, string | string[]>; body?: Buffer };
-  method?: string;
-  url?: string;
-  headers?: Record<string, string | string[]>;
-  body?: ReadableStream<Uint8Array>;
-}
+function createCallbackServer(): CallbackServer {
+  let resolveUrl: (url: string) => void;
+  let rejectUrl: (err: Error) => void;
+  const urlPromise = new Promise<string>((resolve, reject) => {
+    resolveUrl = resolve;
+    rejectUrl = reject;
+  });
 
-export interface ResponseHookParams {
-  statusCode: number;
-  statusMessage: string;
-  headers: Record<string, string | string[]>;
-  body: ReadableStream<Uint8Array>;
-  signal?: AbortSignal;
-  requestMeta?: { method: string; url: string; headers: Record<string, string | string[]> };
-}
+  const server = http.createServer((req, res) => {
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk.toString();
+      });
+      req.on("end", () => {
+        res.writeHead(200);
+        res.end("OK");
+        resolveUrl!(body.trim());
+      });
+    } else {
+      res.writeHead(405);
+      res.end();
+    }
+  });
 
-export interface ResponseHookResult {
-  skipped?: boolean;
-  modified?: boolean;
-  statusCode?: number;
-  statusMessage?: string;
-  headers?: Record<string, string | string[]>;
-  body?: ReadableStream<Uint8Array>;
-}
+  server.listen(0, "127.0.0.1");
+  const addr = server.address();
+  const port = typeof addr === "object" && addr ? addr.port : 0;
+  const url = `http://127.0.0.1:${port}`;
 
-type LoadedHook = {
-  pluginName: string;
-  plugin: ProxyPlugin;
-  store?: PluginStore<any>;
-};
+  const timeout = setTimeout(() => {
+    rejectUrl!(new Error(`Callback timeout after ${CALLBACK_TIMEOUT_MS}ms`));
+    server.close();
+  }, CALLBACK_TIMEOUT_MS);
 
-async function loadHooks(hooks: HookConfig[]): Promise<LoadedHook[]> {
-  const out: LoadedHook[] = [];
-  for (const config of hooks) {
-    const plugin = await importPlugin(config);
-    out.push({ pluginName: getPluginName(config), plugin });
-  }
-  return out;
-}
-
-/** 请求 hooks 执行结果 */
-export interface RequestHooksExecutionResult {
-  /** 最终的请求参数 */
-  params: RequestHookParams;
-  /** 每层 hook 的执行结果 */
-  layers: HookLayer[];
-  /** 是否有任何修改 */
-  hasChanges: boolean;
-  /** 短路响应（如果有插件要求直接返回） */
-  respondWith?: {
-    statusCode: number;
-    headers?: Record<string, string | string[]>;
-    body?: Buffer;
+  return {
+    url,
+    async waitForUrl() {
+      const result = await urlPromise;
+      clearTimeout(timeout);
+      server.close();
+      return result;
+    },
+    close() {
+      clearTimeout(timeout);
+      server.close();
+    },
   };
 }
 
-/** 响应 hooks 执行结果 */
-export interface ResponseHooksExecutionResult {
-  /** 最终的响应参数 */
-  params: ResponseHookParams;
-  /** 每层 hook 的执行结果 */
-  layers: HookLayer[];
-  /** 是否有任何修改 */
-  hasChanges: boolean;
+class PluginProcess {
+  readonly config: HookConfig;
+  readonly hash: string;
+  private _url: string | null = null;
+  private refCount = 0;
+  private process: Subprocess | null = null;
+  private nextHopUrl: string | undefined;
+
+  constructor(config: HookConfig, nextHopUrl: string | undefined) {
+    this.config = config;
+    this.nextHopUrl = nextHopUrl;
+    this.hash = computeConfigHash(config, nextHopUrl);
+  }
+
+  get url(): string {
+    if (!this._url) throw new Error("Plugin not started");
+    return this._url;
+  }
+
+  get pluginName(): string {
+    if (this.config.config && typeof this.config.config === "object" && "name" in this.config.config) {
+      return String((this.config.config as any).name);
+    }
+    const args = this.config.args ?? [];
+    for (const arg of args) {
+      if (arg.startsWith("@jixo/")) return arg.replace("@jixo/", "");
+      if (arg.includes("proxy-plugin-")) {
+        return arg.split("/").pop() ?? arg;
+      }
+    }
+    return this.config.command;
+  }
+
+  async start(): Promise<void> {
+    const callback = createCallbackServer();
+
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      __CALLBACK_URL__: callback.url,
+    };
+
+    if (this.config.config) {
+      env.PLUGIN_CONFIG = JSON.stringify(this.config.config);
+    }
+
+    if (this.nextHopUrl) {
+      env.HTTP_PROXY = this.nextHopUrl;
+      env.HTTPS_PROXY = this.nextHopUrl;
+    }
+
+    const args = this.config.args ?? [];
+    this.process = spawn([this.config.command, ...args], {
+      cwd: this.config.cwd,
+      env,
+      stdin: "ignore",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+
+    try {
+      this._url = await callback.waitForUrl();
+      console.log(`[HooksPool:${this.hash}] Started: ${this.config.command} ${args.join(" ")} -> ${this._url}`);
+    } catch (error) {
+      this.process.kill();
+      this.process = null;
+      throw error;
+    }
+  }
+
+  addRef(): void {
+    this.refCount++;
+  }
+
+  release(): boolean {
+    this.refCount--;
+    return this.refCount <= 0;
+  }
+
+  kill(): void {
+    if (this.process) {
+      this.process.kill();
+      this.process = null;
+      console.log(`[HooksPool:${this.hash}] Stopped`);
+    }
+  }
 }
 
-/** 预检结果汇总 */
+class HooksPool {
+  private pool = new Map<string, PluginProcess>();
+
+  async acquire(config: HookConfig, nextHopUrl: string | undefined): Promise<PluginProcess> {
+    const hash = computeConfigHash(config, nextHopUrl);
+
+    let proc = this.pool.get(hash);
+    if (!proc) {
+      proc = new PluginProcess(config, nextHopUrl);
+      await proc.start();
+      this.pool.set(hash, proc);
+    }
+    proc.addRef();
+    return proc;
+  }
+
+  async release(proc: PluginProcess): Promise<void> {
+    if (proc.release()) {
+      proc.kill();
+      this.pool.delete(proc.hash);
+    }
+  }
+
+  async stopAll(): Promise<void> {
+    for (const proc of this.pool.values()) {
+      proc.kill();
+    }
+    this.pool.clear();
+  }
+
+  get size(): number {
+    return this.pool.size;
+  }
+}
+
+const globalHooksPool = new HooksPool();
+
 export interface PrecheckSummary {
-  /** 是否需要缓冲 body（任一插件返回 true） */
   needsBuffer: boolean;
-  /** 需要处理的插件列表 */
   activePlugins: string[];
-  /** 全部返回 passthrough 或 false */
   canPassthrough: boolean;
 }
 
 export class HooksExecutor {
-  private instanceHooksLoaded: LoadedHook[] = [];
-  private forwardHooksLoaded: LoadedHook[] = [];
+  private instanceName: string;
+  private instanceHooksConfig: HookConfig[];
+  private forwardHooksConfig: HookConfig[] = [];
+  private pluginProcesses: PluginProcess[] = [];
+  private _firstPluginUrl: string | null = null;
 
   constructor(
-    private instanceName: string,
-    private instanceHooks: HooksConfig | null | undefined,
-  ) {}
+    instanceName: string,
+    instanceHooks: HooksConfig | null | undefined,
+  ) {
+    this.instanceName = instanceName;
+    this.instanceHooksConfig = normalizeHooksConfig(instanceHooks);
+  }
 
   async start(): Promise<void> {
-    const configs = normalizeHooksConfig(this.instanceHooks);
-    this.instanceHooksLoaded = await loadHooks(configs);
+    await this.rebuildHopChain();
   }
 
   async stop(): Promise<void> {
-    this.instanceHooksLoaded = [];
-    this.forwardHooksLoaded = [];
+    for (const proc of this.pluginProcesses) {
+      await globalHooksPool.release(proc);
+    }
+    this.pluginProcesses = [];
+    this._firstPluginUrl = null;
   }
 
   async setForwardHooks(_forwardName: string, hooks: HooksConfig | null | undefined): Promise<void> {
-    const configs = normalizeHooksConfig(hooks);
-    this.forwardHooksLoaded = await loadHooks(configs);
+    const newConfigs = normalizeHooksConfig(hooks);
+    const oldConfigsJson = JSON.stringify(this.forwardHooksConfig);
+    const newConfigsJson = JSON.stringify(newConfigs);
+
+    if (oldConfigsJson !== newConfigsJson) {
+      this.forwardHooksConfig = newConfigs;
+      await this.rebuildHopChain();
+    }
   }
 
-  /** 请求预检：决定是否需要缓冲请求 body */
-  async precheckRequest(meta: RequestMeta): Promise<PrecheckSummary> {
-    const allHooks = [...this.instanceHooksLoaded, ...this.forwardHooksLoaded];
-    const activePlugins: string[] = [];
-    let needsBuffer = false;
-    let allPassthrough = true;
+  private async rebuildHopChain(): Promise<void> {
+    for (const proc of this.pluginProcesses) {
+      await globalHooksPool.release(proc);
+    }
+    this.pluginProcesses = [];
 
-    for (const hook of allHooks) {
-      if (!hook.plugin.onRequest) continue;
-
-      let result: PrecheckResult;
-      if (hook.plugin.shouldProcessRequest) {
-        result = await hook.plugin.shouldProcessRequest(meta);
-      } else {
-        // 向后兼容：没有预检方法则默认需要处理
-        result = true;
-      }
-
-      if (result === true) {
-        needsBuffer = true;
-        allPassthrough = false;
-        activePlugins.push(hook.pluginName);
-      } else if (result === 'passthrough') {
-        // passthrough 不需要缓冲，但不算 false
-      } else {
-        // false - 跳过
-        allPassthrough = false;
-      }
+    const allConfigs = [...this.instanceHooksConfig, ...this.forwardHooksConfig];
+    if (allConfigs.length === 0) {
+      this._firstPluginUrl = null;
+      return;
     }
 
-    return {
-      needsBuffer,
-      activePlugins,
-      canPassthrough: allPassthrough && !needsBuffer,
-    };
-  }
+    let nextHop = process.env.HTTP_PROXY || process.env.http_proxy;
 
-  /** 响应预检：决定是否需要缓冲响应 body */
-  async precheckResponse(meta: ResponseMeta, requestMeta?: RequestMeta): Promise<PrecheckSummary> {
-    const allHooks = [...this.forwardHooksLoaded, ...this.instanceHooksLoaded];
-    const activePlugins: string[] = [];
-    let needsBuffer = false;
-    let allPassthrough = true;
-
-    for (const hook of allHooks) {
-      if (!hook.plugin.onResponse) continue;
-
-      let result: PrecheckResult;
-      if (hook.plugin.shouldProcessResponse) {
-        result = await hook.plugin.shouldProcessResponse(meta, requestMeta);
-      } else {
-        // 向后兼容：没有预检方法则默认需要处理
-        result = true;
-      }
-
-      if (result === true) {
-        needsBuffer = true;
-        allPassthrough = false;
-        activePlugins.push(hook.pluginName);
-      } else if (result === 'passthrough') {
-        // passthrough 不需要缓冲
-      } else {
-        // false - 跳过
-        allPassthrough = false;
-      }
+    for (let i = allConfigs.length - 1; i >= 0; i--) {
+      const config = allConfigs[i]!;
+      const proc = await globalHooksPool.acquire(config, nextHop);
+      this.pluginProcesses.unshift(proc);
+      nextHop = proc.url;
     }
 
-    return {
-      needsBuffer,
-      activePlugins,
-      canPassthrough: allPassthrough && !needsBuffer,
-    };
+    this._firstPluginUrl = this.pluginProcesses[0]?.url ?? null;
+    console.log(`[HooksExecutor:${this.instanceName}] Hop chain: ${this.pluginProcesses.map((p) => p.pluginName).join(" -> ")} -> upstream`);
   }
 
-  /** 执行请求 hooks 并返回层层记录 */
-  async executeRequestHooksWithLayers(
-    params: RequestHookParams,
-    bodyToDataUrl: (body: Buffer) => string | null,
-  ): Promise<RequestHooksExecutionResult> {
-    let result = params;
-    const layers: HookLayer[] = [];
-    let hasChanges = false;
-
-    const allHooks = [...this.instanceHooksLoaded, ...this.forwardHooksLoaded];
-
-    for (const hook of allHooks) {
-      const pluginName = hook.pluginName;
-
-      const store = createPluginStore(pluginName, (hook.plugin as any).storeSchema, result.headers);
-      const pluginResult = hook.plugin.onRequest
-        ? await hook.plugin.onRequest({ meta: { method: result.method, url: result.url, headers: result.headers }, body: result.body, store })
-        : null;
-
-      if (!pluginResult) {
-        continue;
-      }
-
-      if ("respondWith" in pluginResult) {
-        const { statusCode, headers, body } = pluginResult.respondWith;
-        layers.push({ pluginName, modified: true });
-        return {
-          params: result,
-          layers,
-          hasChanges: true,
-          respondWith: {
-            statusCode,
-            headers,
-            body: body ? Buffer.from(body) : Buffer.alloc(0),
-          },
-        };
-      }
-
-      if ("modified" in pluginResult && pluginResult.modified === false) {
-        layers.push({ pluginName, modified: false });
-        continue;
-      }
-
-      hasChanges = true;
-      const nextMethod = pluginResult.meta?.method ?? result.method;
-      const nextUrl = pluginResult.meta?.url ?? result.url;
-      const nextHeaders = (pluginResult.meta?.headers as any) ?? result.headers;
-      const nextBody = pluginResult.body ?? result.body;
-
-      const nextResult: RequestHookParams = {
-        ...result,
-        method: nextMethod,
-        url: nextUrl,
-        headers: addPluginProcessedHeader(nextHeaders, pluginName),
-        body: nextBody,
-      };
-
-      layers.push({
-        pluginName,
-        modified: true,
-        method: nextResult.method,
-        url: nextResult.url,
-        headers: nextResult.headers,
-        bodyDataUrl: null,
-      });
-      result = nextResult;
-    }
-
-    return { params: result, layers, hasChanges };
-  }
-
-  /** 执行响应 hooks 并返回层层记录 */
-  async executeResponseHooksWithLayers(
-    params: ResponseHookParams,
-    bodyToDataUrl: (body: Buffer) => string | null,
-    getContentType: (headers: Record<string, string | string[]>) => string | null,
-  ): Promise<ResponseHooksExecutionResult> {
-    let result = params;
-    const layers: HookLayer[] = [];
-    let hasChanges = false;
-
-    const allHooks = [...this.forwardHooksLoaded, ...this.instanceHooksLoaded];
-
-    for (const hook of allHooks) {
-      const pluginName = hook.pluginName;
-      const store = createPluginStore(pluginName, (hook.plugin as any).storeSchema, result.requestMeta?.headers);
-      const pluginResult = hook.plugin.onResponse
-        ? await hook.plugin.onResponse({
-            meta: { statusCode: result.statusCode, statusMessage: result.statusMessage, headers: result.headers },
-            body: result.body,
-            requestMeta: result.requestMeta,
-            store,
-          })
-        : null;
-
-      if (!pluginResult) continue;
-      if ("modified" in pluginResult && pluginResult.modified === false) {
-        layers.push({ pluginName, modified: false });
-        continue;
-      }
-
-      hasChanges = true;
-      const nextStatusCode = pluginResult.meta?.statusCode ?? result.statusCode;
-      const nextStatusMessage = pluginResult.meta?.statusMessage ?? result.statusMessage;
-      const nextHeaders = (pluginResult.meta?.headers as any) ?? result.headers;
-      const nextBody = pluginResult.body ?? result.body;
-
-      const nextResult: ResponseHookParams = {
-        ...result,
-        statusCode: nextStatusCode,
-        statusMessage: nextStatusMessage,
-        headers: nextHeaders,
-        body: nextBody,
-      };
-
-      layers.push({
-        pluginName,
-        modified: true,
-        statusCode: nextResult.statusCode,
-        statusMessage: nextResult.statusMessage,
-        headers: nextResult.headers,
-        bodyDataUrl: null,
-        contentType: getContentType(nextResult.headers),
-      });
-
-      result = nextResult;
-    }
-
-    return { params: result, layers, hasChanges };
-  }
-
-  /** 向后兼容：执行请求 hooks */
-  async executeRequestHooks(params: RequestHookParams): Promise<RequestHookParams> {
-    const { params: result } = await this.executeRequestHooksWithLayers(
-      params,
-      () => null, // 不需要 dataUrl
-    );
-    return result;
-  }
-
-  /** 向后兼容：执行响应 hooks */
-  async executeResponseHooks(params: ResponseHookParams): Promise<ResponseHookParams> {
-    const { params: result } = await this.executeResponseHooksWithLayers(
-      params,
-      () => null,
-      () => null,
-    );
-    return result;
+  getFirstPluginUrl(): string | null {
+    return this._firstPluginUrl;
   }
 
   get hasHooks(): boolean {
-    return this.instanceHooksLoaded.length > 0 || this.forwardHooksLoaded.length > 0;
+    return this.pluginProcesses.length > 0;
   }
 
   get hasRequestHooks(): boolean {
@@ -430,12 +286,28 @@ export class HooksExecutor {
   get hasResponseHooks(): boolean {
     return this.hasHooks;
   }
+
+  async precheckRequest(): Promise<PrecheckSummary> {
+    return {
+      needsBuffer: false,
+      activePlugins: this.pluginProcesses.map((p) => p.pluginName),
+      canPassthrough: true,
+    };
+  }
+
+  async precheckResponse(): Promise<PrecheckSummary> {
+    return {
+      needsBuffer: false,
+      activePlugins: this.pluginProcesses.map((p) => p.pluginName),
+      canPassthrough: true,
+    };
+  }
 }
 
 export function getHooksPoolStats(): { size: number } {
-  return { size: 0 };
+  return { size: globalHooksPool.size };
 }
 
 export async function stopAllHooks(): Promise<void> {
-  // no-op (hooks are in-process)
+  await globalHooksPool.stopAll();
 }

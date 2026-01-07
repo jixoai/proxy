@@ -1,38 +1,25 @@
 import { describe, it, expect } from "bun:test";
-import { HooksExecutor } from "../src/lib/hooks-executor";
-import { streamFromBuffer, readStreamToBuffer } from "@jixo/proxy-plugin";
+import { HooksExecutor, getHooksPoolStats, stopAllHooks } from "../src/lib/hooks-executor";
 
-describe("HooksExecutor config injection", () => {
-  it("should pass hook.config into plugin factory", async () => {
-    const hooks = [
-      {
-        type: "http" as const,
-        command: "bunx",
-        args: ["@jixo/proxy-plugin-anthropic4droid"],
-        config: {
-          model: "gemini-claude-opus-4-5-thinking",
-        },
-      },
-    ];
-
-    const executor = new HooksExecutor("default", hooks);
+describe("HooksExecutor", () => {
+  it("should initialize with empty hooks", async () => {
+    const executor = new HooksExecutor("test-instance", null);
     await executor.start();
+    
+    expect(executor.hasHooks).toBe(false);
+    expect(executor.getFirstPluginUrl()).toBe(null);
+    
+    await executor.stop();
+  });
 
-    const requestBody = {
-      model: "claude-opus-4-5-20251101",
-      system: "You are Droid, an AI assistant built by Factory.",
-      messages: [{ role: "user", content: "Hello" }],
-    };
+  it("should track pool stats", () => {
+    const stats = getHooksPoolStats();
+    expect(typeof stats.size).toBe("number");
+  });
 
-    const result = await executor.executeRequestHooks({
-      method: "POST",
-      url: "https://api.anthropic.com/v1/messages",
-      headers: { "content-type": "application/json" },
-      body: streamFromBuffer(Buffer.from(JSON.stringify(requestBody), "utf-8")),
-    });
-
-    const rewrittenText = (await readStreamToBuffer(result.body)).toString("utf-8");
-    const rewrittenJson = JSON.parse(rewrittenText);
-    expect(rewrittenJson.model).toBe("gemini-claude-opus-4-5-thinking");
+  it("should stop all hooks", async () => {
+    await stopAllHooks();
+    const stats = getHooksPoolStats();
+    expect(stats.size).toBe(0);
   });
 });

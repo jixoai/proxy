@@ -32,8 +32,7 @@ export {
 // Logger
 export { createLogger, type PluginLogger, type LoggerOptions } from "./logger";
 
-// Server
-export { startPluginServer, definePlugin, type PluginServerOptions } from "./server";
+
 
 // Private Headers
 export {

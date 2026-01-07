@@ -18,7 +18,8 @@
  * - debug: 是否开启调试日志
  */
 
-import { definePlugin, getPluginConfigWithDefaults } from "@jixo/proxy-plugin";
+import { createProxyServer } from "@jixo/proxy-plugin-server";
+import { getPluginConfigWithDefaults } from "@jixo/proxy-plugin";
 import { createAnthropicPingPlugin } from "./plugin";
 
 export { AnthropicPingMiddleware } from "./ping-middleware";
@@ -52,19 +53,15 @@ export interface AnthropicPingConfig {
 }
 
 if (import.meta.main) {
-  // 从环境变量 PLUGIN_CONFIG 读取配置
   const config = getPluginConfigWithDefaults({
-    maxKeepAliveDurationMs: 60 * 60 * 1000, // 60 分钟
-    cacheTtlMs: 5 * 60 * 1000, // 5 分钟，Anthropic 官方值
-    pingLeadTimeMs: 1 * 60 * 1000, // 提前 1 分钟开始保活
+    maxKeepAliveDurationMs: 60 * 60 * 1000,
+    cacheTtlMs: 5 * 60 * 1000,
+    pingLeadTimeMs: 1 * 60 * 1000,
     pollingIntervalMs: 30 * 1000,
     debug: false,
   });
 
-  // 也支持通过环境变量直接配置（向后兼容）
   const debug = process.env.DEBUG === "true" || process.env.DEBUG === "1" || config.debug;
-
-  // 计算实际的 idle 阈值
   const idleThresholdMs = config.cacheTtlMs - config.pingLeadTimeMs;
 
   console.log("[AnthropicPing] Starting with config:", {
@@ -76,12 +73,11 @@ if (import.meta.main) {
     debug,
   });
 
-  void idleThresholdMs;
-  void config;
-  void debug;
-  void definePlugin;
-  void createAnthropicPingPlugin;
-  throw new Error(
-    `[anthropic-ping] standalone plugin server mode is no longer supported: hooks are now in-process and streaming-native.`,
-  );
+  createProxyServer({
+    plugin: createAnthropicPingPlugin({
+      ...config,
+      debug,
+      idleThresholdMs,
+    }),
+  });
 }

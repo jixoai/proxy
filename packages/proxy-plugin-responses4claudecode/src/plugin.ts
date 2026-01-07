@@ -7,7 +7,6 @@
 
 import { z } from "zod";
 import {
-  startPluginServer,
   type RequestHookParams,
   type RequestHookResult,
   type ResponseHookParams,
@@ -378,14 +377,4 @@ export function createResponses4ClaudeCodePlugin(options: Responses4ClaudeCodePl
   };
 }
 
-/**
- * 启动插件服务器
- */
-export async function startPlugin(): Promise<void> {
-  const debug = process.env.DEBUG_RESPONSES4CLAUDECODE === "1";
-  const plugin = createResponses4ClaudeCodePlugin({ debug });
-  void plugin;
-  throw new Error(
-    `[responses4claudecode] startPlugin is no longer supported: hooks are now in-process and streaming-native.`,
-  );
-}
+
