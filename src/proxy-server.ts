@@ -18,7 +18,7 @@ import { initDatabase } from "./lib/db";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
 import { HooksExecutor, stopAllHooks, type PrecheckSummary } from "./lib/hooks-executor";
-import { streamFromBuffer, readStreamToBuffer, teeStream } from "@jixo/proxy-plugin";
+import { streamFromBuffer, readStreamToBuffer, teeStream, isPluginStoreHeader } from "@jixo/proxy-plugin";
 import { nodeReadableToWebStream, pipeWebStreamToNodeResponse } from "./lib/node-stream-adapter";
 import type { HooksConfig, HookLayer } from "./types/proxy";
 import type {
@@ -44,6 +44,18 @@ function stripPrivateHeaders(headers: http.IncomingHttpHeaders): http.IncomingHt
     if (!key.toLowerCase().startsWith(PRIVATE_HEADER_PREFIX)) {
       result[key] = value;
     }
+  }
+  return result;
+}
+
+/** 过滤掉不应发送给上游的内部 headers（私有 header + 插件 store header） */
+function stripInternalHeadersForUpstream(headers: http.OutgoingHttpHeaders): http.OutgoingHttpHeaders {
+  const result: http.OutgoingHttpHeaders = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const normalizedKey = key.toLowerCase();
+    if (normalizedKey.startsWith(PRIVATE_HEADER_PREFIX)) continue;
+    if (isPluginStoreHeader(normalizedKey)) continue;
+    result[key] = value;
   }
   return result;
 }
@@ -737,13 +749,14 @@ async function main(argv: string[]) {
         }
 
         let proxyResRef: http.IncomingMessage | null = null;
+        const upstreamHeaders = stripInternalHeadersForUpstream(hookedForwardHeaders);
         const proxyReq = requestModule.request(
           {
             hostname: hookedTargetUrl.hostname,
             port: hookedTargetUrl.port || defaultPort,
             path: hookedTargetUrl.pathname + hookedTargetUrl.search,
             method: hookedMethod,
-            headers: hookedForwardHeaders,
+            headers: upstreamHeaders,
           },
           async (proxyRes) => {
             proxyResRef = proxyRes;
