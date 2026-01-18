@@ -73,6 +73,24 @@ function looksLikeOpenAIChatCompletionsRequest(body: unknown): body is Record<st
   return true;
 }
 
+function hasActivatedStoreHeader(headers: Record<string, string>): boolean {
+  // PluginStore header key is derived from hook/pluginName, not plugin.name.
+  // In normal configs this is `proxy-plugin-chat4droid`, but we keep this robust by:
+  // - scanning store headers
+  // - narrowing to keys containing "chat4droid"
+  // - validating payload shape
+  for (const [key, value] of Object.entries(headers)) {
+    const k = key.toLowerCase();
+    if (!k.startsWith("-x-jixo-store-")) continue;
+    if (!k.includes("chat4droid")) continue;
+    if (!value) continue;
+    const parsed = safeParseJson(value);
+    if (!parsed) continue;
+    if (StoreSchema.safeParse(parsed).success) return true;
+  }
+  return false;
+}
+
 function looksLikeClaudeModel(model: unknown): boolean {
   return typeof model === "string" && model.toLowerCase().includes("claude");
 }
@@ -290,6 +308,13 @@ function ensureWebSearchOptionsWhenWebSearchToolPresent(
   const hasWebSearchTool = hasFunctionToolNamed(body.tools, ["WebSearch"]);
   if (!hasWebSearchTool) return { changed: false, next: body };
 
+  // NOTE: Hicap's OpenAI `web_search_options` does not appear to enable web search for Claude
+  // models (observed: Claude responds it can't browse). In that case, removing the client-side
+  // `WebSearch` tool makes the model fall back to other tools like `Execute`/`FetchUrl`.
+  //
+  // For Claude, keep the original `WebSearch` tool so the client (Droid) can execute it.
+  if (looksLikeClaudeModel(body.model)) return { changed: false, next: body };
+
   let changed = false;
   let next: Record<string, unknown> = body;
 
@@ -372,9 +397,12 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
     shouldProcessResponse(meta: ResponseMeta, requestMeta?: RequestMeta): PrecheckResult {
       const reqHeaders = normalizeHeaders(requestMeta?.headers) ?? {};
-      // Heuristic: only convert responses for Anthropic-style callers (Droid via Anthropic SDK)
+      // Convert when:
+      // - request hook activated the store (Anthropic -> OpenAI rewrite)
+      // - OR the caller is Anthropic SDK (anthropic-version/beta present)
+      const storeActivated = hasActivatedStoreHeader(reqHeaders);
       const looksAnthropicCaller = Boolean(reqHeaders["anthropic-version"] || reqHeaders["anthropic-beta"]);
-      if (!looksAnthropicCaller) return false;
+      if (!storeActivated && !looksAnthropicCaller) return false;
 
       const resHeaders = normalizeHeaders(meta.headers) ?? {};
       const ct = resHeaders["content-type"] ?? "";
@@ -391,11 +419,50 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       const bodyText = bodyBuffer.toString("utf-8");
       const parsed = safeParseJson(bodyText);
 
-      // Important: use URL to disambiguate between Anthropic Messages API vs OpenAI chat.completions.
-      // Some OpenAI requests may superficially look like Anthropic (user/assistant only), but should not
-      // be converted unless the endpoint is actually `/messages`.
       const isMessagesEndpoint = urlEndsWithMessages(params.meta.url);
       const isChatCompletionsEndpoint = urlEndsWithChatCompletions(params.meta.url);
+      const looksAnthropicCaller = Boolean(headers["anthropic-version"] || headers["anthropic-beta"]);
+
+      // Anthropic SDK callers may be routed to an OpenAI upstream (e.g. /v1/chat/completions).
+      // In that case, the URL alone is not sufficient to determine the request format.
+      if (isAnthropicMessagesRequest(parsed) && (isMessagesEndpoint || looksAnthropicCaller)) {
+        const { url, body, headers: nextHeaders } = rewriteRequest({
+          headers,
+          url: params.meta.url ?? "",
+          body: parsed,
+        });
+
+        // After converting Anthropic -> OpenAI request, reuse the same sanitizer we apply to
+        // native OpenAI chat.completions requests (tool history, Claude token limits, etc).
+        let finalBody = body;
+        const parsedOpenAI = safeParseJson(body);
+        if (looksLikeOpenAIChatCompletionsRequest(parsedOpenAI)) {
+          const sanitized = rewriteOpenAIChatCompletionsRequestBody(parsedOpenAI, toolUseThinkingPolicy);
+          if (sanitized.changed) finalBody = JSON.stringify(sanitized.next);
+        }
+
+        if (debug) {
+          logger.logToFile("request-rewrite", {
+            original: {
+              url: params.meta.url,
+              headers: Object.fromEntries(Object.entries(headers).filter(([k]) => k !== "authorization" && k !== "api-key")),
+            },
+            rewritten: {
+              url,
+              headers: Object.fromEntries(
+                Object.entries(nextHeaders).filter(([k]) => k !== "authorization" && k !== "api-key"),
+              ),
+            },
+          });
+        }
+
+        const finalHeaders = params.store ? params.store.set({ activated: true }, nextHeaders) : nextHeaders;
+
+        return {
+          meta: { method: "POST", url, headers: finalHeaders },
+          body: streamFromBuffer(Buffer.from(finalBody, "utf-8")),
+        };
+      }
 
       if (isChatCompletionsEndpoint && looksLikeOpenAIChatCompletionsRequest(parsed)) {
         const { changed, next } = rewriteOpenAIChatCompletionsRequestBody(parsed, toolUseThinkingPolicy);
@@ -407,47 +474,8 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
         };
       }
 
-      if (!isMessagesEndpoint || !isAnthropicMessagesRequest(parsed)) {
-        logger.debug("Not a supported /messages or /chat/completions JSON request, skipping");
-        return null;
-      }
-
-      const { url, body, headers: nextHeaders } = rewriteRequest({
-        headers,
-        url: params.meta.url ?? "",
-        body: parsed,
-      });
-
-      // After converting Anthropic -> OpenAI request, reuse the same sanitizer we apply to
-      // native OpenAI chat.completions requests (tool history, Claude token limits, etc).
-      let finalBody = body;
-      const parsedOpenAI = safeParseJson(body);
-      if (looksLikeOpenAIChatCompletionsRequest(parsedOpenAI)) {
-        const sanitized = rewriteOpenAIChatCompletionsRequestBody(parsedOpenAI, toolUseThinkingPolicy);
-        if (sanitized.changed) finalBody = JSON.stringify(sanitized.next);
-      }
-
-      if (debug) {
-        logger.logToFile("request-rewrite", {
-          original: {
-            url: params.meta.url,
-            headers: Object.fromEntries(Object.entries(headers).filter(([k]) => k !== "authorization" && k !== "api-key")),
-          },
-          rewritten: {
-            url,
-            headers: Object.fromEntries(
-              Object.entries(nextHeaders).filter(([k]) => k !== "authorization" && k !== "api-key"),
-            ),
-          },
-        });
-      }
-
-      const finalHeaders = params.store ? params.store.set({ activated: true }, nextHeaders) : nextHeaders;
-
-      return {
-        meta: { method: "POST", url, headers: finalHeaders },
-        body: streamFromBuffer(Buffer.from(finalBody, "utf-8")),
-      };
+      logger.debug("Not a supported /messages or /chat/completions JSON request, skipping");
+      return null;
     },
 
     async onResponse(params: ResponseHookParams<Store>): Promise<ResponseHookResult | null> {
