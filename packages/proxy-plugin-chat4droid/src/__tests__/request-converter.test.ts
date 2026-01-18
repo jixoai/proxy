@@ -78,7 +78,7 @@ describe("chat4droid request-converter", () => {
 
   test("rewriteRequest strips anthropic headers and authorization ambiguity", () => {
     const result = rewriteRequest({
-      url: "https://api.hicap.ai/v1/messages",
+      url: "https://api.openai.com/v1/messages",
       headers: {
         "content-type": "application/json",
         "anthropic-version": "2023-06-01",
@@ -92,7 +92,7 @@ describe("chat4droid request-converter", () => {
       },
     });
 
-    expect(result.url).toBe("https://api.hicap.ai/v1/chat/completions");
+    expect(result.url).toBe("https://api.openai.com/v1/chat/completions");
     expect(result.headers["anthropic-version"]).toBeUndefined();
     expect(result.headers.authorization).toBeUndefined();
     expect(result.headers["api-key"]).toBe("real_key");
