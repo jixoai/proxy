@@ -8,8 +8,14 @@ import type { RequestBody, Message, TextBlock, RewriteResult, AnyTool } from "./
 import { isWebSearchTool } from "./types";
 
 export type ModelRewriteConfig = string | Record<string, string>;
+
+/** 默认的 anthropic-beta features */
+const DEFAULT_BETAS = ["claude-code-20250219", "interleaved-thinking-2025-05-14"];
+
 export type DroidRewriteConfig = {
   model?: ModelRewriteConfig;
+  /** anthropic-beta header 值，默认 ['claude-code-20250219', 'interleaved-thinking-2025-05-14'] */
+  betas?: string[];
 };
 
 const DEFAULT_MODEL_REWRITE: Record<string, string> = {};
@@ -271,22 +277,24 @@ export function rewriteRequestBody(
  * @param headers - 原始请求头
  * @param options - 可选配置
  * @param options.hasWebSearch - 是否包含 web_search 工具
+ * @param options.betas - 自定义 anthropic-beta features
  */
 export function rewriteHeaders(
   headers: Record<string, string>,
-  options?: { hasWebSearch?: boolean },
+  options?: { hasWebSearch?: boolean; betas?: string[] },
 ): Record<string, string> {
   const newHeaders: Record<string, string> = { ...headers };
 
-  // 基础 beta features
-  let betaFeatures = "claude-code-20250219,interleaved-thinking-2025-05-14";
+  // 使用自定义 betas 或默认值
+  const baseBetas = options?.betas ?? DEFAULT_BETAS;
+  const betaFeatures = [...baseBetas];
 
   // 如果包含 web_search 工具，添加 web-search-2025-03-05 beta
-  if (options?.hasWebSearch) {
-    betaFeatures += ",web-search-2025-03-05";
+  if (options?.hasWebSearch && !betaFeatures.includes("web-search-2025-03-05")) {
+    betaFeatures.push("web-search-2025-03-05");
   }
 
-  newHeaders["anthropic-beta"] = betaFeatures;
+  newHeaders["anthropic-beta"] = betaFeatures.join(",");
 
   if (newHeaders["x-api-key"] && !newHeaders["authorization"]) {
     newHeaders["authorization"] = `Bearer ${newHeaders["x-api-key"]}`;
@@ -332,7 +340,7 @@ export function rewriteRequest(params: {
   }
 
   return {
-    headers: rewriteHeaders(headers, { hasWebSearch }),
+    headers: rewriteHeaders(headers, { hasWebSearch, betas: config?.betas }),
     body: JSON.stringify(rewrittenBody),
   };
 }

@@ -20,7 +20,7 @@ import type {
 } from "@jixo/proxy-plugin";
 import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
 import { rewriteRequest, type ModelRewriteConfig } from "./rewriter";
-import { rewriteResponse } from "./response-rewriter";
+import { rewriteResponse, buildContextLengthExceededBody } from "./response-rewriter";
 
 /** 插件存储 schema - 标记请求是否被转换 */
 const DroidStoreSchema = z.object({
@@ -35,6 +35,55 @@ type DroidStore = z.infer<typeof DroidStoreSchema>;
 /** 默认服务器异常检测阈值：680KB */
 const DEFAULT_SERVER_ANOMALY_THRESHOLD = 680 * 1024;
 
+/** 可重试的 SSE 错误类型 */
+const RETRYABLE_SSE_ERROR_TYPES = [
+  "permission_error",
+  "overloaded_error",
+  "rate_limit_error",
+];
+
+/**
+ * 解析 SSE 文本中的错误事件
+ */
+function parseSSEErrorEvent(text: string): { type: string; message: string } | null {
+  const lines = text.split("\n");
+  let isErrorEvent = false;
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      const eventName = line.slice(6).trim();
+      isErrorEvent = eventName === "error";
+    } else if (line.startsWith("data:") && isErrorEvent) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+
+  if (!isErrorEvent || dataLines.length === 0) {
+    return null;
+  }
+
+  try {
+    const data = JSON.parse(dataLines.join(""));
+    if (data?.type === "error" && data?.error?.type) {
+      return {
+        type: data.error.type,
+        message: data.error.message || "",
+      };
+    }
+  } catch {
+    // ignore parse error
+  }
+  return null;
+}
+
+/**
+ * 检查 SSE 错误类型是否可重试
+ */
+function isRetryableSSEError(errorType: string): boolean {
+  return RETRYABLE_SSE_ERROR_TYPES.includes(errorType);
+}
+
 export interface DroidPluginOptions {
   /** 是否启用调试日志 */
   debug?: boolean;
@@ -44,6 +93,12 @@ export interface DroidPluginOptions {
   model?: ModelRewriteConfig;
   /** 服务器异常检测阈值（字节），小于此值的请求收到 context_length_exceeded 会被视为服务器异常，默认 680KB */
   serverAnomalyThreshold?: number;
+  /** 检测 SSE 流中的可重试错误并返回 502 (默认 false) */
+  detectSSEErrors?: boolean;
+  /** 将 499 Client Closed Request 转换为 context_length_exceeded (默认 false) */
+  rewrite499ToContextLengthExceeded?: boolean;
+  /** anthropic-beta header 值，默认 ['claude-code-20250219', 'interleaved-thinking-2025-05-14'] */
+  betas?: string[];
 }
 
 /**
@@ -58,7 +113,15 @@ export interface DroidPluginOptions {
  * ```
  */
 export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin<DroidStore> {
-  const { debug, logDir, model, serverAnomalyThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD } = options;
+  const {
+    debug,
+    logDir,
+    model,
+    serverAnomalyThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD,
+    detectSSEErrors = false,
+    rewrite499ToContextLengthExceeded = false,
+    betas,
+  } = options;
 
   const logger: PluginLogger = createLogger({
     name: "anthropic4droid",
@@ -85,11 +148,15 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       if (!reqContentType.includes("application/json")) {
         return false;
       }
-      // Only handle non-SSE JSON responses
+      // 处理 499 错误
+      if (rewrite499ToContextLengthExceeded && meta.statusCode === 499) {
+        return true;
+      }
       const resHeaders = normalizeHeaders(meta.headers) ?? {};
       const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();
-      if (resContentType.includes("text/event-stream")) {
-        return false;
+      // 处理 SSE 响应以检测错误
+      if (detectSSEErrors && resContentType.includes("text/event-stream")) {
+        return true;
       }
       if (resContentType.includes("application/json")) {
         return true;
@@ -110,7 +177,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       logger.debug(`Processing request: ${params.meta.method} ${params.meta.url}`);
 
-      const result = rewriteRequest({ headers, body: bodyText, config: { model } });
+      const result = rewriteRequest({ headers, body: bodyText, config: { model, betas } });
 
       if (!result.headers && !result.body) {
         logger.debug("Not a Droid request, passing through");
@@ -159,16 +226,55 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       logger.debug(`Processing response: ${params.meta.statusCode}`);
 
+      // 处理 499 错误：转换为 context_length_exceeded
+      if (rewrite499ToContextLengthExceeded && params.meta.statusCode === 499) {
+        logger.info("Rewriting 499 to context_length_exceeded");
+        return {
+          meta: {
+            statusCode: 400,
+            statusMessage: "Bad Request",
+            headers: { "content-type": "application/json" },
+          },
+          body: streamFromBuffer(Buffer.from(JSON.stringify(buildContextLengthExceededBody()))),
+        };
+      }
+
       // 优先使用 store 中记录的真实请求体大小，避免 content-length 缺失/不准确导致误判
       const requestContentLength = storeData.requestBodyLength;
 
       const headers = normalizeHeaders(params.meta.headers) ?? {};
       const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
-      if (contentType.includes("text/event-stream")) {
-        return null;
-      }
 
       const bodyBuffer = await readStreamToBuffer(params.body);
+
+      // 处理 SSE 响应：检测错误并返回 502
+      if (detectSSEErrors && contentType.includes("text/event-stream")) {
+        const text = bodyBuffer.toString("utf-8");
+        const errorEvent = parseSSEErrorEvent(text);
+
+        if (errorEvent && isRetryableSSEError(errorEvent.type)) {
+          logger.info(`SSE error detected: ${errorEvent.type} - ${errorEvent.message}`);
+          return {
+            meta: {
+              statusCode: 502,
+              statusMessage: "Bad Gateway",
+              headers: { "content-type": "application/json" },
+            },
+            body: streamFromBuffer(
+              Buffer.from(
+                JSON.stringify({
+                  type: "error",
+                  error: errorEvent,
+                  source: "sse_error_detected",
+                }),
+              ),
+            ),
+          };
+        }
+
+        // 非错误 SSE，返回原始流
+        return { body: streamFromBuffer(bodyBuffer) };
+      }
 
       const result = rewriteResponse({
         meta: params.meta,
