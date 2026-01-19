@@ -10,7 +10,7 @@
 
 import type { Database } from "bun:sqlite";
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * Body 阶段类型
@@ -47,6 +47,7 @@ export function createSchema(db: Database): void {
       status TEXT NOT NULL DEFAULT 'pending',
       error_message TEXT,
       abort_reason TEXT,
+      client_aborted INTEGER DEFAULT 0,
       
       -- 响应信息（可选，streaming 时逐步填充）
       status_code INTEGER,
@@ -173,5 +174,5 @@ export function migrateToLatest(db: Database): void {
   // 更新版本号
   db.run("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)", [String(SCHEMA_VERSION)]);
   
-  console.log("[Database] Migration to v9 complete");
+  console.log("[Database] Migration to v10 complete");
 }

@@ -42,6 +42,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
   const [description, setDescription] = useState("");
   const [customHeaders, setCustomHeaders] = useState("");
   const [hooks, setHooks] = useState("");
+  const [timeoutValue, setTimeoutValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -98,6 +99,16 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
         }
       }
 
+      // 解析 timeout
+      let parsedTimeout: number | null = null;
+      if (timeoutValue.trim()) {
+        const num = parseInt(timeoutValue.trim(), 10);
+        if (isNaN(num) || num <= 0) {
+          throw new Error("超时时间必须是正整数");
+        }
+        parsedTimeout = num;
+      }
+
       instance.forwards.push({
         name,
         enabled: true,
@@ -107,6 +118,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
         methods,
         headers,
         hooks: parsedHooks,
+        timeout: parsedTimeout,
       });
 
       const saveResponse = await fetch("/api/config", {
@@ -129,6 +141,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
       setDescription("");
       setCustomHeaders("");
       setHooks("");
+      setTimeoutValue("");
       onCreated(createdName);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
@@ -216,6 +229,20 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
                 />
               </div>
               <CustomHeadersInput value={customHeaders} onChange={setCustomHeaders} />
+              <div className="space-y-2">
+                <Label htmlFor="forward-timeout">请求超时（可选）</Label>
+                <Input
+                  id="forward-timeout"
+                  type="number"
+                  min="1"
+                  value={timeoutValue}
+                  onChange={(e) => setTimeoutValue(e.target.value)}
+                  placeholder="例如：90"
+                />
+                <p className="text-muted-foreground text-xs">
+                  请求超时时间（秒）。留空表示无超时限制。
+                </p>
+              </div>
               {error && <div className="text-destructive text-sm">{error}</div>}
             </div>
           </ScrollArea>

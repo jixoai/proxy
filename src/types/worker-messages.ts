@@ -11,6 +11,8 @@ export interface ForwardRuleConfig {
   methods?: string[];
   headers?: Record<string, string> | null;
   hooks?: HooksConfig | null;
+  /** 请求超时时间（秒），默认无超时 */
+  timeout?: number | null;
 }
 
 /** 实例运行时配置（不包含port，port不可热更新） */

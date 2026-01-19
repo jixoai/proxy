@@ -60,7 +60,7 @@ describe("Database Initialization", () => {
     `).get() as { value: string } | null;
     
     expect(version).not.toBeNull();
-    expect(parseInt(version!.value, 10)).toBe(9);
+    expect(parseInt(version!.value, 10)).toBe(10);
   });
 
   test("requests table should have all required columns", () => {

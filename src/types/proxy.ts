@@ -51,6 +51,8 @@ export interface ProxyForwardConfig {
   methods: string[];
   headers: ProxyForwardHeaders | null;
   hooks?: HooksConfig | null;
+  /** 请求超时时间（秒），不设置则无超时 */
+  timeout?: number | null;
 }
 
 /** 实例级别设置 */

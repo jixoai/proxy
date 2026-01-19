@@ -41,6 +41,29 @@ export function isUpstreamRequestFailedError(parsed: unknown): parsed is {
 }
 
 /**
+ * 检测是否为 "prompt is too long" 错误
+ * Claude 返回的错误消息可能包含：
+ * - "prompt is too long"
+ * - "request too large"
+ * - "maximum context length"
+ * - "too many tokens"
+ * - "input is too long"
+ */
+export function isPromptTooLongError(parsed: unknown): boolean {
+  if (!isRecord(parsed)) return false;
+  if (parsed.type !== "error") return false;
+  if (!isRecord(parsed.error)) return false;
+  const message = String(parsed.error.message || "").toLowerCase();
+  return (
+    message.includes("prompt is too long") ||
+    message.includes("request too large") ||
+    message.includes("maximum context length") ||
+    message.includes("too many tokens") ||
+    message.includes("input is too long")
+  );
+}
+
+/**
  * 检测是否为 context_length_exceeded 错误（200 状态码返回的异常情况）
  */
 export function isContextLengthExceededError(parsed: unknown): boolean {
@@ -258,7 +281,26 @@ export function rewriteResponse(params: {
 
   const parsed = directParsed ?? sseParsed;
 
-  // 检测 "Upstream request failed" 错误
+  // 检测明确的 "prompt is too long" 错误 - 直接返回 context_length_exceeded，不检查请求大小
+  if (isPromptTooLongError(parsed)) {
+    const rewrittenBody = buildContextLengthExceededBody();
+    const nextMeta: ResponseMeta = {
+      statusCode: 400,
+      statusMessage: "Bad Request",
+      headers: {
+        ...(params.meta.headers ?? {}),
+        "content-type": "application/json; charset=utf-8",
+      },
+    };
+    return {
+      meta: nextMeta,
+      body: Buffer.from(JSON.stringify(rewrittenBody), "utf-8"),
+      rewritten: true,
+      source: directParsed ? "json" : "sse",
+    };
+  }
+
+  // 检测 "Upstream request failed" 错误 - 需要检查请求大小来区分服务器异常
   if (isUpstreamRequestFailedError(parsed)) {
     // 如果请求较小（< 阈值），说明不是真正的 context_length_exceeded，是服务器异常
     if (

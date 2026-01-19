@@ -19,7 +19,7 @@ import { parsePrivateHeaders } from "@jixo/proxy-plugin";
 // Types
 // ============================================================================
 
-export type AbortReason = "client_disconnect" | "user_abort" | "server_restart";
+export type AbortReason = "client_disconnect" | "user_abort" | "server_restart" | "timeout";
 export type RequestStatus = "pending" | "streaming" | "completed" | "error" | "aborted";
 export type WebSocketDirection = "send" | "receive" | null;
 
@@ -46,6 +46,7 @@ type InternalListSummary = {
   status: RequestStatus;
   error_message: string | null;
   abort_reason: AbortReason | null;
+  client_aborted: boolean;
   status_code: number | null;
   content_type: string | null;
   ttfb_ms: number | null;
@@ -71,6 +72,7 @@ export interface RequestRecord {
   status: RequestStatus;
   error_message: string | null;
   abort_reason: AbortReason | null;
+  client_aborted: boolean;
   status_code: number | null;
   status_message: string | null;
   content_type: string | null;
@@ -202,6 +204,7 @@ export interface RequestDetail {
   status: RequestStatus;
   error_message: string | null;
   abort_reason: AbortReason | null;
+  client_aborted: boolean;
   
   // 响应信息
   status_code: number | null;
@@ -647,7 +650,7 @@ function getRequestsSummaryInternal(options?: {
   
   let sql = `
     SELECT id, request_id, timestamp, instance_name, forward_name, forward_id,
-           method, url, target_url, status, error_message, abort_reason, status_code,
+           method, url, target_url, status, error_message, abort_reason, client_aborted, status_code,
            content_type, ttfb_ms, body_ms, request_body_size, response_body_size,
            has_request_hook_changes, has_response_hook_changes, is_websocket, plugin_info
     FROM requests ${whereSql}
@@ -674,6 +677,7 @@ function getRequestsSummaryInternal(options?: {
     status: row.status,
     error_message: row.error_message,
     abort_reason: row.abort_reason,
+    client_aborted: Boolean(row.client_aborted),
     status_code: row.status_code,
     content_type: row.content_type,
     ttfb_ms: row.ttfb_ms,
@@ -816,6 +820,7 @@ export function getRequestDetail(id: number): RequestDetail | null {
     status: row.status,
     error_message: row.error_message,
     abort_reason: row.abort_reason,
+    client_aborted: Boolean(row.client_aborted),
     status_code: row.status_code,
     status_message: row.status_message,
     content_type: row.content_type,
@@ -946,7 +951,7 @@ function searchRequestsFuzzyInternal(
   
   let sql = `
     SELECT r.id, r.request_id, r.timestamp, r.instance_name, r.forward_name, r.forward_id,
-           r.method, r.url, r.target_url, r.status, r.error_message, r.abort_reason, r.status_code,
+           r.method, r.url, r.target_url, r.status, r.error_message, r.abort_reason, r.client_aborted, r.status_code,
            r.content_type, r.ttfb_ms, r.body_ms, r.request_body_size, r.response_body_size,
            r.has_request_hook_changes, r.has_response_hook_changes, r.is_websocket, r.plugin_info
     FROM requests r
@@ -975,6 +980,7 @@ function searchRequestsFuzzyInternal(
     status: row.status,
     error_message: row.error_message,
     abort_reason: row.abort_reason,
+    client_aborted: Boolean(row.client_aborted),
     status_code: row.status_code,
     content_type: row.content_type,
     ttfb_ms: row.ttfb_ms,
@@ -1086,6 +1092,7 @@ export interface LoggedRequest {
   group_name: string | null;
   status: RequestStatus;
   abort_reason: AbortReason | null;
+  client_aborted?: boolean;
   is_websocket: boolean;
   websocket_direction: WebSocketDirection;
   error_message: string | null;
@@ -1181,6 +1188,14 @@ export function updateProxyRequest(id: number, updates: Partial<LoggedRequest>):
     markRequestError(id, updates.error_message);
   } else if (updates.status === "aborted" && updates.abort_reason) {
     markRequestAborted(id, updates.abort_reason);
+  }
+  
+  // 处理 client_aborted 字段
+  if (updates.client_aborted !== undefined) {
+    db.query("UPDATE requests SET client_aborted = ? WHERE id = ?").run(
+      updates.client_aborted ? 1 : 0,
+      id,
+    );
   }
   
   // 处理响应数据
@@ -1365,6 +1380,7 @@ export interface ListSummary {
   forwardId: string | null;
   status: RequestStatus;
   abortReason: AbortReason | null;
+  clientAborted: boolean;
   isWebSocket: boolean;
   targetUrl?: string;
   request: {
@@ -1420,6 +1436,7 @@ function convertToListSummary(item: InternalListSummary): ListSummary {
     forwardId: item.forward_id,
     status: item.status,
     abortReason: item.abort_reason,
+    clientAborted: item.client_aborted,
     isWebSocket: item.is_websocket,
     targetUrl: item.target_url ?? item.url,
     request: {

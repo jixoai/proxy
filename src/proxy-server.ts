@@ -104,9 +104,10 @@ async function main(argv: string[]) {
 
   const CLIENT_DISCONNECT: AbortReason = "client_disconnect";
   const USER_ABORT: AbortReason = "user_abort";
+  const TIMEOUT: AbortReason = "timeout";
 
   function isAbortReason(value: unknown): value is AbortReason {
-    return value === CLIENT_DISCONNECT || value === USER_ABORT;
+    return value === CLIENT_DISCONNECT || value === USER_ABORT || value === TIMEOUT;
   }
 
   function getAbortReasonFromSignal(signal: AbortSignal): AbortReason {
@@ -153,6 +154,7 @@ async function main(argv: string[]) {
     methods?: string[];
     headers?: Record<string, string> | null;
     hooks?: HooksConfig | null;
+    timeout?: number | null;
   }
 
   let forwards: ForwardRule[] = [];
@@ -748,6 +750,16 @@ async function main(argv: string[]) {
           return;
         }
 
+        // 设置超时定时器
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        const timeoutSeconds = forwardRule.timeout;
+        if (timeoutSeconds && timeoutSeconds > 0) {
+          timeoutId = setTimeout(() => {
+            log.info(`[Timeout] Request timed out after ${timeoutSeconds}s`);
+            abortController.abort(TIMEOUT);
+          }, timeoutSeconds * 1000);
+        }
+
         let proxyResRef: http.IncomingMessage | null = null;
         const upstreamHeaders = stripInternalHeadersForUpstream(hookedForwardHeaders);
         const proxyReq = requestModule.request(
@@ -1045,6 +1057,10 @@ async function main(argv: string[]) {
         );
 
         const cleanup = () => {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+          }
           abortSignal.removeEventListener("abort", handleAbort);
         };
 
@@ -1097,12 +1113,27 @@ async function main(argv: string[]) {
       }).catch((err) => {
         // 处理中断异常
         if (err instanceof ProxyRequestAbortedError) {
-          const statusMessage =
-            err.abortReason === USER_ABORT ? "User Aborted Request" : "Client Closed Request";
-          const errorMessage =
-            err.abortReason === USER_ABORT ? "Request aborted by user" : "Client disconnected";
+          let statusMessage: string;
+          let errorMessage: string;
+          let statusCode = 499;
+
+          switch (err.abortReason) {
+            case USER_ABORT:
+              statusMessage = "User Aborted Request";
+              errorMessage = "Request aborted by user";
+              break;
+            case TIMEOUT:
+              statusMessage = "Gateway Timeout";
+              errorMessage = "Request timed out";
+              statusCode = 504;
+              break;
+            default:
+              statusMessage = "Client Closed Request";
+              errorMessage = "Client disconnected";
+          }
+
           return {
-            statusCode: 499,
+            statusCode,
             statusMessage,
             headers: {} as http.OutgoingHttpHeaders,
             bodyBuffer: Buffer.alloc(0),
@@ -1167,6 +1198,7 @@ async function main(argv: string[]) {
     updateProxyRequest(dbRecordId, {
       status: isRequestAborted ? "aborted" : finalResult.errorMessage ? "error" : "completed",
       abort_reason: isRequestAborted ? finalResult.abortReason! : null,
+      client_aborted: isClientDisconnected && !isRequestAborted,
       error_message: finalResult.errorMessage ?? null,
       forward_name: finalResult.forwardRule.name,
       // 原始响应（如果有 hook 则是原始数据，否则就是最终数据）
