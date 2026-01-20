@@ -64,6 +64,45 @@ export function isPromptTooLongError(parsed: unknown): boolean {
 }
 
 /**
+ * 检测是否为过载/容量不足错误 (429)
+ * 包括：
+ * - overloaded_error 类型
+ * - RESOURCE_EXHAUSTED / MODEL_CAPACITY_EXHAUSTED
+ * - "No capacity available" 消息
+ */
+export function isOverloadedError(parsed: unknown): boolean {
+  if (!isRecord(parsed)) return false;
+  if (parsed.type !== "error") return false;
+  if (!isRecord(parsed.error)) return false;
+  
+  const errorType = parsed.error.type;
+  const message = String(parsed.error.message || "").toLowerCase();
+  
+  return (
+    errorType === "overloaded_error" ||
+    message.includes("no capacity available") ||
+    message.includes("resource_exhausted") ||
+    message.includes("model_capacity_exhausted") ||
+    message.includes("overloaded")
+  );
+}
+
+/**
+ * 构建过载错误响应体
+ */
+export function buildOverloadedErrorBody() {
+  return {
+    type: "error",
+    message: "Service temporarily overloaded",
+    error: {
+      type: "overloaded_error",
+      code: "overloaded",
+      message: "Service temporarily overloaded, please retry",
+    },
+  };
+}
+
+/**
  * 检测是否为 context_length_exceeded 错误（200 状态码返回的异常情况）
  */
 export function isContextLengthExceededError(parsed: unknown): boolean {
@@ -280,6 +319,25 @@ export function rewriteResponse(params: {
         : null;
 
   const parsed = directParsed ?? sseParsed;
+
+  // 检测过载错误 (429) - 返回 502 Bad Gateway
+  if (isOverloadedError(parsed)) {
+    const rewrittenBody = buildOverloadedErrorBody();
+    const nextMeta: ResponseMeta = {
+      statusCode: 502,
+      statusMessage: "Bad Gateway",
+      headers: {
+        ...(params.meta.headers ?? {}),
+        "content-type": "application/json; charset=utf-8",
+      },
+    };
+    return {
+      meta: nextMeta,
+      body: Buffer.from(JSON.stringify(rewrittenBody), "utf-8"),
+      rewritten: true,
+      source: directParsed ? "json" : "sse",
+    };
+  }
 
   // 检测明确的 "prompt is too long" 错误 - 直接返回 context_length_exceeded，不检查请求大小
   if (isPromptTooLongError(parsed)) {
