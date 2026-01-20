@@ -726,6 +726,13 @@ async function main(argv: string[]) {
       const requestModule = isHttps ? https : http;
       const defaultPort = isHttps ? 443 : 80;
 
+      // 将响应数据提升到 Promise 外部作用域，以便在 abort 时可以访问已收集的数据
+      let collectedResponseChunks: Buffer[] = [];
+      let collectedStatusCode: number | null = null;
+      let collectedStatusMessage: string | null = null;
+      let collectedResponseHeaders: http.IncomingHttpHeaders | null = null;
+      let collectedTtfbMs: number | null = null;
+
       const attemptResult = await new Promise<{
         statusCode: number;
         statusMessage: string;
@@ -761,6 +768,7 @@ async function main(argv: string[]) {
         }
 
         let proxyResRef: http.IncomingMessage | null = null;
+        
         const upstreamHeaders = stripInternalHeadersForUpstream(hookedForwardHeaders);
         const proxyReq = requestModule.request(
           {
@@ -775,8 +783,16 @@ async function main(argv: string[]) {
             // TTFB: 收到响应头的时间
             const responseStartTime = Date.now();
             const ttfbMs = responseStartTime - attemptStart;
+            
+            // 保存到外部作用域
+            collectedTtfbMs = ttfbMs;
+            collectedStatusCode = proxyRes.statusCode || 502;
+            collectedStatusMessage = proxyRes.statusMessage || "";
+            collectedResponseHeaders = { ...proxyRes.headers };
 
             const responseChunks: Buffer[] = [];
+            // 让 collectedResponseChunks 指向同一个数组
+            collectedResponseChunks = responseChunks;
 
             let responseHeaders = { ...proxyRes.headers };
             let statusCode = proxyRes.statusCode || 502;
@@ -1130,6 +1146,25 @@ async function main(argv: string[]) {
             default:
               statusMessage = "Client Closed Request";
               errorMessage = "Client disconnected";
+          }
+
+          // 如果已经收到上游响应数据，保留它而不是返回空 buffer
+          const hasCollectedResponse = collectedStatusCode !== null && collectedResponseChunks.length > 0;
+          
+          if (hasCollectedResponse) {
+            const collectedBodyBuffer = Buffer.concat(collectedResponseChunks);
+            const collectedContentType = (collectedResponseHeaders?.["content-type"] as string) ?? null;
+            return {
+              statusCode: collectedStatusCode!,
+              statusMessage: collectedStatusMessage || statusMessage,
+              headers: collectedResponseHeaders as http.OutgoingHttpHeaders,
+              bodyBuffer: collectedBodyBuffer,
+              contentType: collectedContentType,
+              errorMessage,
+              abortReason: err.abortReason,
+              ttfbMs: collectedTtfbMs ?? (Date.now() - attemptStart),
+              bodyMs: 0,
+            };
           }
 
           return {
