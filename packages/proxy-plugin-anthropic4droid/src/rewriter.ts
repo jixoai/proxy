@@ -10,7 +10,11 @@ import { isWebSearchTool } from "./types";
 export type ModelRewriteConfig = string | Record<string, string>;
 
 /** 默认的 anthropic-beta features */
-const DEFAULT_BETAS = ["claude-code-20250219", "interleaved-thinking-2025-05-14"];
+const DEFAULT_BETAS = [
+  "claude-code-20250219",
+  "interleaved-thinking-2025-05-14",
+  "effort-2025-11-24",
+];
 
 export type DroidRewriteConfig = {
   model?: ModelRewriteConfig;
