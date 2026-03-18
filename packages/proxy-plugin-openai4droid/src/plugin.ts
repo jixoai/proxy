@@ -84,6 +84,13 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       if (!reqContentType.includes("application/json")) {
         return false;
       }
+
+      // Empty gateway errors may have no content-type. We still want response hook
+      // to rewrite them into structured errors for Droid.
+      if (meta.statusCode === 502 || meta.statusCode === 503 || meta.statusCode === 504) {
+        return true;
+      }
+
       // Check response content-type: we handle both JSON and SSE
       const resHeaders = normalizeHeaders(meta.headers) ?? {};
       const resContentType = (resHeaders["content-type"] ?? "").toString().toLowerCase();

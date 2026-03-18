@@ -46,8 +46,10 @@ export function resolveDbPathTemplate(template: string): string {
     resolved = os.homedir();
   }
 
-  // 替换 ${VERSION}
-  resolved = resolved.replace(/\$\{VERSION\}/g, getVersion());
+  // 替换 ${VERSION}（按需计算版本号，避免不必要的 getVersion() 调用）
+  if (resolved.includes("${VERSION}")) {
+    resolved = resolved.replace(/\$\{VERSION\}/g, getVersion());
+  }
 
   return path.resolve(resolved);
 }

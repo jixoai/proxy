@@ -229,4 +229,52 @@ describe("createDroidPlugin", () => {
     // 请求未被处理，跳过响应重写
     expect(result).toBeNull();
   });
+
+  it("should normalize SSE content_block indices (out-of-order index causes Droid crash)", async () => {
+    const plugin = createDroidPlugin({ normalizeSSEContentBlockIndex: true });
+    const sse = [
+      "event: message_start",
+      'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-5-20251101","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}',
+      "",
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":100,"content_block":{"type":"thinking","thinking":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":100,"delta":{"type":"thinking_delta","thinking":"hi"}}',
+      "",
+      "event: content_block_stop",
+      'data: {"type":"content_block_stop","index":100}',
+      "",
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+      "",
+      "event: content_block_stop",
+      'data: {"type":"content_block_stop","index":0}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+      "",
+    ].join("\n");
+
+    const params = createResponseParams({
+      statusCode: 200,
+      headers: { "content-type": "text/event-stream" },
+      body: Buffer.from(sse, "utf-8"),
+    });
+
+    const result = await plugin.onResponse!(params);
+    expect(result).not.toBeNull();
+
+    const modifiedResult = result as { body?: ReadableStream<Uint8Array> };
+    const out = (await readStreamToBuffer(modifiedResult.body!)).toString("utf-8");
+
+    // First seen index=100 should be remapped to 0, and later original index=0 becomes 1.
+    expect(out).not.toContain('"index":100');
+    expect(out).toContain('"index":0');
+    expect(out).toContain('"index":1');
+  });
 });

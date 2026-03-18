@@ -21,7 +21,7 @@ export interface ResponseRewriteResult {
   meta: ResponseMeta;
   body: Buffer;
   rewritten: boolean;
-  source?: "json" | "sse" | "server_anomaly";
+  source?: "json" | "sse" | "server_anomaly" | "gateway_empty";
 }
 
 /**
@@ -83,6 +83,35 @@ export function buildContextLengthExceededBody() {
   };
 }
 
+function buildJsonMeta(
+  meta: ResponseMeta,
+  statusCode: number,
+  statusMessage: string,
+): ResponseMeta {
+  return {
+    statusCode,
+    statusMessage,
+    headers: {
+      ...(meta.headers ?? {}),
+      "content-type": "application/json; charset=utf-8",
+    },
+  };
+}
+
+function shouldTreatAsServerAnomaly(params: {
+  requestContentLength?: number;
+  serverAnomalyThreshold?: number;
+}): boolean {
+  if (params.requestContentLength === undefined || params.serverAnomalyThreshold === undefined) {
+    return true;
+  }
+  return params.requestContentLength < params.serverAnomalyThreshold;
+}
+
+function isGatewayFailureStatus(statusCode: number | undefined): boolean {
+  return statusCode === 502 || statusCode === 503 || statusCode === 504;
+}
+
 /**
  * 判断文本是否看起来像 SSE
  */
@@ -141,6 +170,29 @@ export function rewriteResponse(params: {
   const text = params.body.toString("utf-8");
 
   if (!text.trim()) {
+    // 部分上游会返回空 body 的 502/503/504。这里按请求大小区分：
+    // - 小请求：视为网关异常，避免误触发 compact
+    // - 大请求：视为可 compact 的 context_length_exceeded
+    if (isGatewayFailureStatus(params.meta.statusCode)) {
+      if (shouldTreatAsServerAnomaly(params)) {
+        const anomalyBody = buildServerAnomalyBody();
+        return {
+          meta: buildJsonMeta(params.meta, 500, "Internal Server Error"),
+          body: Buffer.from(JSON.stringify(anomalyBody), "utf-8"),
+          rewritten: true,
+          source: "gateway_empty",
+        };
+      }
+
+      const rewrittenBody = buildContextLengthExceededBody();
+      return {
+        meta: buildJsonMeta(params.meta, 400, "Bad Request"),
+        body: Buffer.from(JSON.stringify(rewrittenBody), "utf-8"),
+        rewritten: true,
+        source: "gateway_empty",
+      };
+    }
+
     return { ...params, rewritten: false };
   }
 
@@ -163,22 +215,10 @@ export function rewriteResponse(params: {
   // 检测 "Upstream request failed" 错误
   if (isUpstreamRequestFailedError(parsed)) {
     // 如果请求较小（< 阈值），说明不是真正的 context_length_exceeded，是服务器异常
-    if (
-      params.requestContentLength !== undefined &&
-      params.serverAnomalyThreshold !== undefined &&
-      params.requestContentLength < params.serverAnomalyThreshold
-    ) {
+    if (shouldTreatAsServerAnomaly(params)) {
       const anomalyBody = buildServerAnomalyBody();
-      const anomalyMeta: ResponseMeta = {
-        statusCode: 500,
-        statusMessage: "Internal Server Error",
-        headers: {
-          ...(params.meta.headers ?? {}),
-          "content-type": "application/json; charset=utf-8",
-        },
-      };
       return {
-        meta: anomalyMeta,
+        meta: buildJsonMeta(params.meta, 500, "Internal Server Error"),
         body: Buffer.from(JSON.stringify(anomalyBody), "utf-8"),
         rewritten: true,
         source: "server_anomaly",
@@ -187,16 +227,8 @@ export function rewriteResponse(params: {
 
     // 请求较大，正常转换为 context_length_exceeded
     const rewrittenBody = buildContextLengthExceededBody();
-    const nextMeta: ResponseMeta = {
-      statusCode: 400,
-      statusMessage: "Bad Request",
-      headers: {
-        ...(params.meta.headers ?? {}),
-        "content-type": "application/json; charset=utf-8",
-      },
-    };
     return {
-      meta: nextMeta,
+      meta: buildJsonMeta(params.meta, 400, "Bad Request"),
       body: Buffer.from(JSON.stringify(rewrittenBody), "utf-8"),
       rewritten: true,
       source: directParsed ? "json" : "sse",
@@ -205,22 +237,10 @@ export function rewriteResponse(params: {
 
   // 检测 200 状态码直接返回 context_length_exceeded 的情况
   if (params.meta.statusCode === 200 && isContextLengthExceededError(parsed)) {
-    if (
-      params.requestContentLength !== undefined &&
-      params.serverAnomalyThreshold !== undefined &&
-      params.requestContentLength < params.serverAnomalyThreshold
-    ) {
+    if (shouldTreatAsServerAnomaly(params)) {
       const anomalyBody = buildServerAnomalyBody();
-      const anomalyMeta: ResponseMeta = {
-        statusCode: 500,
-        statusMessage: "Internal Server Error",
-        headers: {
-          ...(params.meta.headers ?? {}),
-          "content-type": "application/json; charset=utf-8",
-        },
-      };
       return {
-        meta: anomalyMeta,
+        meta: buildJsonMeta(params.meta, 500, "Internal Server Error"),
         body: Buffer.from(JSON.stringify(anomalyBody), "utf-8"),
         rewritten: true,
         source: "server_anomaly",
@@ -228,16 +248,8 @@ export function rewriteResponse(params: {
     }
 
     const rewrittenBody = buildContextLengthExceededBody();
-    const nextMeta: ResponseMeta = {
-      statusCode: 400,
-      statusMessage: "Bad Request",
-      headers: {
-        ...(params.meta.headers ?? {}),
-        "content-type": "application/json; charset=utf-8",
-      },
-    };
     return {
-      meta: nextMeta,
+      meta: buildJsonMeta(params.meta, 400, "Bad Request"),
       body: Buffer.from(JSON.stringify(rewrittenBody), "utf-8"),
       rewritten: true,
       source: directParsed ? "json" : "sse",

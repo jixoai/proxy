@@ -263,7 +263,9 @@ describe("rewriteHeaders", () => {
   it("should add anthropic-beta header", () => {
     const headers = { "content-type": "application/json" };
     const result = rewriteHeaders(headers);
-    expect(result["anthropic-beta"]).toBe("claude-code-20250219,interleaved-thinking-2025-05-14");
+    expect(result["anthropic-beta"]).toBe(
+      "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24",
+    );
   });
 
   it("should convert x-api-key to authorization", () => {

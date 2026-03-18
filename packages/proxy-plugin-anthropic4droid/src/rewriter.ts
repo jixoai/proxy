@@ -343,8 +343,14 @@ export function rewriteRequest(params: {
     return {};
   }
 
+  // 开启实验性的 1m 上下文
+  let betas = config?.betas ?? [];
+  // if (config?.model && config.model === "claude-opus-4-6") {
+  //   betas.push("context-1m-2025-08-07");
+  // }
+
   return {
-    headers: rewriteHeaders(headers, { hasWebSearch, betas: config?.betas }),
+    headers: rewriteHeaders(headers, { hasWebSearch, betas }),
     body: JSON.stringify(rewrittenBody),
   };
 }
