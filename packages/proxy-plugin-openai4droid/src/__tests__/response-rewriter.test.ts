@@ -30,6 +30,31 @@ describe("rewriteResponse", () => {
     expect(rewrittenBody.error.code).toBe("context_length_exceeded");
   });
 
+  it("rewrites response.failed SSE to context_length_exceeded", () => {
+    const body = [
+      "event: response.failed",
+      'data: {"type":"response.failed","response":{"id":"resp_test","status":"failed","error":{"code":"server_error","message":"Upstream request failed"}}}',
+      "",
+    ].join("\n");
+
+    const result = rewriteResponse({
+      meta: {
+        statusCode: 200,
+        headers: { "content-type": "text/event-stream" },
+      },
+      body: Buffer.from(body),
+      requestContentLength: 120000,
+      serverAnomalyThreshold: 10000,
+    });
+
+    expect(result.rewritten).toBe(true);
+    expect(result.meta.statusCode).toBe(400);
+    expect(result.source).toBe("sse");
+
+    const rewrittenBody = JSON.parse(result.body.toString("utf-8"));
+    expect(rewrittenBody.error.code).toBe("context_length_exceeded");
+  });
+
   it("rewrites empty 502 gateway response to context_length_exceeded for large request", () => {
     const result = rewriteResponse({
       meta: {

@@ -19,11 +19,13 @@ import type {
   PluginLogger,
 } from "@jixo/proxy-plugin";
 import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
-import { rewriteRequest } from "./rewriter";
-import { rewriteResponse } from "./response-rewriter";
+import { rewriteRequest, isNativeSummarizerRequest } from "./rewriter";
+import { rewriteResponse, buildContextLengthExceededBody } from "./response-rewriter";
 
 /** 服务器异常检测阈值（字节） - 小于此大小的请求不应触发 context_length_exceeded */
-const SERVER_ANOMALY_THRESHOLD = 10000;
+const DEFAULT_SERVER_ANOMALY_THRESHOLD = 10000;
+const COMPACTION_SSE_PEEK_LIMIT = 64 * 1024;
+const COMPACTION_HEARTBEAT_MS = 15000;
 
 /** 插件存储 schema - 标记请求是否被转换 */
 const DroidStoreSchema = z.object({
@@ -31,15 +33,461 @@ const DroidStoreSchema = z.object({
   activated: z.literal(true),
   /** 该次请求体字节长度（用于 response hook 判断是否为服务器异常） */
   requestBodyLength: z.number().int().nonnegative(),
+  /** 请求类型 */
+  requestKind: z.enum(["standard", "compaction"]).default("standard"),
 });
 
 type DroidStore = z.infer<typeof DroidStoreSchema>;
+
+interface AggregatedCompactionResponse {
+  responseId?: string;
+  createdAt?: number;
+  model?: string;
+  outputText: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+function buildCompactionJsonResponse(
+  aggregated: AggregatedCompactionResponse,
+  fallbackModel?: string,
+): Record<string, unknown> {
+  const text = (() => {
+    const start = aggregated.outputText.indexOf("<summary>");
+    const end = aggregated.outputText.indexOf("</summary>");
+    if (start !== -1 && end !== -1 && end > start) {
+      return aggregated.outputText.slice(start, end + "</summary>".length);
+    }
+    return aggregated.outputText;
+  })();
+
+  const outputText = text.trim();
+
+  return {
+    id: aggregated.responseId ?? `resp_${Date.now()}`,
+    object: "response",
+    created_at: aggregated.createdAt ?? Math.floor(Date.now() / 1000),
+    status: "completed",
+    model: aggregated.model ?? fallbackModel ?? "unknown",
+    output: [
+      {
+        id: `msg_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text: outputText,
+          },
+        ],
+      },
+    ],
+    usage: {
+      input_tokens: aggregated.usage?.input_tokens ?? 0,
+      output_tokens: aggregated.usage?.output_tokens ?? 0,
+      total_tokens:
+        aggregated.usage?.total_tokens ??
+        (aggregated.usage?.input_tokens ?? 0) + (aggregated.usage?.output_tokens ?? 0),
+    },
+  };
+}
+
+function parseSseBlock(block: string): { event?: string; data?: string } {
+  const lines = block.split("\n").filter((line) => line.length > 0);
+  let eventName: string | undefined;
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith(":")) continue;
+    const sep = line.indexOf(":");
+    if (sep === -1) continue;
+    const field = line.slice(0, sep).trim();
+    let value = line.slice(sep + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") eventName = value;
+    if (field === "data") dataLines.push(value);
+  }
+
+  return {
+    event: eventName,
+    data: dataLines.length > 0 ? dataLines.join("\n") : undefined,
+  };
+}
+
+function appendOutputTextFromValue(target: AggregatedCompactionResponse, value: unknown): void {
+  if (typeof value === "string") {
+    target.outputText += value;
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      appendOutputTextFromValue(target, item);
+    }
+    return;
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  if (record.type === "output_text" && typeof record.text === "string") {
+    target.outputText += record.text;
+  }
+
+  if (typeof record.delta === "string") {
+    target.outputText += record.delta;
+  }
+
+  if (record.part) {
+    appendOutputTextFromValue(target, record.part);
+  }
+
+  if (record.item) {
+    appendOutputTextFromValue(target, record.item);
+  }
+
+  if (record.content) {
+    appendOutputTextFromValue(target, record.content);
+  }
+
+  if (record.output) {
+    appendOutputTextFromValue(target, record.output);
+  }
+}
+
+async function aggregateCompactionSseResponse(
+  body: ReadableStream<Uint8Array>,
+  fallbackModel?: string,
+): Promise<Buffer> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let bufferedText = "";
+  const aggregated: AggregatedCompactionResponse = {
+    model: fallbackModel,
+    outputText: "",
+  };
+
+  const finalize = () =>
+    Buffer.from(JSON.stringify(buildCompactionJsonResponse(aggregated, fallbackModel)), "utf-8");
+
+  const processEventBlock = async (block: string): Promise<"continue" | "done"> => {
+    const { event, data } = parseSseBlock(block);
+    if (!data) return "continue";
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      return "continue";
+    }
+
+    const eventType = event ?? (typeof parsed.type === "string" ? parsed.type : undefined);
+
+    if (eventType === "response.created") {
+      const response = parsed.response as Record<string, unknown> | undefined;
+      if (response) {
+        aggregated.responseId =
+          typeof response.id === "string" ? response.id : aggregated.responseId;
+        aggregated.createdAt =
+          typeof response.created_at === "number"
+            ? response.created_at
+            : aggregated.createdAt;
+        aggregated.model =
+          typeof response.model === "string" ? response.model : aggregated.model;
+      }
+      return "continue";
+    }
+
+    if (eventType === "response.output_text.delta") {
+      const delta = parsed.delta;
+      if (typeof delta === "string") {
+        aggregated.outputText += delta;
+        if (aggregated.outputText.includes("</summary>")) {
+          await reader.cancel("compaction_summary_complete").catch(() => undefined);
+          return "done";
+        }
+      }
+      return "continue";
+    }
+
+    if (
+      eventType === "response.output_text.done" ||
+      eventType === "response.content_part.done" ||
+      eventType === "response.content_part.added" ||
+      eventType === "response.output_item.done"
+    ) {
+      const before = aggregated.outputText.length;
+      appendOutputTextFromValue(aggregated, parsed);
+      if (
+        aggregated.outputText.length !== before &&
+        aggregated.outputText.includes("</summary>")
+      ) {
+        await reader.cancel("compaction_summary_complete").catch(() => undefined);
+        return "done";
+      }
+      return "continue";
+    }
+
+    if (eventType === "response.completed") {
+      const response = parsed.response as Record<string, unknown> | undefined;
+      if (response) {
+        aggregated.responseId =
+          typeof response.id === "string" ? response.id : aggregated.responseId;
+        aggregated.createdAt =
+          typeof response.created_at === "number"
+            ? response.created_at
+            : aggregated.createdAt;
+        aggregated.model =
+          typeof response.model === "string" ? response.model : aggregated.model;
+
+        const usage = response.usage as Record<string, unknown> | undefined;
+        if (usage) {
+          aggregated.usage = {
+            input_tokens:
+              typeof usage.input_tokens === "number" ? usage.input_tokens : undefined,
+            output_tokens:
+              typeof usage.output_tokens === "number" ? usage.output_tokens : undefined,
+            total_tokens:
+              typeof usage.total_tokens === "number" ? usage.total_tokens : undefined,
+          };
+        }
+
+        if (!aggregated.outputText) {
+          const output = Array.isArray(response.output) ? response.output : [];
+          for (const item of output) {
+            if (
+              typeof item === "object" &&
+              item !== null &&
+              (item as Record<string, unknown>).type === "message"
+            ) {
+              const content = (item as Record<string, unknown>).content;
+              if (!Array.isArray(content)) continue;
+              for (const part of content) {
+                if (
+                  typeof part === "object" &&
+                  part !== null &&
+                  (part as Record<string, unknown>).type === "output_text" &&
+                  typeof (part as Record<string, unknown>).text === "string"
+                ) {
+                  aggregated.outputText += (part as Record<string, unknown>).text as string;
+                }
+              }
+            }
+          }
+        }
+      }
+      return "done";
+    }
+
+    return "continue";
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      bufferedText += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+
+      while (true) {
+        const idx = bufferedText.indexOf("\n\n");
+        if (idx === -1) break;
+        const block = bufferedText.slice(0, idx);
+        bufferedText = bufferedText.slice(idx + 2);
+        if ((await processEventBlock(block)) === "done") {
+          return finalize();
+        }
+      }
+    }
+
+    if (bufferedText.trim()) {
+      if ((await processEventBlock(bufferedText.trim())) === "done") {
+        return finalize();
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!aggregated.outputText.trim()) {
+    throw new Error("Compaction SSE aggregation produced empty output");
+  }
+
+  return finalize();
+}
+
+function createReplayStreamFromReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  bufferedBytes: Uint8Array[],
+): ReadableStream<Uint8Array> {
+  let bufferIndex = 0;
+  let lockReleased = false;
+
+  const releaseLock = () => {
+    if (lockReleased) return;
+    lockReleased = true;
+    reader.releaseLock();
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (bufferIndex < bufferedBytes.length) {
+        controller.enqueue(bufferedBytes[bufferIndex++]!);
+        return;
+      }
+
+      const { value, done } = await reader.read();
+      if (done) {
+        releaseLock();
+        controller.close();
+        return;
+      }
+
+      if (value) {
+        controller.enqueue(value);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        releaseLock();
+      }
+    },
+  });
+}
+
+async function precheckCompactionSseResponse(params: {
+  body: ReadableStream<Uint8Array>;
+  meta: ResponseMeta;
+  requestContentLength: number;
+  serverAnomalyThreshold: number;
+}): Promise<
+  | { rewritten: { meta: ResponseMeta; body: Buffer } }
+  | { body: ReadableStream<Uint8Array> }
+> {
+  const reader = params.body.getReader();
+  const decoder = new TextDecoder();
+  let bufferedText = "";
+  const bufferedBytes: Uint8Array[] = [];
+  let bufferedLen = 0;
+
+  while (bufferedLen < COMPACTION_SSE_PEEK_LIMIT) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    if (value) {
+      bufferedBytes.push(value);
+      bufferedLen += value.byteLength;
+      bufferedText += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    }
+
+    const idx = bufferedText.indexOf("\n\n");
+    if (idx === -1) {
+      continue;
+    }
+
+    const firstBlock = bufferedText.slice(0, idx);
+    const rewritten = rewriteResponse({
+      meta: params.meta,
+      body: Buffer.from(`${firstBlock}\n\n`, "utf-8"),
+      requestContentLength: params.requestContentLength,
+      serverAnomalyThreshold: params.serverAnomalyThreshold,
+    });
+
+    if (rewritten.rewritten) {
+      try {
+        await reader.cancel("compaction_error_rewritten");
+      } finally {
+        reader.releaseLock();
+      }
+      return { rewritten: { meta: rewritten.meta, body: rewritten.body } };
+    }
+
+    return { body: createReplayStreamFromReader(reader, bufferedBytes) };
+  }
+
+  if (bufferedText.trim()) {
+    const rewritten = rewriteResponse({
+      meta: params.meta,
+      body: Buffer.from(bufferedText, "utf-8"),
+      requestContentLength: params.requestContentLength,
+      serverAnomalyThreshold: params.serverAnomalyThreshold,
+    });
+
+    if (rewritten.rewritten) {
+      try {
+        await reader.cancel("compaction_error_rewritten");
+      } finally {
+        reader.releaseLock();
+      }
+      return { rewritten: { meta: rewritten.meta, body: rewritten.body } };
+    }
+  }
+
+  return { body: createReplayStreamFromReader(reader, bufferedBytes) };
+}
+
+function createHeartbeatCompactionJsonStream(params: {
+  body: ReadableStream<Uint8Array>;
+  fallbackModel?: string;
+  logger: PluginLogger;
+}): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      controller.enqueue(encoder.encode(" "));
+
+      const heartbeatId = setInterval(() => {
+        if (!closed) {
+          controller.enqueue(encoder.encode(" "));
+        }
+      }, COMPACTION_HEARTBEAT_MS);
+
+      const finish = (body: Buffer) => {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeatId);
+        controller.enqueue(body);
+        controller.close();
+      };
+
+      const fail = (error: unknown) => {
+        params.logger.info(`Compaction aggregation fallback: ${String(error)}`);
+        finish(Buffer.from(JSON.stringify(buildContextLengthExceededBody()), "utf-8"));
+      };
+
+      void aggregateCompactionSseResponse(params.body, params.fallbackModel)
+        .then(finish)
+        .catch(fail);
+    },
+    async cancel(reason) {
+      await params.body.cancel(reason).catch(() => undefined);
+    },
+  });
+}
 
 export interface DroidPluginOptions {
   /** 是否启用调试日志 */
   debug?: boolean;
   /** 日志目录（可选） */
   logDir?: string;
+  /** 服务器异常检测阈值（字节） */
+  serverAnomalyThreshold?: number;
+  /** 将 499 Client Closed Request 重写为 context_length_exceeded */
+  rewrite499ToContextLengthExceeded?: boolean;
 }
 
 /**
@@ -54,7 +502,12 @@ export interface DroidPluginOptions {
  * ```
  */
 export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin<DroidStore> {
-  const { debug, logDir } = options;
+  const {
+    debug,
+    logDir,
+    serverAnomalyThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD,
+    rewrite499ToContextLengthExceeded = false,
+  } = options;
 
   const logger: PluginLogger = createLogger({
     name: "openai4droid",
@@ -87,7 +540,12 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       // Empty gateway errors may have no content-type. We still want response hook
       // to rewrite them into structured errors for Droid.
-      if (meta.statusCode === 502 || meta.statusCode === 503 || meta.statusCode === 504) {
+      if (
+        meta.statusCode === 502 ||
+        meta.statusCode === 503 ||
+        meta.statusCode === 504 ||
+        (rewrite499ToContextLengthExceeded && meta.statusCode === 499)
+      ) {
         return true;
       }
 
@@ -115,6 +573,12 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       const bodyBuffer = await bodyBufferPromise;
       const bodyText = bodyBuffer.toString("utf-8");
+      let parsedBody: Parameters<typeof isNativeSummarizerRequest>[0] | null = null;
+      try {
+        parsedBody = JSON.parse(bodyText) as Parameters<typeof isNativeSummarizerRequest>[0];
+      } catch {
+        parsedBody = null;
+      }
 
       const result = rewriteRequest({ headers, body: bodyText });
 
@@ -146,7 +610,15 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
         ? Buffer.byteLength(result.body, "utf-8")
         : bodyBuffer.length;
       const finalHeaders = params.store
-        ? params.store.set({ activated: true, requestBodyLength }, result.headers ?? headers)
+        ? params.store.set(
+            {
+              activated: true,
+              requestBodyLength,
+              requestKind:
+                parsedBody && isNativeSummarizerRequest(parsedBody) ? "compaction" : "standard",
+            },
+            result.headers ?? headers,
+          )
         : result.headers;
 
       return {
@@ -164,8 +636,49 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       logger.debug(`Processing response: ${params.meta.statusCode}`);
 
+      if (rewrite499ToContextLengthExceeded && params.meta.statusCode === 499) {
+        logger.info("Rewriting 499 to context_length_exceeded");
+        return {
+          meta: {
+            statusCode: 400,
+            statusMessage: "Bad Request",
+            headers: { "content-type": "application/json" },
+          },
+          body: streamFromBuffer(Buffer.from(JSON.stringify(buildContextLengthExceededBody()))),
+        };
+      }
+
       const headers = normalizeHeaders(params.meta.headers) ?? {};
       const contentType = (headers["content-type"] ?? "").toString().toLowerCase();
+
+      if (store.requestKind === "compaction" && contentType.includes("text/event-stream")) {
+        const prechecked = await precheckCompactionSseResponse({
+          body: params.body,
+          meta: params.meta,
+          requestContentLength: store.requestBodyLength,
+          serverAnomalyThreshold,
+        });
+
+        if ("rewritten" in prechecked) {
+          return {
+            meta: prechecked.rewritten.meta,
+            body: streamFromBuffer(prechecked.rewritten.body),
+          };
+        }
+
+        return {
+          meta: {
+            statusCode: 200,
+            statusMessage: "OK",
+            headers: { "content-type": "application/json; charset=utf-8" },
+          },
+          body: createHeartbeatCompactionJsonStream({
+            body: prechecked.body,
+            fallbackModel: headers["x-upstream-model"]?.toString(),
+            logger,
+          }),
+        };
+      }
 
       // SSE: only inspect the first event; if it's error, rewrite to single error event and close.
       if (contentType.includes("text/event-stream")) {
@@ -215,7 +728,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
                 meta: params.meta,
                 body: Buffer.from(data, "utf-8"),
                 requestContentLength: store.requestBodyLength,
-                serverAnomalyThreshold: SERVER_ANOMALY_THRESHOLD,
+                serverAnomalyThreshold,
               });
 
               const payloadText = result.rewritten ? result.body.toString("utf-8") : data;
@@ -280,7 +793,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
         meta: params.meta,
         body: bodyBuffer,
         requestContentLength: store.requestBodyLength,
-        serverAnomalyThreshold: SERVER_ANOMALY_THRESHOLD,
+        serverAnomalyThreshold,
       });
 
       if (!result.rewritten) {

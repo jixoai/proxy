@@ -107,6 +107,7 @@ export interface RequestBody {
   store?: boolean;
   include?: string[];
   text?: Record<string, unknown>;
+  max_output_tokens?: number;
 }
 
 export interface RewriteResult {

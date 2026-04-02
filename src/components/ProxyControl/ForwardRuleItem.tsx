@@ -9,7 +9,7 @@ import { EditForwardDialog } from "./EditForwardDialog";
 import { CreateForwardDialog } from "./CreateForwardDialog";
 import { EndpointStatusIndicator } from "@/components/EndpointStatusIndicator";
 import type { ForwardStats } from "@/hooks/useForwardStats";
-import { getHookPluginName, hooksConfigToList } from "@/lib/hooks-config";
+import { getHookConfigSummaries, getHookPluginName, hooksConfigToList } from "@/lib/hooks-config";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
 
 interface ForwardRuleItemProps {
@@ -91,6 +91,7 @@ export function ForwardRuleItem({
   const customHeadersCount = forward.headers ? Object.keys(forward.headers).length : 0;
   const hooksList = hooksConfigToList(forward.hooks);
   const hookNames = hooksList.map(getHookPluginName);
+  const hookSummaries = hooksList.flatMap(getHookConfigSummaries);
   const disabledHookCount = hooksList.filter((h) => h.disabled === true).length;
   const hooksLabel =
     hookNames.length <= 2
@@ -158,6 +159,24 @@ export function ForwardRuleItem({
               <div className="flex items-center gap-1">
                 <span>Hooks</span>
                 <span className="bg-muted rounded px-1 py-0.5 font-mono">{hooksLabel}</span>
+                {hookSummaries.map((summary, index) =>
+                  summary.tooltip ? (
+                    <Tooltip key={`${summary.label}-${index}`}>
+                      <TooltipTrigger asChild>
+                        <Badge variant="outline" className="cursor-help px-1.5 py-0 font-mono text-[10px]">
+                          {summary.label}
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs whitespace-pre-wrap font-mono text-[11px]">
+                        {summary.tooltip}
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <Badge key={`${summary.label}-${index}`} variant="outline" className="px-1.5 py-0 font-mono text-[10px]">
+                      {summary.label}
+                    </Badge>
+                  ),
+                )}
                 {disabledHookCount > 0 && (
                   <span className="text-[10px] text-muted-foreground">
                     ({disabledHookCount} disabled)

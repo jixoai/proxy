@@ -7,6 +7,15 @@ function hasOwnProperty<K extends string>(
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export interface HookConfigSummary {
+  label: string;
+  tooltip?: string;
+}
+
 /** 将 HooksConfig 统一转为数组（仅做结构归一，不做 enabled/disabled 过滤） */
 export function hooksConfigToList(hooks: HooksConfig | null | undefined): HookConfig[] {
   if (!hooks) return [];
@@ -33,3 +42,41 @@ export function getHookPluginName(config: HookConfig): string {
   return config.command || "hook";
 }
 
+function isModelRewriteHook(config: HookConfig): boolean {
+  const args = config.args ?? [];
+  return (
+    args.some((arg) => arg.includes("proxy-plugin-model-rewrite")) ||
+    config.command.includes("proxy-plugin-model-rewrite")
+  );
+}
+
+function getModelRewriteSummary(config: HookConfig): HookConfigSummary[] {
+  if (!isModelRewriteHook(config)) return [];
+
+  const cfg = config.config;
+  if (!isRecord(cfg) || !hasOwnProperty(cfg, "model")) return [];
+
+  const model = cfg.model;
+  if (typeof model === "string" && model.trim().length > 0) {
+    return [{ label: `Model ${model.trim()}` }];
+  }
+
+  if (!isRecord(model)) return [];
+
+  const rules = Object.entries(model).filter(
+    ([pattern, replacement]) =>
+      pattern.trim().length > 0 && typeof replacement === "string" && replacement.trim().length > 0,
+  );
+  if (rules.length === 0) return [];
+
+  return [
+    {
+      label: `Model ${rules.length} 条规则`,
+      tooltip: rules.map(([pattern, replacement]) => `${pattern} -> ${replacement}`).join("\n"),
+    },
+  ];
+}
+
+export function getHookConfigSummaries(config: HookConfig): HookConfigSummary[] {
+  return [...getModelRewriteSummary(config)];
+}

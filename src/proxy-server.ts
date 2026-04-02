@@ -465,6 +465,7 @@ async function main(argv: string[]) {
 
   // 存储活跃请求的 AbortController，用于支持请求中断
   const activeRequests = new Map<number, AbortController>();
+  const activeCompactions = new Map<string, { dbRecordId: number | null; controller: AbortController }>();
 
   const server = http.createServer(async (req, res) => {
     const startTime = Date.now();
@@ -476,6 +477,7 @@ async function main(argv: string[]) {
     const { signal: abortSignal } = abortController;
     let isClientDisconnected = false;
     let didStreamResponseToClient = false;
+    let compactionConversationId: string | null = null;
 
     // 监听上游客户端断开连接
     const handleClientClose = () => {
@@ -584,6 +586,12 @@ async function main(argv: string[]) {
       originalHeaders?: http.IncomingHttpHeaders;
       originalBodyBuffer?: Buffer;
       originalContentType?: string | null;
+      requestMeta: {
+        method: string;
+        url: string;
+        headers: Record<string, string | string[]>;
+      };
+      responseHooksExecuted?: boolean;
     } | null = null;
 
     for (let i = 0; i < candidateIndexes.length; i++) {
@@ -680,6 +688,32 @@ async function main(argv: string[]) {
         }
       }
 
+      try {
+        const storeRaw = hookedForwardHeaders["-x-jixo-store-proxy-plugin-openai4droid"];
+        const storeText = Array.isArray(storeRaw) ? storeRaw[0] : storeRaw;
+        const conversationIdRaw = hookedForwardHeaders["conversation_id"];
+        const conversationId = Array.isArray(conversationIdRaw)
+          ? conversationIdRaw[0]
+          : conversationIdRaw;
+
+        if (typeof storeText === "string" && typeof conversationId === "string") {
+          const store = JSON.parse(storeText) as { requestKind?: string };
+          if (store.requestKind === "compaction") {
+            compactionConversationId = conversationId;
+            const prev = activeCompactions.get(conversationId);
+            if (prev && prev.controller !== abortController) {
+              log.info(
+                `[Compaction] Superseding previous compaction for conversation ${conversationId} (prev db=${prev.dbRecordId ?? "unknown"})`,
+              );
+              prev.controller.abort(USER_ABORT);
+              activeCompactions.delete(conversationId);
+            }
+          }
+        }
+      } catch (err) {
+        log.info(`[Compaction] Failed to inspect compaction headers: ${String(err)}`);
+      }
+
       if (dbRecordId === null) {
         dbRecordId = createProxyRequest({
           request_id: requestId,
@@ -716,6 +750,12 @@ async function main(argv: string[]) {
         });
         // 注册到活跃请求 Map，支持外部中断
         activeRequests.set(dbRecordId, abortController);
+        if (compactionConversationId) {
+          activeCompactions.set(compactionConversationId, {
+            dbRecordId,
+            controller: abortController,
+          });
+        }
         debugNotifier("about to notify insert, dbRecordId: %d", dbRecordId);
         dbNotifier.notify("insert", "requests", dbRecordId);
         debugNotifier("notify insert completed");
@@ -750,6 +790,7 @@ async function main(argv: string[]) {
         originalHeaders?: http.IncomingHttpHeaders;
         originalBodyBuffer?: Buffer;
         originalContentType?: string | null;
+        responseHooksExecuted?: boolean;
       }>((resolve, reject) => {
         // 检查是否已经被中断
         if (abortSignal.aborted) {
@@ -780,6 +821,14 @@ async function main(argv: string[]) {
           },
           async (proxyRes) => {
             proxyResRef = proxyRes;
+
+            const upstreamContentType =
+              (proxyRes.headers["content-type"] as string | undefined)?.toLowerCase() ?? "";
+            if (timeoutId && (compactionConversationId || upstreamContentType.includes("text/event-stream"))) {
+              clearTimeout(timeoutId);
+              timeoutId = null;
+            }
+
             // TTFB: 收到响应头的时间
             const responseStartTime = Date.now();
             const ttfbMs = responseStartTime - attemptStart;
@@ -836,6 +885,7 @@ async function main(argv: string[]) {
                 let outHeaders: http.IncomingHttpHeaders = { ...responseHeaders };
                 let outStream: ReadableStream<Uint8Array>;
                 let storageStream: ReadableStream<Uint8Array> | null = null;
+                let skipOriginalStorageCapture = false;
                 let hasResponseHookChanges = false;
                 let responseHookLayers: HookLayer[] | undefined;
                 const originalChunks: Buffer[] = [];
@@ -865,6 +915,22 @@ async function main(argv: string[]) {
                   outStatusMessage = hookResult.statusMessage;
                   outHeaders = hookResult.headers as http.IncomingHttpHeaders;
                   outStream = hookResult.body;
+
+                  const upstreamContentType =
+                    (responseHeaders["content-type"] as string | undefined)?.toLowerCase() ?? "";
+                  const outputContentType =
+                    (outHeaders["content-type"] as string | undefined)?.toLowerCase() ?? "";
+
+                  // 对 compaction 这类“上游 SSE -> 本地聚合成 JSON”的场景，
+                  // 不要继续等待原始 SSE tee 分支完整读完，否则请求会在客户端收到正文后
+                  // 仍长时间停留在 streaming 状态，直到上游真正结束。
+                  if (
+                    hasResponseHookChanges &&
+                    upstreamContentType.includes("text/event-stream") &&
+                    outputContentType.includes("application/json")
+                  ) {
+                    skipOriginalStorageCapture = true;
+                  }
                 } else {
                   // 不需要处理：直接透传
                   outStream = upstreamStream;
@@ -876,6 +942,12 @@ async function main(argv: string[]) {
                 // 并行：pipe 到客户端 + 收集原始数据（如果有 storageStream）
                 const storagePromise = storageStream
                   ? (async () => {
+                      if (skipOriginalStorageCapture) {
+                        void storageStream!
+                          .cancel("skip_original_capture_after_json_aggregation")
+                          .catch(() => undefined);
+                        return;
+                      }
                       const reader = storageStream!.getReader();
                       while (true) {
                         const { value, done } = await reader.read();
@@ -932,6 +1004,7 @@ async function main(argv: string[]) {
                   originalHeaders: hasResponseHookChanges ? responseHeaders : undefined,
                   originalBodyBuffer,
                   originalContentType: hasResponseHookChanges ? originalContentType : undefined,
+                  responseHooksExecuted: responsePrecheckResult.needsBuffer,
                 });
                 return;
               } catch (error) {
@@ -948,6 +1021,7 @@ async function main(argv: string[]) {
                   errorMessage: error instanceof Error ? error.message : String(error),
                   ttfbMs,
                   bodyMs,
+                  responseHooksExecuted: false,
                 });
                 return;
               }
@@ -1039,6 +1113,7 @@ async function main(argv: string[]) {
                 originalHeaders: hasResponseHookChanges ? originalHeaders : undefined,
                 originalBodyBuffer: hasResponseHookChanges ? originalBodyBuffer : undefined,
                 originalContentType: hasResponseHookChanges ? originalContentType : undefined,
+                responseHooksExecuted: true,
               });
             });
 
@@ -1101,6 +1176,7 @@ async function main(argv: string[]) {
             errorMessage: error.message,
             ttfbMs: errorTtfb,
             bodyMs: 0,
+            responseHooksExecuted: false,
           });
         });
 
@@ -1164,6 +1240,7 @@ async function main(argv: string[]) {
               abortReason: err.abortReason,
               ttfbMs: collectedTtfbMs ?? (Date.now() - attemptStart),
               bodyMs: 0,
+              responseHooksExecuted: false,
             };
           }
 
@@ -1177,6 +1254,7 @@ async function main(argv: string[]) {
             abortReason: err.abortReason,
             ttfbMs: Date.now() - attemptStart,
             bodyMs: 0,
+            responseHooksExecuted: false,
           };
         }
         throw err;
@@ -1195,6 +1273,11 @@ async function main(argv: string[]) {
       finalResult = {
         ...attemptResult,
         forwardRule,
+        requestMeta: {
+          method: hookedMethod,
+          url: hookedTargetUrl.href,
+          headers: hookedForwardHeaders as Record<string, string | string[]>,
+        },
       };
 
       if (wasAborted) {
@@ -1213,6 +1296,70 @@ async function main(argv: string[]) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "No available forward result" }));
       return;
+    }
+
+    if (
+      hooksExecutor?.hasResponseHooks &&
+      !didStreamResponseToClient &&
+      !isClientDisconnected &&
+      !finalResult.responseHooksExecuted
+    ) {
+      try {
+        const responsePrecheckResult = await hooksExecutor.precheckResponse(
+          {
+            statusCode: finalResult.statusCode,
+            statusMessage: finalResult.statusMessage,
+            headers: finalResult.headers as Record<string, string | string[]>,
+          },
+          finalResult.requestMeta,
+        );
+
+        if (responsePrecheckResult.needsBuffer) {
+          const originalStatusCode = finalResult.statusCode;
+          const originalStatusMessage = finalResult.statusMessage;
+          const originalHeaders = { ...(finalResult.headers as http.IncomingHttpHeaders) };
+          const originalBodyBuffer = finalResult.bodyBuffer;
+          const originalContentType = finalResult.contentType;
+
+          const hookExecResult = await hooksExecutor.executeResponseHooksWithLayers(
+            {
+              statusCode: finalResult.statusCode,
+              statusMessage: finalResult.statusMessage,
+              headers: finalResult.headers as Record<string, string | string[]>,
+              body: streamFromBuffer(finalResult.bodyBuffer),
+              requestMeta: finalResult.requestMeta,
+            },
+            (body) =>
+              body.length > 0 ? bufferToDataUrl(body, finalResult.contentType ?? undefined) : null,
+            (headers) => (headers["content-type"] as string) ?? null,
+          );
+
+          finalResult.responseHooksExecuted = true;
+
+          if (hookExecResult.hasChanges) {
+            const hookResult = hookExecResult.params;
+            const bodyBuffer = await readStreamToBuffer(hookResult.body);
+            const headers = hookResult.headers as http.IncomingHttpHeaders;
+            const contentType = (headers["content-type"] as string) ?? finalResult.contentType;
+
+            finalResult.statusCode = hookResult.statusCode;
+            finalResult.statusMessage = hookResult.statusMessage;
+            finalResult.headers = sanitizeResponseHeadersForBuffered(headers, bodyBuffer.length);
+            finalResult.bodyBuffer = bodyBuffer;
+            finalResult.contentType = contentType;
+            finalResult.hasResponseHookChanges = true;
+            finalResult.responseHookLayers =
+              hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
+            finalResult.originalStatusCode = originalStatusCode;
+            finalResult.originalStatusMessage = originalStatusMessage;
+            finalResult.originalHeaders = originalHeaders;
+            finalResult.originalBodyBuffer = originalBodyBuffer;
+            finalResult.originalContentType = originalContentType;
+          }
+        }
+      } catch (err) {
+        console.error("[Hooks] Buffered response hook error:", err);
+      }
     }
 
     // 构建响应体 data URL
@@ -1289,6 +1436,12 @@ async function main(argv: string[]) {
 
     // 清理活跃请求 Map
     activeRequests.delete(dbRecordId);
+    if (compactionConversationId) {
+      const current = activeCompactions.get(compactionConversationId);
+      if (current?.controller === abortController) {
+        activeCompactions.delete(compactionConversationId);
+      }
+    }
 
     // 如果已经被中断，不再发送响应
     if (isClientDisconnected) {

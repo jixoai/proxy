@@ -43,6 +43,37 @@ export function isWebSearchRequest(requestBody: RequestBody): boolean {
 }
 
 /**
+ * 检测是否为 Droid 的原生 summarizer/compact 请求
+ *
+ * 这类请求本身已经是标准 OpenAI Responses 形状：
+ * - `input` 是单个大字符串
+ * - 没有 tools
+ * - 通常带 `max_output_tokens`
+ * - 非 streaming
+ *
+ * 对这类请求继续套用 Codex 风格重写会把 summarizer prompt 再次注入到 input 中，
+ * 并替换成巨大的 CODEX_INSTRUCTIONS，容易显著拖慢上游处理。
+ */
+export function isNativeSummarizerRequest(requestBody: RequestBody & { max_output_tokens?: number }): boolean {
+  return (
+    typeof requestBody.input === "string" &&
+    typeof requestBody.instructions === "string" &&
+    (!Array.isArray(requestBody.tools) || requestBody.tools.length === 0) &&
+    typeof requestBody.max_output_tokens === "number" &&
+    requestBody.stream !== true
+  );
+}
+
+function buildCompactionRequest(requestBody: RequestBody & { max_output_tokens?: number }): RequestBody {
+  // Preserve Droid's native summarizer request shape, but switch to SSE so the
+  // proxy can observe progress and keep the downstream connection alive while
+  // aggregating the final JSON response back for Droid.
+  const cloned = structuredClone(requestBody);
+  cloned.stream = true;
+  return cloned;
+}
+
+/**
  * 将 SHA256 字符串转换为稳定的 UUID
  */
 function sha256ToStableUuid(sha256Hex: string): string {
@@ -85,6 +116,12 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
   // 既不是 Droid 请求也不是 websearch 请求，不处理
   if (!isDroid && !isWebSearch) {
     return null;
+  }
+
+  // Droid 的 compaction/summarizer 请求本身就是合法的 OpenAI Responses 请求。
+  // 保持原样，仅在外层补 session headers 即可。
+  if (isNativeSummarizerRequest(requestBody as RequestBody & { max_output_tokens?: number })) {
+    return buildCompactionRequest(requestBody as RequestBody & { max_output_tokens?: number });
   }
 
   // 移除 max_output_tokens（Codex API 不支持）

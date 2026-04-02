@@ -32,12 +32,22 @@ export function isUpstreamRequestFailedError(parsed: unknown): parsed is {
   error: { code: number | string; type: string; message: string };
 } {
   if (!isRecord(parsed)) return false;
-  if (parsed.type !== "error") return false;
-  if (!isRecord(parsed.error)) return false;
-  const upstreamError = parsed.error;
-  const upstreamCode = upstreamError.code;
-  if (upstreamCode !== 400 && upstreamCode !== "400") return false;
-  if (upstreamError.type !== "server_error") return false;
+  if (parsed.type === "error") {
+    if (!isRecord(parsed.error)) return false;
+    const upstreamError = parsed.error;
+    const upstreamCode = upstreamError.code;
+    if (upstreamCode !== 400 && upstreamCode !== "400") return false;
+    if (upstreamError.type !== "server_error") return false;
+    if (upstreamError.message !== "Upstream request failed") return false;
+    return true;
+  }
+
+  if (parsed.type !== "response.failed") return false;
+  if (!isRecord(parsed.response)) return false;
+  if (!isRecord(parsed.response.error)) return false;
+
+  const upstreamError = parsed.response.error;
+  if (upstreamError.code !== "server_error") return false;
   if (upstreamError.message !== "Upstream request failed") return false;
   return true;
 }
@@ -140,12 +150,18 @@ export function extractJsonFromSseError(text: string): unknown | null {
       if (field === "event") eventName = value;
       if (field === "data") dataLines.push(value);
     }
-    if (eventName !== "error" || dataLines.length === 0) continue;
+    if ((eventName !== "error" && eventName !== "response.failed") || dataLines.length === 0) {
+      continue;
+    }
     const data = dataLines.join("\n");
     const trimmed = data.trimStart();
     if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) continue;
     const parsed = safeParseJson(data);
-    if (parsed) return parsed;
+    if (!parsed) continue;
+    if (eventName === "error" || eventName === "response.failed") return parsed;
+    if (isRecord(parsed) && (parsed.type === "error" || parsed.type === "response.failed")) {
+      return parsed;
+    }
   }
   return null;
 }
