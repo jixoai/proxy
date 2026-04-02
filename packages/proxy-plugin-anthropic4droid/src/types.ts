@@ -63,4 +63,5 @@ export type RequestBody = {
 export type RewriteResult = {
   headers?: Record<string, string>;
   body?: string;
+  url?: string;
 };

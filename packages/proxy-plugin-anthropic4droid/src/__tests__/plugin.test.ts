@@ -89,13 +89,19 @@ describe("createDroidPlugin", () => {
     // 检查不是 { modified: false }（跳过）
     expect(!("modified" in result!) || result!.modified !== false).toBe(true);
 
-    const modifiedResult = result as { meta?: { headers?: Record<string, string> }; body?: ReadableStream<Uint8Array> };
+    const modifiedResult = result as {
+      meta?: { headers?: Record<string, string>; url?: string };
+      body?: ReadableStream<Uint8Array>;
+    };
     expect(modifiedResult.meta?.headers).toBeDefined();
     expect(modifiedResult.body).toBeDefined();
 
     const headers = modifiedResult.meta!.headers as Record<string, string>;
     expect(headers["anthropic-beta"]).toContain("claude-code");
+    expect(headers["anthropic-beta"]).toContain("effort-2025-11-24");
     expect(headers["authorization"]).toBe("Bearer sk-ant-123");
+    expect(headers["x-claude-code-session-id"]).toBeDefined();
+    expect(modifiedResult.meta?.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
 
     const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
     expect(Array.isArray(parsedBody.system)).toBe(true);

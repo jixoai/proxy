@@ -15,6 +15,9 @@ const DEFAULT_BETAS = [
   "interleaved-thinking-2025-05-14",
   "effort-2025-11-24",
 ];
+const DEFAULT_CLAUDE_CODE_USER_AGENT = "claude-cli/2.1.86 (external, cli)";
+const CLAUDE_CODE_SESSION_HEADER = "x-claude-code-session-id";
+const SESSION_ID_PATTERN = /session_([0-9a-fA-F-]{36})/;
 
 export type DroidRewriteConfig = {
   model?: ModelRewriteConfig;
@@ -23,6 +26,87 @@ export type DroidRewriteConfig = {
 };
 
 const DEFAULT_MODEL_REWRITE: Record<string, string> = {};
+
+function splitHeaderValues(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function mergeHeaderFeatures(...groups: Array<string[] | undefined>): string[] {
+  const features: string[] = [];
+  const seen = new Set<string>();
+
+  for (const group of groups) {
+    for (const feature of group ?? []) {
+      if (seen.has(feature)) continue;
+      seen.add(feature);
+      features.push(feature);
+    }
+  }
+
+  return features;
+}
+
+function extractSessionIdFromMetadata(metadata: RequestBody["metadata"]): string | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+
+  const userId = metadata["user_id"];
+  if (typeof userId !== "string" || !userId) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(userId) as { session_id?: unknown };
+    if (typeof parsed?.session_id === "string" && parsed.session_id) {
+      return parsed.session_id;
+    }
+  } catch {
+    // Ignore non-JSON user_id payloads and fall back to the legacy pattern.
+  }
+
+  return userId.match(SESSION_ID_PATTERN)?.[1];
+}
+
+function resolveClaudeCodeSessionId(
+  headers: Record<string, string>,
+  requestBody: RequestBody,
+): string {
+  const existingHeader = headers[CLAUDE_CODE_SESSION_HEADER];
+  if (existingHeader) {
+    return existingHeader;
+  }
+
+  return extractSessionIdFromMetadata(requestBody.metadata) ?? crypto.randomUUID();
+}
+
+function rewriteRequestUrl(
+  url: string | undefined,
+  headers: Record<string, string> | undefined,
+): string | undefined {
+  if (!url || !headers) {
+    return url;
+  }
+
+  const betaHeader = headers["anthropic-beta"]?.trim();
+  if (!betaHeader) {
+    return url;
+  }
+
+  try {
+    const nextUrl = new URL(url);
+    if (!nextUrl.searchParams.has("beta")) {
+      nextUrl.searchParams.set("beta", "true");
+    }
+    return nextUrl.toString();
+  } catch {
+    return url;
+  }
+}
 
 function parseRegexRule(pattern: string): RegExp | null {
   if (!pattern.startsWith("/")) return null;
@@ -231,6 +315,7 @@ export function rewriteRequestBody(
     {
       type: "text",
       text: "You are Claude Code, Anthropic's official CLI for Claude.",
+      cache_control: { type: "ephemeral" },
     },
     {
       type: "text",
@@ -285,13 +370,13 @@ export function rewriteRequestBody(
  */
 export function rewriteHeaders(
   headers: Record<string, string>,
-  options?: { hasWebSearch?: boolean; betas?: string[] },
+  options?: { hasWebSearch?: boolean; betas?: string[]; sessionId?: string },
 ): Record<string, string> {
   const newHeaders: Record<string, string> = { ...headers };
 
-  // 使用自定义 betas 或默认值
-  const baseBetas = options?.betas ?? DEFAULT_BETAS;
-  const betaFeatures = [...baseBetas];
+  const incomingBetas = splitHeaderValues(newHeaders["anthropic-beta"]);
+  const configuredBetas = options && "betas" in options ? options.betas : undefined;
+  const betaFeatures = mergeHeaderFeatures(configuredBetas ?? DEFAULT_BETAS, incomingBetas);
 
   // 如果包含 web_search 工具，添加 web-search-2025-03-05 beta
   if (options?.hasWebSearch && !betaFeatures.includes("web-search-2025-03-05")) {
@@ -307,7 +392,10 @@ export function rewriteHeaders(
 
   newHeaders["x-app"] = "cli";
   newHeaders["anthropic-dangerous-direct-browser-access"] = "true";
-  newHeaders["user-agent"] = "claude-cli/2.0.58 (external, cli)";
+  newHeaders["user-agent"] = DEFAULT_CLAUDE_CODE_USER_AGENT;
+  if (options?.sessionId) {
+    newHeaders[CLAUDE_CODE_SESSION_HEADER] = options.sessionId;
+  }
 
   return newHeaders;
 }
@@ -320,9 +408,10 @@ export function rewriteHeaders(
 export function rewriteRequest(params: {
   headers: Record<string, string>;
   body: string;
+  url?: string;
   config?: DroidRewriteConfig;
 }): RewriteResult {
-  const { headers, body, config } = params;
+  const { headers, body, url, config } = params;
 
   if (!body) {
     return {};
@@ -344,13 +433,20 @@ export function rewriteRequest(params: {
   }
 
   // 开启实验性的 1m 上下文
-  let betas = config?.betas ?? [];
+  const betas = config?.betas;
   // if (config?.model && config.model === "claude-opus-4-6") {
   //   betas.push("context-1m-2025-08-07");
   // }
 
+  const rewrittenHeaders = rewriteHeaders(headers, {
+    hasWebSearch,
+    betas,
+    sessionId: resolveClaudeCodeSessionId(headers, rewrittenBody),
+  });
+
   return {
-    headers: rewriteHeaders(headers, { hasWebSearch, betas }),
+    headers: rewrittenHeaders,
     body: JSON.stringify(rewrittenBody),
+    url: rewriteRequestUrl(url, rewrittenHeaders),
   };
 }

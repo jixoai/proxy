@@ -157,6 +157,12 @@ async function main(argv: string[]) {
     timeout?: number | null;
   }
 
+  interface ForwardAttempt {
+    transportRule: ForwardRule;
+    hookRule: ForwardRule;
+    targetRequestUrl: URL;
+  }
+
   let forwards: ForwardRule[] = [];
   let instanceHeaders: Record<string, string> | null = null;
   let instanceHooks: HooksConfig | null = null;
@@ -433,6 +439,59 @@ async function main(argv: string[]) {
     return targetBase;
   }
 
+  function buildAliasedRequestUrl(
+    requestUrl: URL,
+    fromPath: string | null | undefined,
+    toPath: string | null | undefined,
+  ): URL | null {
+    const sourcePath = normalizePathname(fromPath);
+    const targetPath = normalizePathname(toPath);
+    const incomingPath = normalizePathname(requestUrl.pathname);
+
+    if (!sourcePath || !targetPath || !incomingPath.startsWith(sourcePath)) {
+      return null;
+    }
+
+    const suffix = incomingPath.slice(sourcePath.length) || "/";
+    const nextUrl = new URL(requestUrl.href);
+    nextUrl.pathname = suffix === "/" ? targetPath : joinPaths(targetPath, suffix);
+    return nextUrl;
+  }
+
+  function buildForwardAttempts(
+    requestUrl: URL,
+    matchedRule: ForwardRule,
+    candidateIndexes: number[],
+  ): ForwardAttempt[] {
+    const attempts: ForwardAttempt[] = candidateIndexes.map((idx) => ({
+      transportRule: forwards[idx]!,
+      hookRule: forwards[idx]!,
+      targetRequestUrl: new URL(requestUrl.href),
+    }));
+
+    if (normalizePathname(matchedRule.path) !== "/droid") {
+      return attempts;
+    }
+
+    // Let Droid requests fall back to enabled Anthropic routes while still using the Droid rewrite hook.
+    for (const rule of forwards) {
+      if (!rule.enabled) continue;
+      if (normalizePathname(rule.path) !== "/anthropic") continue;
+      if (attempts.some((attempt) => attempt.transportRule.id === rule.id)) continue;
+
+      const aliasedRequestUrl = buildAliasedRequestUrl(requestUrl, matchedRule.path, rule.path);
+      if (!aliasedRequestUrl) continue;
+
+      attempts.push({
+        transportRule: rule,
+        hookRule: matchedRule,
+        targetRequestUrl: aliasedRequestUrl,
+      });
+    }
+
+    return attempts;
+  }
+
   function applyCustomHeaders(
     headers: http.OutgoingHttpHeaders,
     additions: Record<string, string> | null | undefined,
@@ -526,6 +585,8 @@ async function main(argv: string[]) {
       candidateIndexes.push(matched.index);
     }
 
+    const candidateAttempts = buildForwardAttempts(requestUrl, matched.rule, candidateIndexes);
+
     const requestBodyChunks: Buffer[] = [];
     for await (const chunk of req) {
       requestBodyChunks.push(chunk as Buffer);
@@ -594,19 +655,21 @@ async function main(argv: string[]) {
       responseHooksExecuted?: boolean;
     } | null = null;
 
-    for (let i = 0; i < candidateIndexes.length; i++) {
-      const ruleIndex = candidateIndexes[i];
-      const forwardRule = forwards[ruleIndex as number]!;
+    for (let i = 0; i < candidateAttempts.length; i++) {
+      const candidate = candidateAttempts[i]!;
+      const forwardRule = candidate.transportRule;
+      const hookRule = candidate.hookRule;
+      const targetRequestUrl = candidate.targetRequestUrl;
 
-      if (hooksExecutor && (instanceHooks || forwardRule.hooks)) {
+      if (hooksExecutor && (instanceHooks || hookRule.hooks)) {
         try {
-          await hooksExecutor.setForwardHooks(forwardRule.name, forwardRule.hooks ?? null);
+          await hooksExecutor.setForwardHooks(hookRule.name, hookRule.hooks ?? null);
         } catch (err) {
           console.error("[Hooks] Failed to set forward hooks:", err);
         }
       }
 
-      let targetUrl = buildTargetUrl(forwardRule, requestUrl);
+      let targetUrl = buildTargetUrl(forwardRule, targetRequestUrl);
       // 过滤掉私有 headers（x-proxy-* 前缀），这些只记录到数据库，不转发
       const forwardHeaders: http.OutgoingHttpHeaders = { ...stripPrivateHeaders(req.headers) };
       forwardHeaders.host = targetUrl.host;
@@ -851,7 +914,7 @@ async function main(argv: string[]) {
             // - If we might retry (failover), we must not stream.
             // - Otherwise we can stream even with hooks (hooks are streaming-native).
             const isFailureStatus = statusCode >= 400 && statusCode <= 599;
-            const hasMoreCandidates = i < candidateIndexes.length - 1;
+            const hasMoreCandidates = i < candidateAttempts.length - 1;
             const shouldRetryOnFailure = isFailureStatus && hasMoreCandidates;
             const shouldStreamToClient = !shouldRetryOnFailure;
 
@@ -1288,7 +1351,7 @@ async function main(argv: string[]) {
         break;
       }
 
-      const hasMore = i < candidateIndexes.length - 1;
+      const hasMore = i < candidateAttempts.length - 1;
       if (!hasMore) break;
     }
 

@@ -326,7 +326,12 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
 
       logger.debug(`Processing request: ${params.meta.method} ${params.meta.url}`);
 
-      const result = rewriteRequest({ headers, body: bodyText, config: { model, betas } });
+      const result = rewriteRequest({
+        headers,
+        body: bodyText,
+        url: params.meta.url,
+        config: { model, betas },
+      });
 
       if (!result.headers && !result.body) {
         logger.debug("Not a Droid request, passing through");
@@ -345,6 +350,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
             bodyPreview: bodyText.substring(0, 500),
           },
           rewritten: {
+            url: result.url,
             headers: result.headers,
             bodyPreview: result.body?.substring(0, 500),
           },
@@ -360,7 +366,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
         : result.headers;
 
       return {
-        meta: finalHeaders ? { headers: finalHeaders } : undefined,
+        meta: finalHeaders || result.url ? { headers: finalHeaders, url: result.url } : undefined,
         body: result.body ? streamFromBuffer(Buffer.from(result.body, "utf-8")) : undefined,
       };
     },

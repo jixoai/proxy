@@ -181,6 +181,7 @@ describe("rewriteRequestBody", () => {
     expect(Array.isArray(result!.system)).toBe(true);
     const system = result!.system as TextBlock[];
     expect(system[0]!.text).toContain("Claude Code");
+    expect(system[0]!.cache_control).toEqual({ type: "ephemeral" });
     expect(system[1]!.text).toContain("<droid-system-context>");
     expect(system[1]!.cache_control).toEqual({ type: "ephemeral" });
   });
@@ -268,6 +269,17 @@ describe("rewriteHeaders", () => {
     );
   });
 
+  it("should preserve incoming beta flags after adding Claude Code defaults", () => {
+    const headers = {
+      "content-type": "application/json",
+      "anthropic-beta": "fast-mode-2026-02-01,interleaved-thinking-2025-05-14",
+    };
+    const result = rewriteHeaders(headers);
+    expect(result["anthropic-beta"]).toBe(
+      "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,fast-mode-2026-02-01",
+    );
+  });
+
   it("should convert x-api-key to authorization", () => {
     const headers = { "x-api-key": "sk-ant-123" };
     const result = rewriteHeaders(headers);
@@ -288,7 +300,12 @@ describe("rewriteHeaders", () => {
     const result = rewriteHeaders({});
     expect(result["x-app"]).toBe("cli");
     expect(result["anthropic-dangerous-direct-browser-access"]).toBe("true");
-    expect(result["user-agent"]).toContain("claude-cli");
+    expect(result["user-agent"]).toBe("claude-cli/2.1.86 (external, cli)");
+  });
+
+  it("should set Claude Code session header when provided", () => {
+    const result = rewriteHeaders({}, { sessionId: "session-123" });
+    expect(result["x-claude-code-session-id"]).toBe("session-123");
   });
 });
 
@@ -302,13 +319,39 @@ describe("rewriteRequest", () => {
 
     const result = rewriteRequest({
       headers: { "content-type": "application/json" },
+      url: "https://api.anthropic.com/v1/messages",
       body: JSON.stringify(body),
     });
 
     expect(result.headers).toBeDefined();
     expect(result.body).toBeDefined();
+    expect(result.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
     const parsedBody = JSON.parse(result.body!);
     expect(Array.isArray(parsedBody.system)).toBe(true);
+  });
+
+  it("should preserve Droid beta headers in rewritten requests", () => {
+    const body: RequestBody = {
+      model: "claude-opus-4-6",
+      system: "You are Droid.",
+      messages: [],
+    };
+
+    const result = rewriteRequest({
+      headers: {
+        "content-type": "application/json",
+        "anthropic-beta": "fast-mode-2026-02-01",
+      },
+      url: "https://api.anthropic.com/v1/messages",
+      body: JSON.stringify(body),
+    });
+
+    expect(result.headers?.["anthropic-beta"]).toBe(
+      "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,fast-mode-2026-02-01",
+    );
+    expect(result.headers?.["x-claude-code-session-id"]).toBe(
+      "dffce60e-e7a0-4bc3-b847-4e25f13d3c66",
+    );
   });
 
   it("should return empty object for non-Droid request", () => {
