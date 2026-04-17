@@ -152,14 +152,15 @@ function coerceBodyDataUrl(
 function formatProxyRequest(req: LoggedRequest): RequestData {
   const hasHookedRequest = !!req.hookedRequest;
   const hasHookedResponse = !!req.hookedResponse;
+  const activeResponse = req.hookedResponse ?? req.response;
 
   return {
     id: (req.id ?? req.request_id).toString(),
     folderName: `${req.request_id}_${new Date(req.timestamp).toISOString().replace(/[:.]/g, "-")}`,
     metadata: {
       timestamp: req.timestamp,
-      ttfbMs: req.response?.ttfbMs,
-      bodyMs: req.response?.bodyMs,
+      ttfbMs: activeResponse?.ttfbMs,
+      bodyMs: activeResponse?.bodyMs,
       instanceName: req.instance_name,
       forwardName: req.forward_name,
       forwardId: req.forward_id,
@@ -179,12 +180,12 @@ function formatProxyRequest(req: LoggedRequest): RequestData {
         headersCount: Object.keys(req.request.headers ?? {}).length,
         bodySize: req.request.bodySize,
       },
-      response: req.response
+      response: activeResponse
         ? {
-            statusCode: req.response.statusCode,
-            statusMessage: req.response.statusMessage,
-            headersCount: Object.keys(req.response.headers ?? {}).length,
-            bodySize: req.response.bodySize,
+            statusCode: activeResponse.statusCode,
+            statusMessage: activeResponse.statusMessage,
+            headersCount: Object.keys(activeResponse.headers ?? {}).length,
+            bodySize: activeResponse.bodySize,
           }
         : null,
       hasHookedRequest,

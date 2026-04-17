@@ -599,6 +599,7 @@ function getRequestsSummaryInternal(options?: {
 }): InternalListSummary[] {
   const where: string[] = [];
   const params: any[] = [];
+  const effectiveStatusSql = buildEffectiveResponseStatusSql("requests");
   
   if (options?.filters?.instance_name !== undefined) {
     if (options.filters.instance_name === null) {
@@ -621,7 +622,7 @@ function getRequestsSummaryInternal(options?: {
     params.push(options.filters.method);
   }
   if (options?.filters?.status_code) {
-    where.push("status_code = ?");
+    where.push(`${effectiveStatusSql} = ?`);
     params.push(options.filters.status_code);
   }
   if (options?.filters?.url_pattern) {
@@ -650,7 +651,8 @@ function getRequestsSummaryInternal(options?: {
   
   let sql = `
     SELECT id, request_id, timestamp, instance_name, forward_name, forward_id,
-           method, url, target_url, status, error_message, abort_reason, client_aborted, status_code,
+           method, url, target_url, status, error_message, abort_reason, client_aborted,
+           ${effectiveStatusSql} AS effective_status_code,
            content_type, ttfb_ms, body_ms, request_body_size, response_body_size,
            has_request_hook_changes, has_response_hook_changes, is_websocket, plugin_info
     FROM requests ${whereSql}
@@ -678,7 +680,7 @@ function getRequestsSummaryInternal(options?: {
     error_message: row.error_message,
     abort_reason: row.abort_reason,
     client_aborted: Boolean(row.client_aborted),
-    status_code: row.status_code,
+    status_code: row.effective_status_code,
     content_type: row.content_type,
     ttfb_ms: row.ttfb_ms,
     body_ms: row.body_ms,
@@ -703,6 +705,7 @@ export function getRequestsCount(filters?: {
 }): number {
   const where: string[] = [];
   const params: any[] = [];
+  const effectiveStatusSql = buildEffectiveResponseStatusSql("requests");
   
   if (filters?.instance_name !== undefined) {
     if (filters.instance_name === null) {
@@ -725,7 +728,7 @@ export function getRequestsCount(filters?: {
     params.push(filters.method);
   }
   if (filters?.status_code) {
-    where.push("status_code = ?");
+    where.push(`${effectiveStatusSql} = ?`);
     params.push(filters.status_code);
   }
   
@@ -920,6 +923,7 @@ function searchRequestsFuzzyInternal(
   
   const where: string[] = [];
   const params: any[] = [match];
+  const effectiveStatusSql = buildEffectiveResponseStatusSql("r");
   
   if (options?.filters?.instance_name !== undefined) {
     if (options.filters.instance_name === null) {
@@ -942,7 +946,7 @@ function searchRequestsFuzzyInternal(
     params.push(options.filters.method);
   }
   if (options?.filters?.status_code) {
-    where.push("r.status_code = ?");
+    where.push(`${effectiveStatusSql} = ?`);
     params.push(options.filters.status_code);
   }
   
@@ -951,7 +955,8 @@ function searchRequestsFuzzyInternal(
   
   let sql = `
     SELECT r.id, r.request_id, r.timestamp, r.instance_name, r.forward_name, r.forward_id,
-           r.method, r.url, r.target_url, r.status, r.error_message, r.abort_reason, r.client_aborted, r.status_code,
+           r.method, r.url, r.target_url, r.status, r.error_message, r.abort_reason, r.client_aborted,
+           ${effectiveStatusSql} AS effective_status_code,
            r.content_type, r.ttfb_ms, r.body_ms, r.request_body_size, r.response_body_size,
            r.has_request_hook_changes, r.has_response_hook_changes, r.is_websocket, r.plugin_info
     FROM requests r
@@ -981,7 +986,7 @@ function searchRequestsFuzzyInternal(
     error_message: row.error_message,
     abort_reason: row.abort_reason,
     client_aborted: Boolean(row.client_aborted),
-    status_code: row.status_code,
+    status_code: row.effective_status_code,
     content_type: row.content_type,
     ttfb_ms: row.ttfb_ms,
     body_ms: row.body_ms,
@@ -1016,6 +1021,7 @@ export function searchRequestsCountFuzzy(
   
   const where: string[] = [];
   const params: any[] = [match];
+  const effectiveStatusSql = buildEffectiveResponseStatusSql("r");
   
   if (filters?.instance_name !== undefined) {
     if (filters.instance_name === null) {
@@ -1038,7 +1044,7 @@ export function searchRequestsCountFuzzy(
     params.push(filters.method);
   }
   if (filters?.status_code) {
-    where.push("r.status_code = ?");
+    where.push(`${effectiveStatusSql} = ?`);
     params.push(filters.status_code);
   }
   
@@ -1365,6 +1371,28 @@ function extractContentType(headers: Record<string, string | string[]>): string 
   return ct ?? null;
 }
 
+function buildEffectiveResponseStatusSql(tableAlias: string): string {
+  return `COALESCE((
+    SELECT hl.status_code
+    FROM hook_layers hl
+    WHERE hl.request_id = ${tableAlias}.id
+      AND hl.direction = 'response'
+      AND hl.modified = 1
+      AND hl.status_code IS NOT NULL
+    ORDER BY hl.layer_index DESC
+    LIMIT 1
+  ), ${tableAlias}.status_code)`;
+}
+
+function getLastModifiedResponseLayer(layers?: HookLayerDetail[]): HookLayerDetail | undefined {
+  if (!layers || layers.length === 0) return undefined;
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const layer = layers[i];
+    if (layer?.modified) return layer;
+  }
+  return undefined;
+}
+
 // ============================================================================
 // Query APIs (viewer)
 // ============================================================================
@@ -1681,17 +1709,24 @@ function convertDetailToLoggedRequest(detail: RequestDetail): LoggedRequest {
   
   // Hooked response
   if (detail.has_response_hook_changes) {
+    const finalLayer = getLastModifiedResponseLayer(detail.response_hook_layers);
+    const finalHeaders =
+      detail.hooked_response_headers ?? finalLayer?.headers ?? detail.response_headers ?? {};
+    const finalContentType =
+      finalLayer?.content_type ?? extractContentType(finalHeaders) ?? detail.content_type;
+    const finalBody = detail.hooked_response_body ?? finalLayer?.body ?? null;
+
     result.hookedResponse = {
-      statusCode: detail.status_code,
-      statusMessage: detail.status_message,
-      headers: detail.hooked_response_headers ?? detail.response_headers ?? {},
-      bodyDataUrl: detail.hooked_response_body
-        ? bufferToDataUrl(detail.hooked_response_body, detail.content_type)
+      statusCode: finalLayer?.status_code ?? detail.status_code,
+      statusMessage: finalLayer?.status_message ?? detail.status_message,
+      headers: finalHeaders,
+      bodyDataUrl: finalBody
+        ? bufferToDataUrl(finalBody, finalContentType ?? undefined)
         : null,
-      bodySize: detail.hooked_response_body?.length ?? 0,
+      bodySize: finalBody?.length ?? finalLayer?.body_size ?? detail.response_body_size,
       ttfbMs: detail.ttfb_ms ?? undefined,
       bodyMs: detail.body_ms ?? undefined,
-      contentType: detail.content_type,
+      contentType: finalContentType,
     };
     
     // 当有 hooked response 时，response 应该是原始数据

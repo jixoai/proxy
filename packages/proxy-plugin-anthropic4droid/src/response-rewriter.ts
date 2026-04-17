@@ -23,6 +23,17 @@ export interface ResponseRewriteResult {
 }
 
 /**
+ * 检测是否为代理层包装出来的 5xx JSON 错误
+ */
+export function isProxyGatewayFailureBody(parsed: unknown): parsed is {
+  error: string;
+  message: string;
+} {
+  if (!isRecord(parsed)) return false;
+  return typeof parsed.error === "string" && typeof parsed.message === "string";
+}
+
+/**
  * 检测是否为上游请求失败错误
  */
 export function isUpstreamRequestFailedError(parsed: unknown): parsed is {
@@ -319,6 +330,50 @@ export function rewriteResponse(params: {
         : null;
 
   const parsed = directParsed ?? sseParsed;
+
+  // 检测代理层包装的 5xx JSON 错误
+  if (
+    (params.meta.statusCode === 502 || params.meta.statusCode === 503 || params.meta.statusCode === 504) &&
+    isProxyGatewayFailureBody(parsed)
+  ) {
+    if (
+      params.requestContentLength !== undefined &&
+      params.serverAnomalyThreshold !== undefined &&
+      params.requestContentLength < params.serverAnomalyThreshold
+    ) {
+      const anomalyBody = buildServerAnomalyBody();
+      const anomalyMeta: ResponseMeta = {
+        statusCode: 500,
+        statusMessage: "Internal Server Error",
+        headers: {
+          ...(params.meta.headers ?? {}),
+          "content-type": "application/json; charset=utf-8",
+        },
+      };
+      return {
+        meta: anomalyMeta,
+        body: Buffer.from(JSON.stringify(anomalyBody), "utf-8"),
+        rewritten: true,
+        source: "server_anomaly",
+      };
+    }
+
+    const rewrittenBody = buildContextLengthExceededBody();
+    const nextMeta: ResponseMeta = {
+      statusCode: 400,
+      statusMessage: "Bad Request",
+      headers: {
+        ...(params.meta.headers ?? {}),
+        "content-type": "application/json; charset=utf-8",
+      },
+    };
+    return {
+      meta: nextMeta,
+      body: Buffer.from(JSON.stringify(rewrittenBody), "utf-8"),
+      rewritten: true,
+      source: "json",
+    };
+  }
 
   // 检测过载错误 (429) - 返回 502 Bad Gateway
   if (isOverloadedError(parsed)) {

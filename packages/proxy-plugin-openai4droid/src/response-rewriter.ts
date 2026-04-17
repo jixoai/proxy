@@ -25,6 +25,20 @@ export interface ResponseRewriteResult {
 }
 
 /**
+ * 检测是否为代理层包装出来的 5xx JSON 错误
+ *
+ * 代理在上游连接层失败时会返回：
+ * { "error": "代理请求失败", "message": "..." }
+ */
+export function isProxyGatewayFailureBody(parsed: unknown): parsed is {
+  error: string;
+  message: string;
+} {
+  if (!isRecord(parsed)) return false;
+  return typeof parsed.error === "string" && typeof parsed.message === "string";
+}
+
+/**
  * 检测是否为上游请求失败错误
  */
 export function isUpstreamRequestFailedError(parsed: unknown): parsed is {
@@ -227,6 +241,27 @@ export function rewriteResponse(params: {
         : null;
 
   const parsed = directParsed ?? sseParsed;
+
+  // 检测代理层包装的 5xx JSON 错误
+  if (isGatewayFailureStatus(params.meta.statusCode) && isProxyGatewayFailureBody(parsed)) {
+    if (shouldTreatAsServerAnomaly(params)) {
+      const anomalyBody = buildServerAnomalyBody();
+      return {
+        meta: buildJsonMeta(params.meta, 500, "Internal Server Error"),
+        body: Buffer.from(JSON.stringify(anomalyBody), "utf-8"),
+        rewritten: true,
+        source: "server_anomaly",
+      };
+    }
+
+    const rewrittenBody = buildContextLengthExceededBody();
+    return {
+      meta: buildJsonMeta(params.meta, 400, "Bad Request"),
+      body: Buffer.from(JSON.stringify(rewrittenBody), "utf-8"),
+      rewritten: true,
+      source: "json",
+    };
+  }
 
   // 检测 "Upstream request failed" 错误
   if (isUpstreamRequestFailedError(parsed)) {

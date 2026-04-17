@@ -20,12 +20,17 @@ import type {
 } from "@jixo/proxy-plugin";
 import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
 import { rewriteRequest, isNativeSummarizerRequest } from "./rewriter";
-import { rewriteResponse, buildContextLengthExceededBody } from "./response-rewriter";
+import {
+  rewriteResponse,
+  buildContextLengthExceededBody,
+  buildServerAnomalyBody,
+} from "./response-rewriter";
 
-/** 服务器异常检测阈值（字节） - 小于此大小的请求不应触发 context_length_exceeded */
-const DEFAULT_SERVER_ANOMALY_THRESHOLD = 10000;
+/** 服务器异常检测阈值（字节）
+ * 与 anthropic4droid 保持一致，避免 mission 模式下 70KB 级普通请求被误判为 context_length_exceeded。
+ */
+const DEFAULT_SERVER_ANOMALY_THRESHOLD = 680 * 1024;
 const COMPACTION_SSE_PEEK_LIMIT = 64 * 1024;
-const COMPACTION_HEARTBEAT_MS = 15000;
 
 /** 插件存储 schema - 标记请求是否被转换 */
 const DroidStoreSchema = z.object({
@@ -49,6 +54,11 @@ interface AggregatedCompactionResponse {
     output_tokens?: number;
     total_tokens?: number;
   };
+}
+
+interface CompactionAggregationResult {
+  meta: ResponseMeta;
+  body: Buffer;
 }
 
 function buildCompactionJsonResponse(
@@ -162,22 +172,57 @@ function appendOutputTextFromValue(target: AggregatedCompactionResponse, value: 
   }
 }
 
-async function aggregateCompactionSseResponse(
-  body: ReadableStream<Uint8Array>,
-  fallbackModel?: string,
-): Promise<Buffer> {
-  const reader = body.getReader();
+function buildCompactionGatewayFailureResult(params: {
+  meta: ResponseMeta;
+  requestContentLength: number;
+  serverAnomalyThreshold: number;
+}): CompactionAggregationResult {
+  const isServerAnomaly = params.requestContentLength < params.serverAnomalyThreshold;
+  const body = isServerAnomaly ? buildServerAnomalyBody() : buildContextLengthExceededBody();
+
+  return {
+    meta: {
+      statusCode: isServerAnomaly ? 500 : 400,
+      statusMessage: isServerAnomaly ? "Internal Server Error" : "Bad Request",
+      headers: {
+        ...(params.meta.headers ?? {}),
+        "content-type": "application/json; charset=utf-8",
+      },
+    },
+    body: Buffer.from(JSON.stringify(body), "utf-8"),
+  };
+}
+
+async function aggregateCompactionSseResponse(params: {
+  body: ReadableStream<Uint8Array>;
+  meta: ResponseMeta;
+  requestContentLength: number;
+  serverAnomalyThreshold: number;
+  fallbackModel?: string;
+}): Promise<CompactionAggregationResult> {
+  const reader = params.body.getReader();
   const decoder = new TextDecoder();
   let bufferedText = "";
   const aggregated: AggregatedCompactionResponse = {
-    model: fallbackModel,
+    model: params.fallbackModel,
     outputText: "",
   };
 
-  const finalize = () =>
-    Buffer.from(JSON.stringify(buildCompactionJsonResponse(aggregated, fallbackModel)), "utf-8");
+  const finalize = (): CompactionAggregationResult => ({
+    meta: {
+      statusCode: 200,
+      statusMessage: "OK",
+      headers: { "content-type": "application/json; charset=utf-8" },
+    },
+    body: Buffer.from(
+      JSON.stringify(buildCompactionJsonResponse(aggregated, params.fallbackModel)),
+      "utf-8",
+    ),
+  });
 
-  const processEventBlock = async (block: string): Promise<"continue" | "done"> => {
+  const processEventBlock = async (
+    block: string,
+  ): Promise<"continue" | "done" | CompactionAggregationResult> => {
     const { event, data } = parseSseBlock(block);
     if (!data) return "continue";
 
@@ -189,6 +234,28 @@ async function aggregateCompactionSseResponse(
     }
 
     const eventType = event ?? (typeof parsed.type === "string" ? parsed.type : undefined);
+
+    if (eventType === "error" || eventType === "response.failed") {
+      const rewritten = rewriteResponse({
+        meta: params.meta,
+        body: Buffer.from(`${block}\n\n`, "utf-8"),
+        requestContentLength: params.requestContentLength,
+        serverAnomalyThreshold: params.serverAnomalyThreshold,
+      });
+
+      if (rewritten.rewritten) {
+        return {
+          meta: rewritten.meta,
+          body: rewritten.body,
+        };
+      }
+
+      return buildCompactionGatewayFailureResult({
+        meta: params.meta,
+        requestContentLength: params.requestContentLength,
+        serverAnomalyThreshold: params.serverAnomalyThreshold,
+      });
+    }
 
     if (eventType === "response.created") {
       const response = parsed.response as Record<string, unknown> | undefined;
@@ -302,23 +369,31 @@ async function aggregateCompactionSseResponse(
         if (idx === -1) break;
         const block = bufferedText.slice(0, idx);
         bufferedText = bufferedText.slice(idx + 2);
-        if ((await processEventBlock(block)) === "done") {
+        const result = await processEventBlock(block);
+        if (result === "done") {
           return finalize();
         }
+        if (result !== "continue") return result;
       }
     }
 
     if (bufferedText.trim()) {
-      if ((await processEventBlock(bufferedText.trim())) === "done") {
+      const result = await processEventBlock(bufferedText.trim());
+      if (result === "done") {
         return finalize();
       }
+      if (result !== "continue") return result;
     }
   } finally {
     reader.releaseLock();
   }
 
   if (!aggregated.outputText.trim()) {
-    throw new Error("Compaction SSE aggregation produced empty output");
+    return buildCompactionGatewayFailureResult({
+      meta: params.meta,
+      requestContentLength: params.requestContentLength,
+      serverAnomalyThreshold: params.serverAnomalyThreshold,
+    });
   }
 
   return finalize();
@@ -436,47 +511,6 @@ async function precheckCompactionSseResponse(params: {
   }
 
   return { body: createReplayStreamFromReader(reader, bufferedBytes) };
-}
-
-function createHeartbeatCompactionJsonStream(params: {
-  body: ReadableStream<Uint8Array>;
-  fallbackModel?: string;
-  logger: PluginLogger;
-}): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      let closed = false;
-      controller.enqueue(encoder.encode(" "));
-
-      const heartbeatId = setInterval(() => {
-        if (!closed) {
-          controller.enqueue(encoder.encode(" "));
-        }
-      }, COMPACTION_HEARTBEAT_MS);
-
-      const finish = (body: Buffer) => {
-        if (closed) return;
-        closed = true;
-        clearInterval(heartbeatId);
-        controller.enqueue(body);
-        controller.close();
-      };
-
-      const fail = (error: unknown) => {
-        params.logger.info(`Compaction aggregation fallback: ${String(error)}`);
-        finish(Buffer.from(JSON.stringify(buildContextLengthExceededBody()), "utf-8"));
-      };
-
-      void aggregateCompactionSseResponse(params.body, params.fallbackModel)
-        .then(finish)
-        .catch(fail);
-    },
-    async cancel(reason) {
-      await params.body.cancel(reason).catch(() => undefined);
-    },
-  });
 }
 
 export interface DroidPluginOptions {
@@ -666,17 +700,17 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
           };
         }
 
+        const aggregated = await aggregateCompactionSseResponse({
+          body: prechecked.body,
+          meta: params.meta,
+          requestContentLength: store.requestBodyLength,
+          serverAnomalyThreshold,
+          fallbackModel: headers["x-upstream-model"]?.toString(),
+        });
+
         return {
-          meta: {
-            statusCode: 200,
-            statusMessage: "OK",
-            headers: { "content-type": "application/json; charset=utf-8" },
-          },
-          body: createHeartbeatCompactionJsonStream({
-            body: prechecked.body,
-            fallbackModel: headers["x-upstream-model"]?.toString(),
-            logger,
-          }),
+          meta: aggregated.meta,
+          body: streamFromBuffer(aggregated.body),
         };
       }
 

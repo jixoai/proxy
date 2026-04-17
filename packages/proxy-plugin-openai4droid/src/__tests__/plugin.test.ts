@@ -214,4 +214,42 @@ describe("createDroidPlugin.compaction aggregation", () => {
     const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
     expect(parsedBody.error.code).toBe("context_length_exceeded");
   });
+
+  it("rewrites compaction SSE failures even when response.failed arrives after response.created", async () => {
+    const plugin = createDroidPlugin();
+    const sse = [
+      "event: response.created",
+      'data: {"type":"response.created","response":{"id":"resp_test","object":"response","created_at":1234567890,"status":"in_progress","model":"gpt-5.4","output":[]}}',
+      "",
+      "event: response.failed",
+      'data: {"type":"response.failed","response":{"id":"resp_test","status":"failed","error":{"code":"server_error","message":"Upstream request failed"}}}',
+      "",
+    ].join("\n");
+
+    const result = await plugin.onResponse!({
+      meta: {
+        statusCode: 200,
+        headers: { "content-type": "text/event-stream" },
+      },
+      body: streamFromBuffer(Buffer.from(sse, "utf-8")),
+      store: createMockStore({
+        activated: true as const,
+        requestBodyLength: 900_000,
+        requestKind: "compaction" as const,
+      }),
+    });
+
+    expect(result).not.toBeNull();
+
+    const modifiedResult = result as {
+      meta?: { statusCode?: number; headers?: Record<string, string> };
+      body?: ReadableStream<Uint8Array>;
+    };
+
+    expect(modifiedResult.meta?.statusCode).toBe(400);
+    expect(modifiedResult.meta?.headers?.["content-type"]).toContain("application/json");
+
+    const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
+    expect(parsedBody.error.code).toBe("context_length_exceeded");
+  });
 });

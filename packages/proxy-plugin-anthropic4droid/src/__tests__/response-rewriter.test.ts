@@ -346,4 +346,54 @@ describe("rewriteResponse", () => {
     const rewrittenBody = JSON.parse(result.body.toString("utf-8"));
     expect(rewrittenBody.error.code).toBe("context_length_exceeded");
   });
+
+  it("should rewrite proxy-generated 502 JSON wrapper to server anomaly for small request", () => {
+    const body = JSON.stringify({
+      error: "代理请求失败",
+      message: "The socket connection was closed unexpectedly.",
+    });
+
+    const result = rewriteResponse({
+      meta: {
+        statusCode: 502,
+        statusMessage: "Bad Gateway",
+        headers: { "content-type": "application/json" },
+      },
+      body: Buffer.from(body),
+      requestContentLength: 123,
+      serverAnomalyThreshold: 680 * 1024,
+    });
+
+    expect(result.rewritten).toBe(true);
+    expect(result.source).toBe("server_anomaly");
+    expect(result.meta.statusCode).toBe(500);
+
+    const rewrittenBody = JSON.parse(result.body.toString("utf-8"));
+    expect(rewrittenBody.error.code).toBe("server_anomaly");
+  });
+
+  it("should rewrite proxy-generated 502 JSON wrapper to context_length_exceeded for large request", () => {
+    const body = JSON.stringify({
+      error: "代理请求失败",
+      message: "The socket connection was closed unexpectedly.",
+    });
+
+    const result = rewriteResponse({
+      meta: {
+        statusCode: 502,
+        statusMessage: "Bad Gateway",
+        headers: { "content-type": "application/json" },
+      },
+      body: Buffer.from(body),
+      requestContentLength: 900 * 1024,
+      serverAnomalyThreshold: 680 * 1024,
+    });
+
+    expect(result.rewritten).toBe(true);
+    expect(result.source).toBe("json");
+    expect(result.meta.statusCode).toBe(400);
+
+    const rewrittenBody = JSON.parse(result.body.toString("utf-8"));
+    expect(rewrittenBody.error.code).toBe("context_length_exceeded");
+  });
 });
