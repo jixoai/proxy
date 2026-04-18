@@ -4,10 +4,25 @@
  * 将 Droid 格式的 OpenAI Responses API 请求转换为标准 Codex CLI 格式
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { RequestBody, RewriteResult, AnyTool } from "./types";
 import { isWebSearchTool } from "./types";
 import { CODEX_INSTRUCTIONS } from "./constants";
+
+const CODEX_TUI_USER_AGENT =
+  "codex-tui/0.121.0 (Mac OS 15.6.1; arm64) Apple_Terminal/455.1 (codex-tui; 0.121.0)";
+
+const HEADERS_TO_REMOVE = new Set([
+  "accept-encoding",
+  "conversation_id",
+  "x-stainless-arch",
+  "x-stainless-lang",
+  "x-stainless-os",
+  "x-stainless-package-version",
+  "x-stainless-retry-count",
+  "x-stainless-runtime",
+  "x-stainless-runtime-version",
+]);
 
 /**
  * 检测请求是否包含 web_search 工具
@@ -73,6 +88,50 @@ function buildCompactionRequest(requestBody: RequestBody & { max_output_tokens?:
   return cloned;
 }
 
+function normalizeMessageInputItems(input: RequestBody["input"]): RequestBody["input"] {
+  if (!Array.isArray(input)) {
+    return input;
+  }
+
+  return input.map((item) => {
+    if (typeof item !== "object" || item === null) {
+      return item;
+    }
+
+    const record = item as unknown as Record<string, unknown>;
+    if (record.type == null && "role" in record && "content" in record) {
+      return {
+        ...record,
+        type: "message",
+      } as typeof item;
+    }
+
+    return item;
+  });
+}
+
+function stripUnsupportedBodyFields(requestBody: RequestBody): RequestBody {
+  const safeRequestBody = structuredClone(requestBody) as RequestBody & Record<string, unknown>;
+
+  delete safeRequestBody.max_output_tokens;
+  delete safeRequestBody.prompt_cache_retention;
+  delete safeRequestBody.safety_identifier;
+
+  const reasoning = safeRequestBody.reasoning;
+  if (reasoning) {
+    const { summary: _, ...restReasoning } = reasoning;
+    if (Object.keys(restReasoning).length > 0) {
+      safeRequestBody.reasoning = restReasoning;
+    } else {
+      delete safeRequestBody.reasoning;
+    }
+  }
+
+  safeRequestBody.input = normalizeMessageInputItems(safeRequestBody.input);
+
+  return safeRequestBody;
+}
+
 /**
  * 将 SHA256 字符串转换为稳定的 UUID
  */
@@ -106,6 +165,23 @@ function generateSessionId(input: string): string {
   return sha256ToStableUuid(sessionHash);
 }
 
+function generateTurnId(sessionId: string): string {
+  let turnId = randomUUID();
+  while (turnId === sessionId) {
+    turnId = randomUUID();
+  }
+  return turnId;
+}
+
+function buildCodexTurnMetadata(sessionId: string, turnId: string): string {
+  return JSON.stringify({
+    session_id: sessionId,
+    thread_source: "user",
+    turn_id: turnId,
+    sandbox: "none",
+  });
+}
+
 /**
  * 重写请求体
  */
@@ -124,13 +200,10 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
     return buildCompactionRequest(requestBody as RequestBody & { max_output_tokens?: number });
   }
 
-  // 移除 max_output_tokens（Codex API 不支持）
-  const { max_output_tokens: _, ...safeRequestBody } = requestBody as RequestBody & {
-    max_output_tokens?: number;
-  };
+  const safeRequestBody = stripUnsupportedBodyFields(requestBody);
 
   // Droid 请求：将 Droid instructions 注入到 input 中
-  let rewriteInput = structuredClone(requestBody.input);
+  let rewriteInput = structuredClone(safeRequestBody.input);
   const droidInstructions = requestBody.instructions;
   if (!droidInstructions) {
     return null;
@@ -166,17 +239,32 @@ export function rewriteRequestBody(requestBody: RequestBody): RequestBody | null
  */
 export function rewriteHeaders(
   headers: Record<string, string>,
-  options?: { sessionId?: string; hasWebSearch?: boolean },
+  options?: { sessionId?: string; turnId?: string; hasWebSearch?: boolean },
 ): Record<string, string> {
-  const newHeaders: Record<string, string> = { ...headers };
+  const newHeaders: Record<string, string> = {};
 
-  if (options?.sessionId) {
-    newHeaders["conversation_id"] = options.sessionId;
-    newHeaders["session_id"] = options.sessionId;
+  for (const [key, value] of Object.entries(headers)) {
+    const lowerKey = key.toLowerCase();
+    if (HEADERS_TO_REMOVE.has(lowerKey)) {
+      continue;
+    }
+
+    newHeaders[lowerKey] = value;
   }
 
-  newHeaders["user-agent"] = "codex_cli_rs/0.77.0 (Mac OS 26.2.0; arm64)";
-  newHeaders["originator"] = "codex_cli_rs";
+  if (options?.sessionId) {
+    newHeaders["session_id"] = options.sessionId;
+    newHeaders["x-client-request-id"] = options.sessionId;
+    newHeaders["x-codex-window-id"] = `${options.sessionId}:0`;
+    newHeaders["x-codex-turn-metadata"] = buildCodexTurnMetadata(
+      options.sessionId,
+      options.turnId ?? generateTurnId(options.sessionId),
+    );
+  }
+
+  newHeaders["accept"] = "text/event-stream";
+  newHeaders["user-agent"] = CODEX_TUI_USER_AGENT;
+  newHeaders["originator"] = "codex-tui";
 
   // OpenAI Responses API 的 web_search 不需要特殊 header
   // 但保留这个选项以便将来扩展
@@ -233,9 +321,10 @@ export function rewriteRequest(params: {
   }
 
   const sessionId = generateSessionId(sessionInput);
+  const turnId = generateTurnId(sessionId);
 
   return {
-    headers: rewriteHeaders(headers, { sessionId, hasWebSearch }),
+    headers: rewriteHeaders(headers, { sessionId, turnId, hasWebSearch }),
     body: JSON.stringify(rewrittenBody),
   };
 }
