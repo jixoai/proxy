@@ -265,18 +265,19 @@ describe("rewriteHeaders", () => {
     const headers = { "content-type": "application/json" };
     const result = rewriteHeaders(headers);
     expect(result["anthropic-beta"]).toBe(
-      "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24",
+      "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24",
     );
   });
 
   it("should preserve incoming beta flags after adding Claude Code defaults", () => {
     const headers = {
       "content-type": "application/json",
-      "anthropic-beta": "fast-mode-2026-02-01,interleaved-thinking-2025-05-14",
+      "anthropic-beta":
+        "fast-mode-2026-02-01,context-1m-2025-08-07,interleaved-thinking-2025-05-14",
     };
     const result = rewriteHeaders(headers);
     expect(result["anthropic-beta"]).toBe(
-      "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,fast-mode-2026-02-01",
+      "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24,fast-mode-2026-02-01",
     );
   });
 
@@ -347,7 +348,7 @@ describe("rewriteRequest", () => {
     });
 
     expect(result.headers?.["anthropic-beta"]).toBe(
-      "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,fast-mode-2026-02-01",
+      "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24,fast-mode-2026-02-01",
     );
     expect(result.headers?.["x-claude-code-session-id"]).toBe(
       "dffce60e-e7a0-4bc3-b847-4e25f13d3c66",

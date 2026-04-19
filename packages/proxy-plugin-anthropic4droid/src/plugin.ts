@@ -241,7 +241,7 @@ export interface DroidPluginOptions {
   normalizeSSEContentBlockIndex?: boolean;
   /** 将 499 Client Closed Request 转换为 context_length_exceeded (默认 false) */
   rewrite499ToContextLengthExceeded?: boolean;
-  /** anthropic-beta header 值，默认 ['claude-code-20250219', 'interleaved-thinking-2025-05-14'] */
+  /** anthropic-beta header 值，默认 Claude Code betas + context-1m-2025-08-07 */
   betas?: string[];
 }
 

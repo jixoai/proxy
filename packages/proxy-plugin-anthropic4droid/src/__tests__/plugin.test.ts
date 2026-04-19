@@ -98,6 +98,7 @@ describe("createDroidPlugin", () => {
 
     const headers = modifiedResult.meta!.headers as Record<string, string>;
     expect(headers["anthropic-beta"]).toContain("claude-code");
+    expect(headers["anthropic-beta"]).toContain("context-1m-2025-08-07");
     expect(headers["anthropic-beta"]).toContain("effort-2025-11-24");
     expect(headers["authorization"]).toBe("Bearer sk-ant-123");
     expect(headers["x-claude-code-session-id"]).toBeDefined();

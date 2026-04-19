@@ -12,6 +12,7 @@ export type ModelRewriteConfig = string | Record<string, string>;
 /** 默认的 anthropic-beta features */
 const DEFAULT_BETAS = [
   "claude-code-20250219",
+  "context-1m-2025-08-07",
   "interleaved-thinking-2025-05-14",
   "effort-2025-11-24",
 ];
@@ -21,7 +22,7 @@ const SESSION_ID_PATTERN = /session_([0-9a-fA-F-]{36})/;
 
 export type DroidRewriteConfig = {
   model?: ModelRewriteConfig;
-  /** anthropic-beta header 值，默认 ['claude-code-20250219', 'interleaved-thinking-2025-05-14'] */
+  /** anthropic-beta header 值，默认 Claude Code betas + context-1m-2025-08-07 */
   betas?: string[];
 };
 
@@ -432,11 +433,7 @@ export function rewriteRequest(params: {
     return {};
   }
 
-  // 开启实验性的 1m 上下文
   const betas = config?.betas;
-  // if (config?.model && config.model === "claude-opus-4-6") {
-  //   betas.push("context-1m-2025-08-07");
-  // }
 
   const rewrittenHeaders = rewriteHeaders(headers, {
     hasWebSearch,
