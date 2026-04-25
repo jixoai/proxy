@@ -9,7 +9,7 @@ function expectCodexTuiHeaders(headers: Record<string, string> | undefined): voi
   expect(sessionId).toBeDefined();
   expect(headers!["accept"]).toBe("text/event-stream");
   expect(headers!["user-agent"]).toBe(
-    "codex-tui/0.121.0 (Mac OS 15.6.1; arm64) Apple_Terminal/455.1 (codex-tui; 0.121.0)",
+    "codex-tui/0.125.0 (Mac OS 15.6.1; arm64) Apple_Terminal/455.1 (codex-tui; 0.125.0)",
   );
   expect(headers!["originator"]).toBe("codex-tui");
   expect(headers!["conversation_id"]).toBeUndefined();
@@ -157,7 +157,7 @@ describe("createDroidPlugin.onRequest", () => {
           "x-stainless-arch": "arm64",
           "x-stainless-lang": "js",
           "x-stainless-os": "MacOS",
-          "x-stainless-package-version": "0.121.0",
+          "x-stainless-package-version": "0.125.0",
           "x-stainless-retry-count": "0",
           "x-stainless-runtime": "node",
           "x-stainless-runtime-version": "v24.3.0",

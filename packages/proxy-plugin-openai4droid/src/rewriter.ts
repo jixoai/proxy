@@ -10,7 +10,7 @@ import { isWebSearchTool } from "./types";
 import { CODEX_INSTRUCTIONS } from "./constants";
 
 const CODEX_TUI_USER_AGENT =
-  "codex-tui/0.121.0 (Mac OS 15.6.1; arm64) Apple_Terminal/455.1 (codex-tui; 0.121.0)";
+  "codex-tui/0.125.0 (Mac OS 15.6.1; arm64) Apple_Terminal/455.1 (codex-tui; 0.125.0)";
 
 const HEADERS_TO_REMOVE = new Set([
   "accept-encoding",
