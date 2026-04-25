@@ -73,16 +73,23 @@ function extractSessionIdFromMetadata(metadata: RequestBody["metadata"]): string
   return userId.match(SESSION_ID_PATTERN)?.[1];
 }
 
-function resolveClaudeCodeSessionId(
+function extractClaudeCodeSessionId(
   headers: Record<string, string>,
   requestBody: RequestBody,
-): string {
+): string | undefined {
   const existingHeader = headers[CLAUDE_CODE_SESSION_HEADER];
   if (existingHeader) {
     return existingHeader;
   }
 
-  return extractSessionIdFromMetadata(requestBody.metadata) ?? crypto.randomUUID();
+  return extractSessionIdFromMetadata(requestBody.metadata);
+}
+
+function resolveClaudeCodeSessionId(
+  headers: Record<string, string>,
+  requestBody: RequestBody,
+): string {
+  return extractClaudeCodeSessionId(headers, requestBody) ?? crypto.randomUUID();
 }
 
 function rewriteRequestUrl(
@@ -158,6 +165,28 @@ function rewriteModel(model: string | undefined, config?: ModelRewriteConfig): s
 export function hasWebSearchTool(requestBody: RequestBody): boolean {
   if (!requestBody.tools || !Array.isArray(requestBody.tools)) return false;
   return requestBody.tools.some((tool) => isWebSearchTool(tool));
+}
+
+/**
+ * 检测是否为 Droid 的原生 compaction/summarizer 请求
+ *
+ * 这类请求本身已经是 Anthropic Messages API 的合法形状：
+ * - max_tokens 固定为 4000
+ * - 只有一条 user 消息
+ * - 不带 tools
+ * - 不带 thinking
+ */
+export function isNativeCompactionRequest(
+  requestBody: RequestBody & { thinking?: unknown },
+): boolean {
+  const hasSingleUserMessage =
+    Array.isArray(requestBody.messages) &&
+    requestBody.messages.length === 1 &&
+    requestBody.messages[0]?.role === "user";
+  const hasNoTools = !Array.isArray(requestBody.tools) || requestBody.tools.length === 0;
+  const hasNoThinking = requestBody.thinking == null;
+
+  return requestBody.max_tokens === 4000 && hasSingleUserMessage && hasNoTools && hasNoThinking;
 }
 
 /**
@@ -309,6 +338,10 @@ export function rewriteRequestBody(
 
   requestBody.model = rewriteModel(requestBody.model, config.model);
 
+  if (isNativeCompactionRequest(requestBody)) {
+    return requestBody;
+  }
+
   const droidSystemText = extractSystemText(requestBody.system);
 
   // 构建 Claude Code 风格的 system
@@ -427,6 +460,7 @@ export function rewriteRequest(params: {
 
   // 检测是否包含 web_search 工具（在重写前检测）
   const hasWebSearch = hasWebSearchTool(requestBody);
+  const isCompactionRequest = isNativeCompactionRequest(requestBody);
 
   const rewrittenBody = rewriteRequestBody(requestBody, config);
   if (!rewrittenBody) {
@@ -438,7 +472,9 @@ export function rewriteRequest(params: {
   const rewrittenHeaders = rewriteHeaders(headers, {
     hasWebSearch,
     betas,
-    sessionId: resolveClaudeCodeSessionId(headers, rewrittenBody),
+    sessionId: isCompactionRequest
+      ? extractClaudeCodeSessionId(headers, rewrittenBody)
+      : resolveClaudeCodeSessionId(headers, rewrittenBody),
   });
 
   return {

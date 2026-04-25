@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   isDroidRequest,
+  isNativeCompactionRequest,
   extractSystemText,
   normalizeContentArray,
   replaceSystemReminderSection,
@@ -60,6 +61,41 @@ describe("isDroidRequest", () => {
       ],
     };
     expect(isDroidRequest(body)).toBe(false);
+  });
+});
+
+describe("isNativeCompactionRequest", () => {
+  it("should detect native compaction requests", () => {
+    const body: RequestBody & { thinking?: unknown } = {
+      model: "claude-opus-4-1",
+      max_tokens: 4000,
+      system: "You are Droid, an AI assistant.",
+      messages: [{ role: "user", content: "Summarize this conversation." }],
+    };
+
+    expect(isNativeCompactionRequest(body)).toBe(true);
+  });
+
+  it("should return false when tools are present", () => {
+    const body: RequestBody & { thinking?: unknown } = {
+      max_tokens: 4000,
+      system: "You are Droid, an AI assistant.",
+      messages: [{ role: "user", content: "Summarize this conversation." }],
+      tools: [{ name: "shell" }],
+    };
+
+    expect(isNativeCompactionRequest(body)).toBe(false);
+  });
+
+  it("should return false when thinking is present", () => {
+    const body: RequestBody & { thinking?: unknown } = {
+      max_tokens: 4000,
+      system: "You are Droid, an AI assistant.",
+      messages: [{ role: "user", content: "Summarize this conversation." }],
+      thinking: { type: "enabled" },
+    };
+
+    expect(isNativeCompactionRequest(body)).toBe(false);
   });
 });
 
@@ -184,6 +220,24 @@ describe("rewriteRequestBody", () => {
     expect(system[0]!.cache_control).toEqual({ type: "ephemeral" });
     expect(system[1]!.text).toContain("<droid-system-context>");
     expect(system[1]!.cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("should preserve native compaction request bodies", () => {
+    const body: RequestBody & { thinking?: unknown } = {
+      model: "claude-opus-4-5-20251101",
+      max_tokens: 4000,
+      system: "You are Droid, an AI assistant built by Factory.",
+      messages: [{ role: "user", content: "Summarize the conversation so far." }],
+    };
+    const original = structuredClone(body);
+
+    const result = rewriteRequestBody(body);
+
+    expect(result).toEqual(original);
+    expect(result!.metadata).toBeUndefined();
+    expect(result!.system).toBe(original.system);
+    expect(result!.messages).toEqual(original.messages);
+    expect(result!.max_tokens).toBe(4000);
   });
 
   it("should return null for non-Droid request", () => {
@@ -329,6 +383,56 @@ describe("rewriteRequest", () => {
     expect(result.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
     const parsedBody = JSON.parse(result.body!);
     expect(Array.isArray(parsedBody.system)).toBe(true);
+  });
+
+  it("should preserve compaction bodies while applying transport rewrites", () => {
+    const body: RequestBody = {
+      model: "claude-opus-4-6",
+      max_tokens: 4000,
+      system: "You are Droid.",
+      messages: [{ role: "user", content: "Summarize the conversation so far." }],
+    };
+
+    const result = rewriteRequest({
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "sk-ant-123",
+        "anthropic-beta": "fast-mode-2026-02-01",
+      },
+      url: "https://api.anthropic.com/v1/messages",
+      body: JSON.stringify(body),
+    });
+
+    expect(result.headers?.["authorization"]).toBe("Bearer sk-ant-123");
+    expect(result.headers?.["anthropic-beta"]).toBe(
+      "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24,fast-mode-2026-02-01",
+    );
+    expect(result.headers?.["x-claude-code-session-id"]).toBeUndefined();
+    expect(result.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
+    expect(JSON.parse(result.body!)).toEqual(body);
+  });
+
+  it("should preserve compaction bodies and forward session headers when available", () => {
+    const body: RequestBody = {
+      model: "claude-opus-4-6",
+      max_tokens: 4000,
+      system: "You are Droid.",
+      messages: [{ role: "user", content: "Summarize the conversation so far." }],
+      metadata: {
+        user_id: JSON.stringify({ session_id: "session-123" }),
+      },
+    };
+
+    const result = rewriteRequest({
+      headers: {
+        "content-type": "application/json",
+      },
+      url: "https://api.anthropic.com/v1/messages",
+      body: JSON.stringify(body),
+    });
+
+    expect(result.headers?.["x-claude-code-session-id"]).toBe("session-123");
+    expect(JSON.parse(result.body!)).toEqual(body);
   });
 
   it("should preserve Droid beta headers in rewritten requests", () => {

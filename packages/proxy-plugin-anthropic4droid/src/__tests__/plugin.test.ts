@@ -109,6 +109,48 @@ describe("createDroidPlugin", () => {
     expect(parsedBody.system[0].text).toContain("Claude Code");
   });
 
+  it("should preserve compaction requests while rewriting transport headers", async () => {
+    const plugin = createDroidPlugin();
+    const originalBody = {
+      model: "claude-opus-4-6",
+      max_tokens: 4000,
+      system: "You are Droid, an AI assistant.",
+      messages: [{ role: "user", content: "Summarize the conversation so far." }],
+    };
+
+    const params = createRequestParams({
+      method: "POST",
+      url: "https://api.anthropic.com/v1/messages",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "sk-ant-123",
+        "anthropic-beta": "fast-mode-2026-02-01",
+      },
+      body: Buffer.from(JSON.stringify(originalBody), "utf-8"),
+    });
+
+    const result = await plugin.onRequest!(params);
+
+    expect(result).not.toBeNull();
+    expect(!("modified" in result!) || result!.modified !== false).toBe(true);
+
+    const modifiedResult = result as {
+      meta?: { headers?: Record<string, string>; url?: string };
+      body?: ReadableStream<Uint8Array>;
+    };
+    const headers = modifiedResult.meta!.headers as Record<string, string>;
+    const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
+
+    expect(headers["authorization"]).toBe("Bearer sk-ant-123");
+    expect(headers["anthropic-beta"]).toBe(
+      "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24,fast-mode-2026-02-01",
+    );
+    expect(headers["x-claude-code-session-id"]).toBeUndefined();
+    expect(modifiedResult.meta?.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
+    expect(parsedBody).toEqual(originalBody);
+    expect(parsedBody.metadata).toBeUndefined();
+  });
+
   it("should return null for non-Droid request", async () => {
     const plugin = createDroidPlugin();
     const body = JSON.stringify({
