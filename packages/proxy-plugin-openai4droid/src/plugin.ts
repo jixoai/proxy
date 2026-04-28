@@ -19,7 +19,7 @@ import type {
   PluginLogger,
 } from "@jixo/proxy-plugin";
 import { normalizeHeaders, createLogger, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
-import { rewriteRequest, isNativeSummarizerRequest } from "./rewriter";
+import { rewriteRequest, isDroidRequest, isNativeSummarizerRequest } from "./rewriter";
 import {
   rewriteResponse,
   buildContextLengthExceededBody,
@@ -31,6 +31,9 @@ import {
  */
 const DEFAULT_SERVER_ANOMALY_THRESHOLD = 680 * 1024;
 const COMPACTION_SSE_PEEK_LIMIT = 64 * 1024;
+const COMPACTION_HEARTBEAT_MS = 15_000;
+const COMPACTION_MAX_WAIT_MS = 45_000;
+const COMPACTION_MIN_PARTIAL_CHARS = 1_024;
 
 /** 插件存储 schema - 标记请求是否被转换 */
 const DroidStoreSchema = z.object({
@@ -61,20 +64,35 @@ interface CompactionAggregationResult {
   body: Buffer;
 }
 
+function normalizeCompactionSummaryText(outputText: string): string {
+  const trimmed = outputText.trim();
+  if (!trimmed) return "";
+
+  const start = trimmed.indexOf("<summary>");
+  const end = trimmed.indexOf("</summary>");
+
+  if (start !== -1) {
+    if (end !== -1 && end > start) {
+      return trimmed.slice(start, end + "</summary>".length).trim();
+    }
+    return `${trimmed.slice(start).trim()}\n</summary>`;
+  }
+
+  return `<summary>\n${trimmed}\n</summary>`;
+}
+
+function hasUsablePartialCompactionSummary(outputText: string, minChars: number): boolean {
+  const normalized = normalizeCompactionSummaryText(outputText);
+  if (!normalized) return false;
+  const textOnly = normalized.replace(/<\/?summary>/g, "").trim();
+  return textOnly.length >= minChars;
+}
+
 function buildCompactionJsonResponse(
   aggregated: AggregatedCompactionResponse,
   fallbackModel?: string,
 ): Record<string, unknown> {
-  const text = (() => {
-    const start = aggregated.outputText.indexOf("<summary>");
-    const end = aggregated.outputText.indexOf("</summary>");
-    if (start !== -1 && end !== -1 && end > start) {
-      return aggregated.outputText.slice(start, end + "</summary>".length);
-    }
-    return aggregated.outputText;
-  })();
-
-  const outputText = text.trim();
+  const outputText = normalizeCompactionSummaryText(aggregated.outputText);
 
   return {
     id: aggregated.responseId ?? `resp_${Date.now()}`,
@@ -199,6 +217,8 @@ async function aggregateCompactionSseResponse(params: {
   requestContentLength: number;
   serverAnomalyThreshold: number;
   fallbackModel?: string;
+  maxWaitMs?: number;
+  minPartialChars?: number;
 }): Promise<CompactionAggregationResult> {
   const reader = params.body.getReader();
   const decoder = new TextDecoder();
@@ -207,6 +227,7 @@ async function aggregateCompactionSseResponse(params: {
     model: params.fallbackModel,
     outputText: "",
   };
+  const startedAt = Date.now();
 
   const finalize = (): CompactionAggregationResult => ({
     meta: {
@@ -219,6 +240,57 @@ async function aggregateCompactionSseResponse(params: {
       "utf-8",
     ),
   });
+
+  const tryFinalizePartial = async (
+    reason: string,
+  ): Promise<CompactionAggregationResult | null> => {
+    if (
+      hasUsablePartialCompactionSummary(
+        aggregated.outputText,
+        params.minPartialChars ?? COMPACTION_MIN_PARTIAL_CHARS,
+      )
+    ) {
+      await reader.cancel(reason).catch(() => undefined);
+      return finalize();
+    }
+    return null;
+  };
+
+  const readNextChunk = async (timeoutMs?: number) => {
+    if (timeoutMs === undefined) {
+      return {
+        timedOut: false as const,
+        ...(await reader.read()),
+      };
+    }
+
+    return await new Promise<
+      | { timedOut: true }
+      | { timedOut: false; value: Uint8Array | undefined; done: boolean }
+    >((resolve, reject) => {
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve({ timedOut: true });
+      }, timeoutMs);
+
+      reader.read().then(
+        ({ value, done }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          resolve({ timedOut: false, value, done });
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          reject(error);
+        },
+      );
+    });
+  };
 
   const processEventBlock = async (
     block: string,
@@ -358,7 +430,29 @@ async function aggregateCompactionSseResponse(params: {
 
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const remainingMs =
+        params.maxWaitMs === undefined ? undefined : Math.max(0, params.maxWaitMs - (Date.now() - startedAt));
+
+      const readResult = await readNextChunk(remainingMs);
+      if (readResult.timedOut) {
+        if (bufferedText.trim()) {
+          const trailingResult = await processEventBlock(bufferedText.trim());
+          if (trailingResult === "done") {
+            return finalize();
+          }
+          if (trailingResult !== "continue") return trailingResult;
+        }
+
+        const partial = await tryFinalizePartial("compaction_partial_timeout");
+        if (partial) return partial;
+        return buildCompactionGatewayFailureResult({
+          meta: params.meta,
+          requestContentLength: params.requestContentLength,
+          serverAnomalyThreshold: params.serverAnomalyThreshold,
+        });
+      }
+
+      const { value, done } = readResult;
       if (done) break;
       if (!value) continue;
 
@@ -374,6 +468,24 @@ async function aggregateCompactionSseResponse(params: {
           return finalize();
         }
         if (result !== "continue") return result;
+      }
+
+      if (params.maxWaitMs !== undefined && Date.now() - startedAt >= params.maxWaitMs) {
+        if (bufferedText.trim()) {
+          const trailingResult = await processEventBlock(bufferedText.trim());
+          if (trailingResult === "done") {
+            return finalize();
+          }
+          if (trailingResult !== "continue") return trailingResult;
+        }
+
+        const partial = await tryFinalizePartial("compaction_partial_timeout");
+        if (partial) return partial;
+        return buildCompactionGatewayFailureResult({
+          meta: params.meta,
+          requestContentLength: params.requestContentLength,
+          serverAnomalyThreshold: params.serverAnomalyThreshold,
+        });
       }
     }
 
@@ -513,6 +625,66 @@ async function precheckCompactionSseResponse(params: {
   return { body: createReplayStreamFromReader(reader, bufferedBytes) };
 }
 
+function createHeartbeatCompactionJsonStream(params: {
+  body: ReadableStream<Uint8Array>;
+  meta: ResponseMeta;
+  requestContentLength: number;
+  serverAnomalyThreshold: number;
+  fallbackModel?: string;
+  logger: PluginLogger;
+  heartbeatMs: number;
+  maxWaitMs: number;
+  minPartialChars: number;
+}): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      controller.enqueue(encoder.encode(" "));
+
+      const heartbeatId = setInterval(() => {
+        if (!closed) {
+          controller.enqueue(encoder.encode(" "));
+        }
+      }, params.heartbeatMs);
+
+      const finish = (body: Buffer) => {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeatId);
+        controller.enqueue(body);
+        controller.close();
+      };
+
+      const fail = (error: unknown) => {
+        params.logger.info(`Compaction aggregation fallback: ${String(error)}`);
+        const fallback = buildCompactionGatewayFailureResult({
+          meta: params.meta,
+          requestContentLength: params.requestContentLength,
+          serverAnomalyThreshold: params.serverAnomalyThreshold,
+        });
+        finish(fallback.body);
+      };
+
+      void aggregateCompactionSseResponse({
+        body: params.body,
+        meta: params.meta,
+        requestContentLength: params.requestContentLength,
+        serverAnomalyThreshold: params.serverAnomalyThreshold,
+        fallbackModel: params.fallbackModel,
+        maxWaitMs: params.maxWaitMs,
+        minPartialChars: params.minPartialChars,
+      })
+        .then((result) => finish(result.body))
+        .catch(fail);
+    },
+    async cancel(reason) {
+      await params.body.cancel(reason).catch(() => undefined);
+    },
+  });
+}
+
 export interface DroidPluginOptions {
   /** 是否启用调试日志 */
   debug?: boolean;
@@ -520,6 +692,14 @@ export interface DroidPluginOptions {
   logDir?: string;
   /** 服务器异常检测阈值（字节） */
   serverAnomalyThreshold?: number;
+  /** compaction 聚合时发送空白 heartbeat 的间隔（毫秒） */
+  compactionHeartbeatMs?: number;
+  /** compaction 聚合允许等待的最长时间（毫秒） */
+  compactionMaxWaitMs?: number;
+  /** compaction 超时后允许返回 partial summary 的最小字符数 */
+  compactionMinPartialChars?: number;
+  /** 标准请求在本地提前触发 compact 的阈值（字节），小于等于 0 时禁用 */
+  preemptiveContextLengthThreshold?: number;
   /** 将 499 Client Closed Request 重写为 context_length_exceeded */
   rewrite499ToContextLengthExceeded?: boolean;
 }
@@ -540,6 +720,10 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
     debug,
     logDir,
     serverAnomalyThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD,
+    compactionHeartbeatMs = COMPACTION_HEARTBEAT_MS,
+    compactionMaxWaitMs = COMPACTION_MAX_WAIT_MS,
+    compactionMinPartialChars = COMPACTION_MIN_PARTIAL_CHARS,
+    preemptiveContextLengthThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD,
     rewrite499ToContextLengthExceeded = false,
   } = options;
 
@@ -643,13 +827,39 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
       const requestBodyLength = result.body
         ? Buffer.byteLength(result.body, "utf-8")
         : bodyBuffer.length;
+
+      const isCompactionRequest = parsedBody && isNativeSummarizerRequest(parsedBody);
+      const shouldPreemptivelyCompact =
+        Boolean(parsedBody && isDroidRequest(parsedBody)) &&
+        !isCompactionRequest &&
+        preemptiveContextLengthThreshold > 0 &&
+        requestBodyLength >= preemptiveContextLengthThreshold;
+
+      if (shouldPreemptivelyCompact) {
+        logger.info(
+          `Short-circuiting oversized Droid request (${requestBodyLength} bytes) as context_length_exceeded`,
+        );
+
+        const responseBody = Buffer.from(JSON.stringify(buildContextLengthExceededBody()), "utf-8");
+        return {
+          respondWith: {
+            statusCode: 400,
+            headers: {
+              "content-type": "application/json; charset=utf-8",
+              "content-length": String(responseBody.length),
+            },
+            body: responseBody,
+          },
+        };
+      }
+
       const finalHeaders = params.store
         ? params.store.set(
             {
               activated: true,
               requestBodyLength,
               requestKind:
-                parsedBody && isNativeSummarizerRequest(parsedBody) ? "compaction" : "standard",
+                isCompactionRequest ? "compaction" : "standard",
             },
             result.headers ?? headers,
           )
@@ -700,17 +910,23 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
           };
         }
 
-        const aggregated = await aggregateCompactionSseResponse({
-          body: prechecked.body,
-          meta: params.meta,
-          requestContentLength: store.requestBodyLength,
-          serverAnomalyThreshold,
-          fallbackModel: headers["x-upstream-model"]?.toString(),
-        });
-
         return {
-          meta: aggregated.meta,
-          body: streamFromBuffer(aggregated.body),
+          meta: {
+            statusCode: 200,
+            statusMessage: "OK",
+            headers: { "content-type": "application/json; charset=utf-8" },
+          },
+          body: createHeartbeatCompactionJsonStream({
+            body: prechecked.body,
+            meta: params.meta,
+            requestContentLength: store.requestBodyLength,
+            serverAnomalyThreshold,
+            fallbackModel: headers["x-upstream-model"]?.toString(),
+            logger,
+            heartbeatMs: compactionHeartbeatMs,
+            maxWaitMs: compactionMaxWaitMs,
+            minPartialChars: compactionMinPartialChars,
+          }),
         };
       }
 

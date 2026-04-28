@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { createDroidPlugin } from "../plugin";
+import { rewriteRequest } from "../rewriter";
 import { createMockStore, readStreamToBuffer, streamFromBuffer } from "@jixo/proxy-plugin";
 
 function expectCodexTuiHeaders(headers: Record<string, string> | undefined): void {
@@ -135,6 +136,54 @@ describe("createDroidPlugin.onResponse", () => {
 });
 
 describe("createDroidPlugin.onRequest", () => {
+  it("short-circuits oversized standard Droid requests as context_length_exceeded", async () => {
+    const plugin = createDroidPlugin({ preemptiveContextLengthThreshold: 1024 });
+    const originalBody = {
+      model: "gpt-5.4",
+      instructions:
+        "You are Droid, an AI software engineering agent built by Factory. Focus on the requested coding task.",
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "A".repeat(3000),
+            },
+          ],
+        },
+      ],
+      stream: true,
+    };
+
+    const result = await plugin.onRequest!({
+      meta: {
+        method: "POST",
+        url: "http://example.com/openai-droid/responses",
+        headers: { "content-type": "application/json" },
+      },
+      body: streamFromBuffer(Buffer.from(JSON.stringify(originalBody), "utf-8")),
+      store: createMockStore(),
+    });
+
+    expect(result).not.toBeNull();
+    expect(result && "respondWith" in result).toBe(true);
+
+    const shortCircuited = result as {
+      respondWith: {
+        statusCode: number;
+        headers?: Record<string, string>;
+        body?: Buffer;
+      };
+    };
+
+    expect(shortCircuited.respondWith.statusCode).toBe(400);
+    expect(shortCircuited.respondWith.headers?.["content-type"]).toContain("application/json");
+
+    const parsedBody = JSON.parse(shortCircuited.respondWith.body!.toString("utf-8"));
+    expect(parsedBody.error.code).toBe("context_length_exceeded");
+  });
+
   it("rewrites standard Droid requests with Codex TUI headers", async () => {
     const plugin = createDroidPlugin();
     const originalBody = {
@@ -246,8 +295,8 @@ Print hello.`,
     expectCodexTuiHeaders(modifiedResult.meta?.headers);
   });
 
-  it("preserves native summarizer requests while enabling SSE and adding session headers", async () => {
-    const plugin = createDroidPlugin();
+  it("preserves native summarizer requests while only enabling upstream streaming", async () => {
+    const plugin = createDroidPlugin({ preemptiveContextLengthThreshold: 1 });
     const originalBody = {
       model: "gpt-5.4",
       instructions:
@@ -261,7 +310,11 @@ Print hello.`,
       meta: {
         method: "POST",
         url: "http://example.com/openai-droid/responses",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          "user-agent": "j1/JS 6.25.0",
+        },
       },
       body: streamFromBuffer(Buffer.from(JSON.stringify(originalBody), "utf-8")),
       store: createMockStore(),
@@ -282,7 +335,10 @@ Print hello.`,
     expect(parsedBody.max_output_tokens).toBe(originalBody.max_output_tokens);
     expect(parsedBody.stream).toBe(true);
     expect(parsedBody.store).toBe(false);
-    expectCodexTuiHeaders(modifiedResult.meta?.headers);
+    expect(modifiedResult.meta?.headers?.accept).toBe("application/json");
+    expect(modifiedResult.meta?.headers?.["user-agent"]).toBe("j1/JS 6.25.0");
+    expect(modifiedResult.meta?.headers?.originator).toBeUndefined();
+    expect(modifiedResult.meta?.headers?.session_id).toBeUndefined();
   });
 });
 
@@ -397,10 +453,97 @@ describe("createDroidPlugin.compaction aggregation", () => {
       body?: ReadableStream<Uint8Array>;
     };
 
-    expect(modifiedResult.meta?.statusCode).toBe(400);
+    expect(modifiedResult.meta?.statusCode).toBe(200);
     expect(modifiedResult.meta?.headers?.["content-type"]).toContain("application/json");
 
     const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
     expect(parsedBody.error.code).toBe("context_length_exceeded");
+  });
+
+  it("finalizes partial compaction summaries after the max wait budget", async () => {
+    const plugin = createDroidPlugin({
+      compactionHeartbeatMs: 1,
+      compactionMaxWaitMs: 10,
+      compactionMinPartialChars: 1,
+    });
+    const encoder = new TextEncoder();
+    const stalledSse = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            [
+              "event: response.created",
+              'data: {"type":"response.created","response":{"id":"resp_test","object":"response","created_at":1234567890,"status":"in_progress","model":"gpt-5.4","output":[]}}',
+              "",
+              "event: response.output_text.delta",
+              'data: {"type":"response.output_text.delta","delta":"<summary>Hello"}',
+              "",
+            ].join("\n"),
+          ),
+        );
+      },
+      cancel() {
+        return Promise.resolve();
+      },
+    });
+
+    const result = await plugin.onResponse!({
+      meta: {
+        statusCode: 200,
+        headers: { "content-type": "text/event-stream" },
+      },
+      body: stalledSse,
+      store: createMockStore({
+        activated: true as const,
+        requestBodyLength: 900_000,
+        requestKind: "compaction" as const,
+      }),
+    });
+
+    expect(result).not.toBeNull();
+
+    const modifiedResult = result as {
+      meta?: { statusCode?: number; headers?: Record<string, string> };
+      body?: ReadableStream<Uint8Array>;
+    };
+
+    expect(modifiedResult.meta?.statusCode).toBe(200);
+    expect(modifiedResult.meta?.headers?.["content-type"]).toContain("application/json");
+
+    const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
+    expect(parsedBody.output[0].content[0].text).toBe("<summary>Hello\n</summary>");
+  });
+});
+
+describe("rewriteRequest", () => {
+  it("preserves native compaction transport while enabling upstream streaming", () => {
+    const originalBody = {
+      model: "gpt-5.4",
+      instructions:
+        "You are Droid, an AI software engineering agent built by Factory. You excel at creating and maintaining summaries that capture the most salient details from technical conversations.",
+      input: "Please summarize the following conversation:\\n```\\nUSER: hello\\n```",
+      max_output_tokens: 4000,
+      store: false,
+    };
+
+    const bodyText = JSON.stringify(originalBody);
+    const result = rewriteRequest({
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        "user-agent": "j1/JS 6.25.0",
+      },
+      body: bodyText,
+    });
+
+    expect(JSON.parse(result.body!)).toEqual({
+      ...originalBody,
+      stream: true,
+    });
+    expect(result.headers).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+      "user-agent": "j1/JS 6.25.0",
+    });
   });
 });

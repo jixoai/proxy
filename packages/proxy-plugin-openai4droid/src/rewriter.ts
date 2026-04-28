@@ -80,9 +80,8 @@ export function isNativeSummarizerRequest(requestBody: RequestBody & { max_outpu
 }
 
 function buildCompactionRequest(requestBody: RequestBody & { max_output_tokens?: number }): RequestBody {
-  // Preserve Droid's native summarizer request shape, but switch to SSE so the
-  // proxy can observe progress and keep the downstream connection alive while
-  // aggregating the final JSON response back for Droid.
+  // Keep Droid's native summarizer payload shape, but request a streamed
+  // upstream response so gateways do not time out waiting for the first byte.
   const cloned = structuredClone(requestBody);
   cloned.stream = true;
   return cloned;
@@ -295,6 +294,17 @@ export function rewriteRequest(params: {
   const rewrittenBody = rewriteRequestBody(requestBody);
   if (!rewrittenBody) {
     return {};
+  }
+
+  const isCompactionRequest = isNativeSummarizerRequest(
+    requestBody as RequestBody & { max_output_tokens?: number },
+  );
+
+  if (isCompactionRequest) {
+    return {
+      headers: { ...headers },
+      body: JSON.stringify(rewrittenBody),
+    };
   }
 
   // 检测是否包含 web_search 工具
