@@ -136,6 +136,51 @@ describe("createDroidPlugin.onResponse", () => {
 });
 
 describe("createDroidPlugin.onRequest", () => {
+  it("does not short-circuit large standard Droid requests by default", async () => {
+    const plugin = createDroidPlugin();
+    const originalBody = {
+      model: "gpt-5.4",
+      instructions:
+        "You are Droid, an AI software engineering agent built by Factory. Focus on the requested coding task.",
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "A".repeat(700 * 1024),
+            },
+          ],
+        },
+      ],
+      stream: true,
+    };
+
+    const result = await plugin.onRequest!({
+      meta: {
+        method: "POST",
+        url: "http://example.com/openai-droid/responses",
+        headers: { "content-type": "application/json" },
+      },
+      body: streamFromBuffer(Buffer.from(JSON.stringify(originalBody), "utf-8")),
+      store: createMockStore(),
+    });
+
+    expect(result).not.toBeNull();
+    expect(result && "respondWith" in result).toBe(false);
+
+    const modifiedResult = result as {
+      meta?: { headers?: Record<string, string> };
+      body?: ReadableStream<Uint8Array>;
+    };
+
+    const parsedBody = JSON.parse((await readStreamToBuffer(modifiedResult.body!)).toString("utf-8"));
+    expect(parsedBody.input[0].content[0].text).toStartWith(
+      `IMPORTANT:<system>${originalBody.instructions}</system>`,
+    );
+    expectCodexTuiHeaders(modifiedResult.meta?.headers);
+  });
+
   it("short-circuits oversized standard Droid requests as context_length_exceeded", async () => {
     const plugin = createDroidPlugin({ preemptiveContextLengthThreshold: 1024 });
     const originalBody = {

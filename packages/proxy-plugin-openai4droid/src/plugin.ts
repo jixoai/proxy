@@ -30,6 +30,7 @@ import {
  * 与 anthropic4droid 保持一致，避免 mission 模式下 70KB 级普通请求被误判为 context_length_exceeded。
  */
 const DEFAULT_SERVER_ANOMALY_THRESHOLD = 680 * 1024;
+const DEFAULT_PREEMPTIVE_CONTEXT_LENGTH_THRESHOLD = 0;
 const COMPACTION_SSE_PEEK_LIMIT = 64 * 1024;
 const COMPACTION_HEARTBEAT_MS = 15_000;
 const COMPACTION_MAX_WAIT_MS = 45_000;
@@ -698,7 +699,7 @@ export interface DroidPluginOptions {
   compactionMaxWaitMs?: number;
   /** compaction 超时后允许返回 partial summary 的最小字符数 */
   compactionMinPartialChars?: number;
-  /** 标准请求在本地提前触发 compact 的阈值（字节），小于等于 0 时禁用 */
+  /** 标准请求在本地提前触发 compact 的阈值（字节），默认禁用，小于等于 0 时禁用 */
   preemptiveContextLengthThreshold?: number;
   /** 将 499 Client Closed Request 重写为 context_length_exceeded */
   rewrite499ToContextLengthExceeded?: boolean;
@@ -723,7 +724,7 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
     compactionHeartbeatMs = COMPACTION_HEARTBEAT_MS,
     compactionMaxWaitMs = COMPACTION_MAX_WAIT_MS,
     compactionMinPartialChars = COMPACTION_MIN_PARTIAL_CHARS,
-    preemptiveContextLengthThreshold = DEFAULT_SERVER_ANOMALY_THRESHOLD,
+    preemptiveContextLengthThreshold = DEFAULT_PREEMPTIVE_CONTEXT_LENGTH_THRESHOLD,
     rewrite499ToContextLengthExceeded = false,
   } = options;
 
