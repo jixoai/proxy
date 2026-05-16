@@ -81,10 +81,18 @@ function hasToolUse(candidate: GeminiCandidate): boolean {
   ) ?? false;
 }
 
+function getThoughtSignature(part: GeminiPart): string | undefined {
+  return "thoughtSignature" in part && typeof part.thoughtSignature === "string"
+    ? part.thoughtSignature
+    : undefined;
+}
+
 /**
  * 转换 Gemini part 到 Anthropic content block
  */
 function convertPart(part: GeminiPart): AnthropicContentBlock | null {
+  const thoughtSignature = getThoughtSignature(part);
+
   // 处理 text (包括 thinking)
   if ("text" in part && part.text !== undefined) {
     const textPart = part as GeminiTextPart;
@@ -104,6 +112,7 @@ function convertPart(part: GeminiPart): AnthropicContentBlock | null {
     return {
       type: "text",
       text: textPart.text,
+      ...(thoughtSignature ? { gemini_thought_signature: thoughtSignature } : {}),
     };
   }
 
@@ -114,6 +123,7 @@ function convertPart(part: GeminiPart): AnthropicContentBlock | null {
       id: generateToolUseId(),
       name: TOOL_NAME_TO_ANTHROPIC[part.function_call.name] || part.function_call.name,
       input: part.function_call.args,
+      ...(thoughtSignature ? { gemini_thought_signature: thoughtSignature } : {}),
     };
   }
 
@@ -124,6 +134,7 @@ function convertPart(part: GeminiPart): AnthropicContentBlock | null {
       id: generateToolUseId(),
       name: TOOL_NAME_TO_ANTHROPIC[part.functionCall.name] || part.functionCall.name,
       input: part.functionCall.args,
+      ...(thoughtSignature ? { gemini_thought_signature: thoughtSignature } : {}),
     };
   }
 
@@ -281,6 +292,8 @@ export interface StreamConverterState {
   inThinkingBlock: boolean;
   /** 当前 block 类型 */
   currentBlockType: "text" | "thinking" | "tool_use" | null;
+  /** 当前消息是否已经产生过工具调用 */
+  hasToolUse: boolean;
 }
 
 /**
@@ -304,6 +317,7 @@ export function createStreamState(
     finished: false,
     inThinkingBlock: false,
     currentBlockType: null,
+    hasToolUse: false,
   };
 }
 
@@ -613,6 +627,9 @@ export function convertStreamChunk(
         : null;
     
     if (funcCall) {
+      state.hasToolUse = true;
+      const thoughtSignature = getThoughtSignature(part);
+
       // 先关闭之前的 block（如果有）
       if (state.currentBlockType !== null) {
         output += generateContentBlockStop(state.contentBlockIndex);
@@ -633,6 +650,7 @@ export function convertStreamChunk(
         id: toolUseId,
         name: anthropicToolName,
         input: {},  // 空的，通过 delta 传
+        ...(thoughtSignature ? { gemini_thought_signature: thoughtSignature } : {}),
       });
       
       // 修复工具参数（参数名修正 + 相对路径修复）
@@ -662,8 +680,7 @@ export function convertStreamChunk(
       output += generateContentBlockStop(state.contentBlockIndex);
     }
     
-    // 如果是 server tool（websearch），stop_reason 应为 end_turn
-    const stopReason = hasToolUse(candidate)
+    const stopReason = state.hasToolUse || hasToolUse(candidate)
       ? "tool_use"
       : convertFinishReason(candidate.finishReason);
 

@@ -108,6 +108,107 @@ describe("request-converter", () => {
     expect(out.generationConfig?.thinkingConfig?.thinkingBudget).toBe(8192);
   });
 
+  test("convertRequestBody preserves Gemini thoughtSignature on tool_use history", () => {
+    const out = convertRequestBody({
+      model: "gemini-2.5-pro",
+      system: "Droid",
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "Edit",
+              input: { file_path: "src/frontend/terminal.css" },
+              gemini_thought_signature: "signature_123",
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: "updated",
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          name: "Edit",
+          input_schema: {
+            type: "object",
+            properties: { file_path: { type: "string" } },
+          },
+        },
+      ],
+    } as any);
+
+    const functionCallPart = out.contents
+      .flatMap((c: any) => c.parts)
+      .find((p: any) => p.functionCall?.name === "Edit");
+
+    expect(functionCallPart?.functionCall?.id).toBe("toolu_1");
+    expect(functionCallPart?.thoughtSignature).toBe("signature_123");
+  });
+
+  test("convertRequestBody does not merge tool_result functionResponse with following user text", () => {
+    const out = convertRequestBody({
+      model: "gemini-2.5-pro",
+      system: "Droid",
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "Edit",
+              input: { file_path: "src/frontend/terminal.css" },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: "updated",
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: "Continue." }],
+        },
+      ],
+      tools: [
+        {
+          name: "Edit",
+          input_schema: {
+            type: "object",
+            properties: { file_path: { type: "string" } },
+          },
+        },
+      ],
+    } as any);
+
+    const responseContent = out.contents.find((content: any) =>
+      content.parts.some((part: any) => part.functionResponse),
+    );
+    const continueContent = out.contents.find((content: any) =>
+      content.parts.some((part: any) => part.text === "Continue."),
+    );
+
+    expect(responseContent).toBeDefined();
+    expect(continueContent).toBeDefined();
+    expect(responseContent).not.toBe(continueContent);
+  });
+
   test("convertHeaders derives x-goog-api-key from Bearer token", () => {
     const headers = convertHeaders({ authorization: "Bearer test_token" });
     expect(headers["x-goog-api-key"]).toBe("test_token");

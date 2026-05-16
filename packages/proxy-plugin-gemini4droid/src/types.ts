@@ -14,6 +14,8 @@ export type AnthropicTextBlock = {
   type: "text";
   text: string;
   cache_control?: CacheControl;
+  /** 私有字段：保留 Gemini thoughtSignature，下一轮请求会原样传回 Gemini */
+  gemini_thought_signature?: string;
 };
 
 export type AnthropicImageBlock = {
@@ -30,6 +32,8 @@ export type AnthropicToolUseBlock = {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /** 私有字段：保留 Gemini functionCall part 的 thoughtSignature */
+  gemini_thought_signature?: string;
 };
 
 export type AnthropicToolResultBlock = {
@@ -157,14 +161,18 @@ export type GeminiInlineDataPart = {
 export type GeminiFunctionCallPart = {
   /** 标准 Gemini API 格式 */
   function_call?: {
+    id?: string;
     name: string;
     args: Record<string, unknown>;
   };
   /** Gemini CLI 格式 (camelCase) */
   functionCall?: {
+    id?: string;
     name: string;
     args: Record<string, unknown>;
   };
+  /** Gemini 3/2.5 thinking 模型返回的签名，历史中需要原样传回 */
+  thoughtSignature?: string;
 };
 
 export type GeminiFunctionResponsePart = {

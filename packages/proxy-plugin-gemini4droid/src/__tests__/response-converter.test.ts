@@ -121,6 +121,90 @@ describe("response-converter", () => {
     expect(out).toContain("\"stop_reason\":\"tool_use\"");
   });
 
+  test("keeps stop_reason tool_use when functionCall and finishReason arrive in separate chunks", () => {
+    const geminiSSE = [
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  functionCall: {
+                    name: "Edit",
+                    args: { file_path: "src/frontend/terminal.css" },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "" }] },
+            finishReason: "STOP",
+          },
+        ],
+      })}`,
+      "",
+    ].join("\n");
+
+    const out = convertStreamResponse(
+      geminiSSE,
+      "gemini-2.5-pro",
+      "/Users/kingsword09/Documents/code/ai/aitty",
+    );
+    const events = parseSseEvents(out);
+
+    const toolStart = events.find(
+      (e) =>
+        e.event === "content_block_start" &&
+        e.data?.content_block?.type === "tool_use",
+    );
+    const msgDelta = events.find((e) => e.event === "message_delta");
+
+    expect(toolStart?.data?.content_block?.name).toBe("Edit");
+    expect(msgDelta?.data?.delta?.stop_reason).toBe("tool_use");
+  });
+
+  test("preserves Gemini thoughtSignature on streamed functionCall tool_use blocks", () => {
+    const state = createStreamState("gemini-2.5-pro");
+    const chunk = {
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                functionCall: {
+                  name: "Edit",
+                  args: { file_path: "src/frontend/terminal.css" },
+                },
+                thoughtSignature: "signature_123",
+              },
+            ],
+          },
+          finishReason: "STOP",
+        },
+      ],
+    } as any;
+
+    const out = convertStreamChunk(chunk, state);
+    const events = parseSseEvents(out);
+    const toolStart = events.find(
+      (e) =>
+        e.event === "content_block_start" &&
+        e.data?.content_block?.type === "tool_use",
+    );
+
+    expect(toolStart?.data?.content_block?.gemini_thought_signature).toBe(
+      "signature_123",
+    );
+  });
+
   test("converts thought text into thinking_delta", () => {
     const state = createStreamState("gemini-2.5-pro");
     const chunk = {

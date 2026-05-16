@@ -152,7 +152,12 @@ function convertContentBlock(
 ): GeminiPart | null {
   switch (block.type) {
     case "text":
-      return { text: block.text };
+      return {
+        text: block.text,
+        ...(block.gemini_thought_signature
+          ? { thoughtSignature: block.gemini_thought_signature }
+          : {}),
+      };
 
     case "image":
       return {
@@ -171,9 +176,13 @@ function convertContentBlock(
         : block.input;
       return {
         functionCall: {
+          id: block.id,
           name: geminiToolName,
           args: toolArgs,
         },
+        ...(block.gemini_thought_signature
+          ? { thoughtSignature: block.gemini_thought_signature }
+          : {}),
       };
 
     case "tool_result":
@@ -239,6 +248,14 @@ function convertMessage(
   };
 }
 
+function hasFunctionResponse(content: GeminiContent): boolean {
+  return content.parts.some((part) => "functionResponse" in part || "function_response" in part);
+}
+
+function hasNonFunctionResponse(content: GeminiContent): boolean {
+  return content.parts.some((part) => !("functionResponse" in part) && !("function_response" in part));
+}
+
 /**
  * 合并连续相同 role 的消息
  * Gemini 要求 user 和 model 交替出现
@@ -250,7 +267,13 @@ function mergeConsecutiveMessages(contents: GeminiContent[]): GeminiContent[] {
   let current: GeminiContent | null = null;
 
   for (const content of contents) {
-    if (current && current.role === content.role) {
+    const crossesToolResponseBoundary =
+      current?.role === "user" &&
+      content.role === "user" &&
+      (hasFunctionResponse(current) || hasFunctionResponse(content)) &&
+      (hasNonFunctionResponse(current) || hasNonFunctionResponse(content));
+
+    if (current && current.role === content.role && !crossesToolResponseBoundary) {
       // 合并 parts
       current.parts.push(...content.parts);
     } else {
