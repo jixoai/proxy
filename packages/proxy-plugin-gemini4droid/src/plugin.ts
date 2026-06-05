@@ -23,7 +23,12 @@ import {
   readStreamToBuffer,
   streamFromBuffer,
 } from "@jixo/proxy-plugin";
-import { convertRequest, isDroidRequest, extractCwd } from "./request-converter";
+import {
+  convertRequest,
+  deriveGeminiBaseUrl,
+  isDroidRequest,
+  extractCwd,
+} from "./request-converter";
 import { rewriteResponse } from "./response-converter";
 import type { AnthropicRequestBody } from "./types";
 
@@ -142,12 +147,7 @@ export function createGeminiPlugin(
       // 确定上游 base URL
       let effectiveBaseUrl = upstreamBaseUrl;
       if (!effectiveBaseUrl && params.meta.url) {
-        try {
-          const targetUrl = new URL(params.meta.url);
-          effectiveBaseUrl = `${targetUrl.protocol}//${targetUrl.host}/v1beta`;
-        } catch {
-          // ignore
-        }
+        effectiveBaseUrl = deriveGeminiBaseUrl(params.meta.url);
       }
 
       // 转换请求

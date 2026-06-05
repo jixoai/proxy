@@ -560,6 +560,22 @@ async function main(argv: string[]) {
     );
     const method = (req.method || "GET").toUpperCase();
 
+    // CORS support: browsers send `origin` header, terminals don't.
+    if (req.headers.origin) {
+      if (method === "OPTIONS") {
+        res.writeHead(204, {
+          "access-control-allow-origin": req.headers.origin,
+          "access-control-allow-methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+          "access-control-allow-headers": req.headers["access-control-request-headers"] || "*",
+          "access-control-max-age": "86400",
+        });
+        res.end();
+        return;
+      }
+      res.setHeader("access-control-allow-origin", req.headers.origin);
+      res.setHeader("access-control-expose-headers", "*");
+    }
+
     const matched = matchForwardRule(method, requestUrl.pathname);
     if (!matched) {
       res.writeHead(500, { "Content-Type": "application/json" });

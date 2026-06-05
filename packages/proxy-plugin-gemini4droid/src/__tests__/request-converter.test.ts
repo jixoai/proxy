@@ -5,6 +5,7 @@ import {
   convertHeaders,
   convertRequest,
   convertRequestBody,
+  deriveGeminiBaseUrl,
   extractCwd,
   isDroidRequest,
 } from "../request-converter";
@@ -218,5 +219,22 @@ describe("request-converter", () => {
   test("buildGeminiUrl normalizes baseUrl/model and stream flag", () => {
     const url = buildGeminiUrl("https://example.com/v1beta/", "gemini-2.5-pro", true);
     expect(url).toBe("https://example.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse");
+  });
+
+  test("deriveGeminiBaseUrl preserves custom path prefix from full target endpoint", () => {
+    const baseUrl = deriveGeminiBaseUrl(
+      "https://ai.hybgzs.com/gemini/v1beta/models/gemini-3.5-flash:generateContent/v1/messages?foo=bar",
+    );
+
+    expect(baseUrl).toBe("https://ai.hybgzs.com/gemini/v1beta");
+    expect(buildGeminiUrl(baseUrl!, "gemini-3.5-flash", true)).toBe(
+      "https://ai.hybgzs.com/gemini/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse",
+    );
+  });
+
+  test("deriveGeminiBaseUrl keeps old origin fallback when no Gemini API version is present", () => {
+    expect(deriveGeminiBaseUrl("https://example.com/proxy/v1/messages")).toBe(
+      "https://example.com/v1beta",
+    );
   });
 });

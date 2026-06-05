@@ -23,6 +23,7 @@ export {
   convertRequest,
   convertRequestBody,
   convertHeaders,
+  deriveGeminiBaseUrl,
   buildGeminiUrl,
 } from "./request-converter";
 

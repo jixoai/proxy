@@ -579,6 +579,43 @@ export function convertHeaders(
 }
 
 /**
+ * 从代理传入的目标 URL 推导 Gemini API base URL。
+ *
+ * 代理规则的 target 可能配置成完整 endpoint：
+ * https://host/custom-prefix/v1beta/models/model:generateContent
+ *
+ * request hook 收到的 URL 还可能追加了原始请求路径后缀。这里以 Gemini API 版本段
+ * 作为稳定边界，保留其前面的自定义路径前缀，并丢弃 /models/... 之后的 endpoint。
+ */
+export function deriveGeminiBaseUrl(targetUrl: string): string | undefined {
+  try {
+    const url = new URL(targetUrl);
+    const segments = url.pathname.split("/").filter(Boolean);
+    const versionIndex = segments.findIndex((segment, index) => {
+      const normalized = segment.toLowerCase();
+      if (/^v\d+(?:alpha|beta)$/.test(normalized)) return true;
+      if (!/^v\d+$/.test(normalized)) return false;
+
+      const next = segments[index + 1]?.toLowerCase();
+      return next === undefined || next === "models";
+    });
+
+    url.search = "";
+    url.hash = "";
+
+    if (versionIndex >= 0) {
+      url.pathname = `/${segments.slice(0, versionIndex + 1).join("/")}`;
+      return url.href.replace(/\/+$/, "");
+    }
+
+    url.pathname = "/v1beta";
+    return url.href.replace(/\/+$/, "");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 构建 Gemini API URL
  */
 export function buildGeminiUrl(
