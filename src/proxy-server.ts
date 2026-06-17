@@ -17,7 +17,7 @@ import { setDataDir } from "./lib/runtime-paths";
 import { initDatabase } from "./lib/db";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
-import { HooksExecutor, stopAllHooks, type PrecheckSummary } from "./lib/hooks-executor";
+import { HooksExecutor, stopAllHooks, type PrecheckSummary, type LoadedHook } from "./lib/hooks-executor";
 import { streamFromBuffer, readStreamToBuffer, teeStream, isPluginStoreHeader } from "@jixo/proxy-plugin";
 import { nodeReadableToWebStream, pipeWebStreamToNodeResponse } from "./lib/node-stream-adapter";
 import type { HooksConfig, HookLayer } from "./types/proxy";
@@ -645,6 +645,7 @@ async function main(argv: string[]) {
     };
 
     let dbRecordId: number | null = null;
+    let forwardHooksLoadedForFinalResult: LoadedHook[] = [];
     let finalResult: {
       statusCode: number;
       statusMessage: string;
@@ -677,11 +678,13 @@ async function main(argv: string[]) {
       const hookRule = candidate.hookRule;
       const targetRequestUrl = candidate.targetRequestUrl;
 
+      // 为当前请求加载 forward hooks（避免并发竞态）
+      let forwardHooksLoaded: LoadedHook[] = [];
       if (hooksExecutor && (instanceHooks || hookRule.hooks)) {
         try {
-          await hooksExecutor.setForwardHooks(hookRule.name, hookRule.hooks ?? null);
+          forwardHooksLoaded = await hooksExecutor.loadForwardHooks(hookRule.hooks ?? null);
         } catch (err) {
-          console.error("[Hooks] Failed to set forward hooks:", err);
+          console.error("[Hooks] Failed to load forward hooks:", err);
         }
       }
 
@@ -715,6 +718,7 @@ async function main(argv: string[]) {
               signal: abortSignal,
             },
             (body) => body.length > 0 ? bufferToDataUrl(body, requestContentType) : null,
+            forwardHooksLoaded,
           );
           // 检查是否是 respondWith - 短路请求，直接返回响应
           if (hookExecResult.respondWith) {
@@ -956,6 +960,7 @@ async function main(argv: string[]) {
                   responsePrecheckResult = await hooksExecutor.precheckResponse(
                     { statusCode, statusMessage, headers: responseHeaders as Record<string, string | string[]> },
                     requestMeta,
+                    forwardHooksLoaded,
                   );
                 }
 
@@ -985,6 +990,7 @@ async function main(argv: string[]) {
                     },
                     () => null,
                     (headers) => (headers["content-type"] as string) ?? null,
+                    forwardHooksLoaded,
                   );
                   const hookResult = hookExecResult.params;
                   hasResponseHookChanges = hookExecResult.hasChanges;
@@ -1157,6 +1163,7 @@ async function main(argv: string[]) {
                     },
                     (body) => body.length > 0 ? bufferToDataUrl(body, contentType) : null,
                     (headers) => (headers["content-type"] as string) ?? null,
+                    forwardHooksLoaded,
                   );
                   const hookResult = hookExecResult.params;
                   hasResponseHookChanges = hookExecResult.hasChanges;
@@ -1359,6 +1366,9 @@ async function main(argv: string[]) {
         },
       };
 
+      // 保存当前请求的 forwardHooksLoaded，用于后续的响应处理
+      forwardHooksLoadedForFinalResult = forwardHooksLoaded;
+
       if (wasAborted) {
         break;
       }
@@ -1391,6 +1401,7 @@ async function main(argv: string[]) {
             headers: finalResult.headers as Record<string, string | string[]>,
           },
           finalResult.requestMeta,
+          forwardHooksLoadedForFinalResult,
         );
 
         if (responsePrecheckResult.needsBuffer) {
@@ -1411,6 +1422,7 @@ async function main(argv: string[]) {
             (body) =>
               body.length > 0 ? bufferToDataUrl(body, finalResult.contentType ?? undefined) : null,
             (headers) => (headers["content-type"] as string) ?? null,
+            forwardHooksLoadedForFinalResult,
           );
 
           finalResult.responseHooksExecuted = true;

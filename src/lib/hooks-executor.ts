@@ -120,7 +120,7 @@ export interface ResponseHookResult {
   body?: ReadableStream<Uint8Array>;
 }
 
-type LoadedHook = {
+export type LoadedHook = {
   pluginName: string;
   plugin: ProxyPlugin;
   store?: PluginStore<any>;
@@ -173,7 +173,6 @@ export interface PrecheckSummary {
 
 export class HooksExecutor {
   private instanceHooksLoaded: LoadedHook[] = [];
-  private forwardHooksLoaded: LoadedHook[] = [];
 
   constructor(
     private instanceName: string,
@@ -187,17 +186,28 @@ export class HooksExecutor {
 
   async stop(): Promise<void> {
     this.instanceHooksLoaded = [];
-    this.forwardHooksLoaded = [];
   }
 
+  /**
+   * 加载 forward hooks（请求级别，不再使用共享状态）
+   * @deprecated 使用 loadForwardHooks 替代
+   */
   async setForwardHooks(_forwardName: string, hooks: HooksConfig | null | undefined): Promise<void> {
+    // 空实现，保持向后兼容
+    console.warn('[HooksExecutor] setForwardHooks is deprecated and has no effect');
+  }
+
+  /**
+   * 加载 forward hooks 并返回（请求级别，避免并发竞态）
+   */
+  async loadForwardHooks(hooks: HooksConfig | null | undefined): Promise<LoadedHook[]> {
     const configs = normalizeHooksConfig(hooks);
-    this.forwardHooksLoaded = await loadHooks(configs);
+    return await loadHooks(configs);
   }
 
   /** 请求预检：决定是否需要缓冲请求 body */
-  async precheckRequest(meta: RequestMeta): Promise<PrecheckSummary> {
-    const allHooks = [...this.instanceHooksLoaded, ...this.forwardHooksLoaded];
+  async precheckRequest(meta: RequestMeta, forwardHooksLoaded: LoadedHook[] = []): Promise<PrecheckSummary> {
+    const allHooks = [...this.instanceHooksLoaded, ...forwardHooksLoaded];
     const activePlugins: string[] = [];
     let needsBuffer = false;
     let allPassthrough = true;
@@ -233,8 +243,8 @@ export class HooksExecutor {
   }
 
   /** 响应预检：决定是否需要缓冲响应 body */
-  async precheckResponse(meta: ResponseMeta, requestMeta?: RequestMeta): Promise<PrecheckSummary> {
-    const allHooks = [...this.forwardHooksLoaded, ...this.instanceHooksLoaded];
+  async precheckResponse(meta: ResponseMeta, requestMeta?: RequestMeta, forwardHooksLoaded: LoadedHook[] = []): Promise<PrecheckSummary> {
+    const allHooks = [...forwardHooksLoaded, ...this.instanceHooksLoaded];
     const activePlugins: string[] = [];
     let needsBuffer = false;
     let allPassthrough = true;
@@ -273,12 +283,13 @@ export class HooksExecutor {
   async executeRequestHooksWithLayers(
     params: RequestHookParams,
     bodyToDataUrl: (body: Buffer) => string | null,
+    forwardHooksLoaded: LoadedHook[] = [],
   ): Promise<RequestHooksExecutionResult> {
     let result = params;
     const layers: HookLayer[] = [];
     let hasChanges = false;
 
-    const allHooks = [...this.instanceHooksLoaded, ...this.forwardHooksLoaded];
+    const allHooks = [...this.instanceHooksLoaded, ...forwardHooksLoaded];
 
     for (const hook of allHooks) {
       const pluginName = hook.pluginName;
@@ -345,12 +356,13 @@ export class HooksExecutor {
     params: ResponseHookParams,
     bodyToDataUrl: (body: Buffer) => string | null,
     getContentType: (headers: Record<string, string | string[]>) => string | null,
+    forwardHooksLoaded: LoadedHook[] = [],
   ): Promise<ResponseHooksExecutionResult> {
     let result = params;
     const layers: HookLayer[] = [];
     let hasChanges = false;
 
-    const allHooks = [...this.forwardHooksLoaded, ...this.instanceHooksLoaded];
+    const allHooks = [...forwardHooksLoaded, ...this.instanceHooksLoaded];
 
     for (const hook of allHooks) {
       const pluginName = hook.pluginName;
@@ -420,7 +432,7 @@ export class HooksExecutor {
   }
 
   get hasHooks(): boolean {
-    return this.instanceHooksLoaded.length > 0 || this.forwardHooksLoaded.length > 0;
+    return this.instanceHooksLoaded.length > 0;
   }
 
   get hasRequestHooks(): boolean {
