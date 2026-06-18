@@ -442,6 +442,24 @@ export class HooksExecutor {
   get hasResponseHooks(): boolean {
     return this.hasHooks;
   }
+
+  /**
+   * 判断（实例级 + 本次请求加载的 forward 级）是否存在请求 hook。
+   *
+   * forward hooks 现为请求级局部状态（见 loadForwardHooks），无法由实例状态判断，
+   * 因此执行入口的总开关必须把本次请求的 forwardHooksLoaded 一并算入，
+   * 否则 instance 顶层无 hooks 时，forward 级 hook 会被整体跳过。
+   */
+  hasRequestHooksFor(forwardHooksLoaded: LoadedHook[] = []): boolean {
+    if (this.instanceHooksLoaded.some((hook) => hook.plugin.onRequest)) return true;
+    return forwardHooksLoaded.some((hook) => hook.plugin.onRequest);
+  }
+
+  /** 判断（实例级 + 本次请求加载的 forward 级）是否存在响应 hook。 */
+  hasResponseHooksFor(forwardHooksLoaded: LoadedHook[] = []): boolean {
+    if (this.instanceHooksLoaded.some((hook) => hook.plugin.onResponse)) return true;
+    return forwardHooksLoaded.some((hook) => hook.plugin.onResponse);
+  }
 }
 
 export function getHooksPoolStats(): { size: number } {

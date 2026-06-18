@@ -702,7 +702,7 @@ async function main(argv: string[]) {
       let hasRequestHookChanges = false;
       let requestHookLayers: HookLayer[] | undefined;
 
-      if (hooksExecutor?.hasRequestHooks) {
+      if (hooksExecutor?.hasRequestHooksFor(forwardHooksLoaded)) {
         try {
           // 添加 proxy URL header，让插件知道如何发起回环请求（如心跳）
           const headersForHooks: Record<string, string | string[]> = {
@@ -956,7 +956,7 @@ async function main(argv: string[]) {
 
                 // 预检：决定是否需要处理响应 body
                 let responsePrecheckResult: PrecheckSummary = { needsBuffer: false, activePlugins: [], canPassthrough: true };
-                if (hooksExecutor?.hasResponseHooks) {
+                if (hooksExecutor?.hasResponseHooksFor(forwardHooksLoaded)) {
                   responsePrecheckResult = await hooksExecutor.precheckResponse(
                     { statusCode, statusMessage, headers: responseHeaders as Record<string, string | string[]> },
                     requestMeta,
@@ -974,7 +974,7 @@ async function main(argv: string[]) {
                 let responseHookLayers: HookLayer[] | undefined;
                 const originalChunks: Buffer[] = [];
 
-                if (responsePrecheckResult.needsBuffer && hooksExecutor?.hasResponseHooks) {
+                if (responsePrecheckResult.needsBuffer && hooksExecutor?.hasResponseHooksFor(forwardHooksLoaded)) {
                   // 需要处理：tee stream，一份存储原始，一份给 hook
                   const { left: forStorage, right: forHooks } = teeStream(upstreamStream);
                   storageStream = forStorage;
@@ -1145,7 +1145,7 @@ async function main(argv: string[]) {
               let hasResponseHookChanges = false;
               let responseHookLayers: HookLayer[] | undefined;
 
-              if (hooksExecutor?.hasResponseHooks) {
+              if (hooksExecutor?.hasResponseHooksFor(forwardHooksLoaded)) {
                 try {
                   const hookExecResult = await hooksExecutor.executeResponseHooksWithLayers(
                     {
@@ -1388,7 +1388,7 @@ async function main(argv: string[]) {
     }
 
     if (
-      hooksExecutor?.hasResponseHooks &&
+      hooksExecutor?.hasResponseHooksFor(forwardHooksLoadedForFinalResult) &&
       !didStreamResponseToClient &&
       !isClientDisconnected &&
       !finalResult.responseHooksExecuted
