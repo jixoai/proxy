@@ -23,6 +23,10 @@ function addPluginProcessedHeader(
   };
 }
 
+function cancelStreamSilently(stream: ReadableStream<Uint8Array>): void {
+  void stream.cancel().catch(() => undefined);
+}
+
 function normalizeHooksConfig(hooks: HooksConfig | null | undefined): HookConfig[] {
   if (!hooks) return [];
   const list = Array.isArray(hooks) ? hooks : [hooks];
@@ -292,18 +296,27 @@ export class HooksExecutor {
     const allHooks = [...this.instanceHooksLoaded, ...forwardHooksLoaded];
 
     for (const hook of allHooks) {
+      if (!hook.plugin.onRequest) continue;
+
       const pluginName = hook.pluginName;
+      const [bodyForHook, unchangedBody] = result.body.tee();
 
       const store = createPluginStore(pluginName, (hook.plugin as any).storeSchema, result.headers);
-      const pluginResult = hook.plugin.onRequest
-        ? await hook.plugin.onRequest({ meta: { method: result.method, url: result.url, headers: result.headers }, body: result.body, store })
-        : null;
+      const pluginResult = await hook.plugin.onRequest({
+        meta: { method: result.method, url: result.url, headers: result.headers },
+        body: bodyForHook,
+        store,
+      });
 
       if (!pluginResult) {
+        cancelStreamSilently(bodyForHook);
+        result = { ...result, body: unchangedBody };
         continue;
       }
 
       if ("respondWith" in pluginResult) {
+        cancelStreamSilently(bodyForHook);
+        cancelStreamSilently(unchangedBody);
         const { statusCode, headers, body } = pluginResult.respondWith;
         layers.push({ pluginName, modified: true });
         return {
@@ -319,6 +332,8 @@ export class HooksExecutor {
       }
 
       if ("modified" in pluginResult && pluginResult.modified === false) {
+        cancelStreamSilently(bodyForHook);
+        result = { ...result, body: unchangedBody };
         layers.push({ pluginName, modified: false });
         continue;
       }
@@ -327,7 +342,12 @@ export class HooksExecutor {
       const nextMethod = pluginResult.meta?.method ?? result.method;
       const nextUrl = pluginResult.meta?.url ?? result.url;
       const nextHeaders = (pluginResult.meta?.headers as any) ?? result.headers;
-      const nextBody = pluginResult.body ?? result.body;
+      const nextBody = pluginResult.body ?? unchangedBody;
+      if (pluginResult.body) {
+        cancelStreamSilently(unchangedBody);
+      } else {
+        cancelStreamSilently(bodyForHook);
+      }
 
       const nextResult: RequestHookParams = {
         ...result,
