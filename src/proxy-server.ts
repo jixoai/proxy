@@ -154,6 +154,8 @@ async function main(argv: string[]) {
     methods?: string[];
     headers?: Record<string, string> | null;
     hooks?: HooksConfig | null;
+    /** 自动排序时是否锁定当前同名组内位置 */
+    orderLocked?: boolean;
     timeout?: number | null;
   }
 
@@ -220,6 +222,7 @@ async function main(argv: string[]) {
         methods: f.methods,
         headers: f.headers,
         hooks: f.hooks,
+        orderLocked: f.orderLocked,
       })),
     };
   }
@@ -768,7 +771,7 @@ async function main(argv: string[]) {
         }
 
         let proxyResRef: http.IncomingMessage | null = null;
-        
+
         const upstreamHeaders = stripInternalHeadersForUpstream(hookedForwardHeaders);
         const proxyReq = requestModule.request(
           {
@@ -783,7 +786,7 @@ async function main(argv: string[]) {
             // TTFB: 收到响应头的时间
             const responseStartTime = Date.now();
             const ttfbMs = responseStartTime - attemptStart;
-            
+
             // 保存到外部作用域
             collectedTtfbMs = ttfbMs;
             collectedStatusCode = proxyRes.statusCode || 502;
@@ -1150,7 +1153,7 @@ async function main(argv: string[]) {
 
           // 如果已经收到上游响应数据，保留它而不是返回空 buffer
           const hasCollectedResponse = collectedStatusCode !== null && collectedResponseChunks.length > 0;
-          
+
           if (hasCollectedResponse) {
             const collectedBodyBuffer = Buffer.concat(collectedResponseChunks);
             const collectedContentType = (collectedResponseHeaders?.["content-type"] as string) ?? null;

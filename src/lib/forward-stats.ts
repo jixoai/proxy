@@ -65,6 +65,8 @@ export interface ForwardMatcher {
   id: string;
   /** 在 instance.forwards 数组中的索引 */
   index: number;
+  /** 自动排序时是否锁定当前同名组内位置 */
+  orderLocked?: boolean;
 }
 
 /** 统计报告消息（从 worker 发送） */
@@ -160,6 +162,26 @@ export function computeForwardHealth(
 }
 
 /**
+ * 将健康度排序结果投影到锁定槽位上。
+ * 锁定的是当前槽位，而不是节点的健康度或路由资格。
+ */
+export function applyLockedSlots(forwards: ForwardMatcher[], rankedOrder: number[]): number[] {
+  const currentOrder = forwards.map((forward) => forward.index);
+  const lockedIndexes = new Set(
+    forwards.filter((forward) => forward.orderLocked).map((forward) => forward.index),
+  );
+  const movableOrder = rankedOrder.filter((index) => !lockedIndexes.has(index));
+  let movablePosition = 0;
+
+  return currentOrder.map((index) => {
+    if (lockedIndexes.has(index)) return index;
+    const next = movableOrder[movablePosition];
+    movablePosition += 1;
+    return next ?? index;
+  });
+}
+
+/**
  * 评估一组 forwards，返回建议的排序
  */
 export function evaluateForwards(
@@ -196,7 +218,8 @@ export function evaluateForwards(
   });
 
   const currentOrder = forwards.map((f) => f.index);
-  const newOrder = sorted.map((d) => d.forward.index);
+  const rankedOrder = sorted.map((d) => d.forward.index);
+  const newOrder = applyLockedSlots(forwards, rankedOrder);
 
   // 检查顺序是否有变化
   const orderChanged = newOrder.some((idx, i) => idx !== currentOrder[i]);

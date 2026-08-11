@@ -374,7 +374,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
         instance.forwards.forEach((f, idx) => {
           if (f.name !== forwardName) return;
           if (!f.id) return;
-          forwards.push({ id: f.id, index: idx });
+          forwards.push({ id: f.id, index: idx, orderLocked: f.orderLocked ?? false });
         });
         if (forwards.length < 2) continue;
 
@@ -1033,14 +1033,14 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           const url = new URL(req.url);
           const startId = parseInt(url.searchParams.get("start") ?? "");
           const endId = parseInt(url.searchParams.get("end") ?? "");
-          
+
           if (isNaN(startId) || isNaN(endId) || startId > endId) {
             return Response.json(
               { error: "Invalid range parameters. Required: start <= end" },
               { status: 400 },
             );
           }
-          
+
           const requests = getRequestsByIdRange(startId, endId);
           return Response.json(requests.map(formatProxyRequest));
         },
@@ -1138,7 +1138,6 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
           }
         },
       },
-
 
       "/api/ping-status/stream": {
         async GET(req) {

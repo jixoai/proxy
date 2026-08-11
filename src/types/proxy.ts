@@ -53,6 +53,8 @@ export interface ProxyForwardConfig {
   hooks?: HooksConfig | null;
   /** 请求超时时间（秒），不设置则无超时 */
   timeout?: number | null;
+  /** 自动排序时是否锁定当前同名组内位置 */
+  orderLocked?: boolean;
 }
 
 /** 实例级别设置 */
