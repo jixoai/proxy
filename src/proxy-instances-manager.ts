@@ -52,6 +52,7 @@ function toForwardConfigs(instanceName: string): ForwardConfig[] {
     methods: f.methods && f.methods.length ? f.methods : ["*"],
     headers: f.headers ?? null,
     hooks: f.hooks ?? null,
+    orderLocked: f.orderLocked ?? false,
   }));
 }
 

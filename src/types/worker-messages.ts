@@ -13,6 +13,8 @@ export interface ForwardRuleConfig {
   hooks?: HooksConfig | null;
   /** 请求超时时间（秒），默认无超时 */
   timeout?: number | null;
+  /** 自动排序时是否锁定当前同名组内位置 */
+  orderLocked?: boolean;
 }
 
 /** 实例运行时配置（不包含port，port不可热更新） */

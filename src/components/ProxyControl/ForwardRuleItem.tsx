@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Trash2, ExternalLink, Edit, GripVertical, Copy } from "lucide-react";
+import { Trash2, ExternalLink, Edit, GripVertical, Copy, Lock, Unlock } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ProxyForwardConfig, ProxyConfigFile } from "@/types/proxy";
 import { EditForwardDialog } from "./EditForwardDialog";
@@ -41,6 +41,7 @@ export function ForwardRuleItem({
   stats = null,
 }: ForwardRuleItemProps) {
   const [deleting, setDeleting] = useState(false);
+  const [togglingOrderLock, setTogglingOrderLock] = useState(false);
   const { jumpToForwardRule } = useProxyViewer();
 
   const handleDelete = async () => {
@@ -85,6 +86,31 @@ export function ForwardRuleItem({
       }
     } catch (error) {
       console.error("Failed to toggle forward:", error);
+    }
+  };
+
+  const handleOrderLockToggle = async () => {
+    setTogglingOrderLock(true);
+    try {
+      const response = await fetch("/api/config");
+      const config: ProxyConfigFile = await response.json();
+      const instance = config.instances.find((candidate) => candidate.name === instanceName);
+      const target =
+        instance?.forwards.find((candidate) => candidate.id === forward.id) ??
+        instance?.forwards[forwardIndex];
+      if (!instance || !target) return;
+
+      target.orderLocked = !(target.orderLocked ?? false);
+      const saveResponse = await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      if (saveResponse.ok) onUpdate();
+    } catch (error) {
+      console.error("Failed to toggle forward order lock:", error);
+    } finally {
+      setTogglingOrderLock(false);
     }
   };
 
@@ -184,6 +210,30 @@ export function ForwardRuleItem({
       </div>
 
       <div className="ml-4 flex items-center gap-3">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="sm"
+                variant={forward.orderLocked ? "secondary" : "ghost"}
+                className="h-8 w-8 p-0"
+                onClick={handleOrderLockToggle}
+                disabled={togglingOrderLock}
+                aria-label={forward.orderLocked ? "解除组内位置锁定" : "锁定组内位置"}
+                aria-pressed={forward.orderLocked ?? false}
+              >
+                {forward.orderLocked ? (
+                  <Lock className="h-4 w-4" />
+                ) : (
+                  <Unlock className="h-4 w-4" />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {forward.orderLocked ? "已锁定组内位置，点击解除" : "锁定自动排序时的组内位置"}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>

@@ -67,6 +67,7 @@ export const proxyForwardSchema = z
     methods: z.array(z.string().trim().toUpperCase()).optional(),
     headers: headersSchema,
     hooks: hooksSchema,
+    orderLocked: z.boolean().default(false),
   })
   .transform<ProxyForwardConfig>((forward) => ({
     ...forward,

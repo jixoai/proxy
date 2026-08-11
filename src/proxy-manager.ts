@@ -63,6 +63,8 @@ export interface ForwardConfig {
   methods?: string[];
   headers?: Record<string, string> | null;
   hooks?: HooksConfig | null;
+  /** 自动排序时是否锁定当前同名组内位置 */
+  orderLocked?: boolean;
 }
 
 /**
