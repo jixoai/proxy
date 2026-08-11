@@ -37,3 +37,8 @@ Keep this managed block so 'openspec update' can refresh the instructions.
   3. 完成后 push 分支并创建 PR
   4. PR 合并后清理：`git worktree remove .git-worktree/feat-xxx`
 </git_workflow>
+
+<architecture_notes>
+- 2026-08-12 原始需求：同名 forward 组会自动轮换；需要为单个节点提供“锁”开关，使其在自动排序时保持当前组内 index。
+- 同名 forward 的健康度排序先生成完整排名，再将 `orderLocked` 节点放回当前槽位，其他节点按排名稳定填充空槽位。锁不影响请求候选资格或健康度采样。
+</architecture_notes>
