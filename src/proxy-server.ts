@@ -35,6 +35,10 @@ import type {
 import { normalizeForwardGroups, normalizePathname } from "./lib/forward-utils";
 import { createLogger, installGlobalErrorLogger } from "./lib/logger";
 import { forwardStatsStore } from "./lib/forward-stats";
+import {
+  requestWithNodeHttpsFallback,
+  shouldUseNodeHttpsFallback,
+} from "./lib/node-https-fallback";
 
 /** 私有 header 前缀，这些 headers 只记录到数据库，不转发到远程服务器 */
 const PRIVATE_HEADER_PREFIX = "-x-jixo-proxy-";
@@ -1112,6 +1116,69 @@ async function main(argv: string[]) {
         };
 
         proxyReq.on("error", (error) => {
+          if (
+            shouldUseNodeHttpsFallback(error, hookedTargetUrl.protocol) &&
+            !hooksExecutor?.hasResponseHooks
+          ) {
+            log.warn(
+              `[Upstream] Bun HTTPS reset for ${hookedTargetUrl.host}; retrying with Node TLS`,
+            );
+            void requestWithNodeHttpsFallback(
+              {
+                url: hookedTargetUrl.href,
+                method: hookedMethod,
+                headers: hookedForwardHeaders,
+                body: hookedRequestBody,
+              },
+              abortSignal,
+            )
+              .then((fallbackResult) => {
+                cleanup();
+                const bodyBuffer = fallbackResult.bodyBuffer;
+                const headers = sanitizeResponseHeadersForBuffered(
+                  fallbackResult.headers,
+                  bodyBuffer.length,
+                );
+                resolve({
+                  statusCode: fallbackResult.statusCode,
+                  statusMessage: fallbackResult.statusMessage,
+                  headers,
+                  bodyBuffer,
+                  contentType: (headers["content-type"] as string) ?? null,
+                  ttfbMs: Date.now() - attemptStart,
+                  bodyMs: 0,
+                });
+              })
+              .catch((fallbackError: unknown) => {
+                cleanup();
+                const errorTtfb = Date.now() - attemptStart;
+                const message =
+                  fallbackError instanceof Error
+                    ? `${error.message}; Node TLS fallback: ${fallbackError.message}`
+                    : error.message;
+                const errorBody = Buffer.from(
+                  JSON.stringify({
+                    error: "代理请求失败",
+                    message,
+                  }),
+                );
+                resolve({
+                  statusCode: 502,
+                  statusMessage: "Bad Gateway",
+                  headers: {
+                    "content-type": "application/json",
+                    "content-length": errorBody.length,
+                  },
+                  bodyBuffer: errorBody,
+                  contentType: "application/json",
+                  errorMessage: message,
+                  ttfbMs: errorTtfb,
+                  bodyMs: 0,
+                });
+              });
+            return;
+          }
+
           cleanup();
           const errorTtfb = Date.now() - attemptStart;
           const errorBody = Buffer.from(
