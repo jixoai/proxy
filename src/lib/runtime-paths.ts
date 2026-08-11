@@ -14,7 +14,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { getPackageVersion } from "./version.macro" with { type: "macro" };
+import { getPackageVersion } from "./version.macro";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

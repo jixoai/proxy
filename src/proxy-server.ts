@@ -18,7 +18,12 @@ import { initDatabase } from "./lib/db";
 import { bufferToDataUrl } from "./lib/data-url";
 import { handleWebSocketProxy } from "./lib/websocket-proxy";
 import { HooksExecutor, stopAllHooks, type PrecheckSummary } from "./lib/hooks-executor";
-import { streamFromBuffer, readStreamToBuffer, teeStream, isPluginStoreHeader } from "@jixo/proxy-plugin";
+import {
+  streamFromBuffer,
+  readStreamToBuffer,
+  teeStream,
+  isPluginStoreHeader,
+} from "@jixo/proxy-plugin";
 import { nodeReadableToWebStream, pipeWebStreamToNodeResponse } from "./lib/node-stream-adapter";
 import type { HooksConfig, HookLayer } from "./types/proxy";
 import type {
@@ -49,7 +54,9 @@ function stripPrivateHeaders(headers: http.IncomingHttpHeaders): http.IncomingHt
 }
 
 /** 过滤掉不应发送给上游的内部 headers（私有 header + 插件 store header） */
-function stripInternalHeadersForUpstream(headers: http.OutgoingHttpHeaders): http.OutgoingHttpHeaders {
+function stripInternalHeadersForUpstream(
+  headers: http.OutgoingHttpHeaders,
+): http.OutgoingHttpHeaders {
   const result: http.OutgoingHttpHeaders = {};
   for (const [key, value] of Object.entries(headers)) {
     const normalizedKey = key.toLowerCase();
@@ -190,7 +197,9 @@ async function main(argv: string[]) {
       );
       // 详细日志：显示每个 forward 的 enabled 状态
       forwards.forEach((f, idx) => {
-        log.info(`[Config]   [${idx}] ${f.name}: enabled=${f.enabled}, path=${f.path || "(default)"}`);
+        log.info(
+          `[Config]   [${idx}] ${f.name}: enabled=${f.enabled}, path=${f.path || "(default)"}`,
+        );
       });
 
       // 初始化 hooks 执行器
@@ -254,7 +263,9 @@ async function main(argv: string[]) {
     );
     // 详细日志：显示每个 forward 的 enabled 状态
     forwards.forEach((f, idx) => {
-      log.info(`[Reload]   [${idx}] ${f.name}: enabled=${f.enabled}, path=${f.path || "(default)"}`);
+      log.info(
+        `[Reload]   [${idx}] ${f.name}: enabled=${f.enabled}, path=${f.path || "(default)"}`,
+      );
     });
   }
 
@@ -630,7 +641,7 @@ async function main(argv: string[]) {
               body: streamFromBuffer(hookedRequestBody),
               signal: abortSignal,
             },
-            (body) => body.length > 0 ? bufferToDataUrl(body, requestContentType) : null,
+            (body) => (body.length > 0 ? bufferToDataUrl(body, requestContentType) : null),
           );
           // 检查是否是 respondWith - 短路请求，直接返回响应
           if (hookExecResult.respondWith) {
@@ -826,10 +837,18 @@ async function main(argv: string[]) {
                 };
 
                 // 预检：决定是否需要处理响应 body
-                let responsePrecheckResult: PrecheckSummary = { needsBuffer: false, activePlugins: [], canPassthrough: true };
+                let responsePrecheckResult: PrecheckSummary = {
+                  needsBuffer: false,
+                  activePlugins: [],
+                  canPassthrough: true,
+                };
                 if (hooksExecutor?.hasResponseHooks) {
                   responsePrecheckResult = await hooksExecutor.precheckResponse(
-                    { statusCode, statusMessage, headers: responseHeaders as Record<string, string | string[]> },
+                    {
+                      statusCode,
+                      statusMessage,
+                      headers: responseHeaders as Record<string, string | string[]>,
+                    },
                     requestMeta,
                   );
                 }
@@ -862,7 +881,8 @@ async function main(argv: string[]) {
                   );
                   const hookResult = hookExecResult.params;
                   hasResponseHookChanges = hookExecResult.hasChanges;
-                  responseHookLayers = hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
+                  responseHookLayers =
+                    hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
 
                   outStatusCode = hookResult.statusCode;
                   outStatusMessage = hookResult.statusMessage;
@@ -915,10 +935,14 @@ async function main(argv: string[]) {
 
                 const bodyMs = Date.now() - responseStartTime;
                 const bodyBuffer = Buffer.concat(responseChunks);
-                const originalBodyBuffer = originalChunks.length > 0 ? Buffer.concat(originalChunks) : undefined;
+                const originalBodyBuffer =
+                  originalChunks.length > 0 ? Buffer.concat(originalChunks) : undefined;
                 const contentType = (outHeaders["content-type"] as string) ?? null;
                 const originalContentType = (responseHeaders["content-type"] as string) ?? null;
-                const cleanedHeaders = sanitizeResponseHeadersForBuffered(outHeaders, bodyBuffer.length);
+                const cleanedHeaders = sanitizeResponseHeadersForBuffered(
+                  outHeaders,
+                  bodyBuffer.length,
+                );
 
                 resolve({
                   statusCode: outStatusCode,
@@ -1005,12 +1029,13 @@ async function main(argv: string[]) {
                         headers: hookedForwardHeaders as Record<string, string | string[]>,
                       },
                     },
-                    (body) => body.length > 0 ? bufferToDataUrl(body, contentType) : null,
+                    (body) => (body.length > 0 ? bufferToDataUrl(body, contentType) : null),
                     (headers) => (headers["content-type"] as string) ?? null,
                   );
                   const hookResult = hookExecResult.params;
                   hasResponseHookChanges = hookExecResult.hasChanges;
-                  responseHookLayers = hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
+                  responseHookLayers =
+                    hookExecResult.layers.length > 0 ? hookExecResult.layers : undefined;
 
                   if (hasResponseHookChanges) {
                     statusCode = hookResult.statusCode;
@@ -1024,7 +1049,10 @@ async function main(argv: string[]) {
                 }
               }
 
-              const cleanedHeaders = sanitizeResponseHeadersForBuffered(responseHeaders, bodyBuffer.length);
+              const cleanedHeaders = sanitizeResponseHeadersForBuffered(
+                responseHeaders,
+                bodyBuffer.length,
+              );
 
               resolve({
                 statusCode,
@@ -1152,11 +1180,13 @@ async function main(argv: string[]) {
           }
 
           // 如果已经收到上游响应数据，保留它而不是返回空 buffer
-          const hasCollectedResponse = collectedStatusCode !== null && collectedResponseChunks.length > 0;
+          const hasCollectedResponse =
+            collectedStatusCode !== null && collectedResponseChunks.length > 0;
 
           if (hasCollectedResponse) {
             const collectedBodyBuffer = Buffer.concat(collectedResponseChunks);
-            const collectedContentType = (collectedResponseHeaders?.["content-type"] as string) ?? null;
+            const collectedContentType =
+              (collectedResponseHeaders?.["content-type"] as string) ?? null;
             return {
               statusCode: collectedStatusCode!,
               statusMessage: collectedStatusMessage || statusMessage,
@@ -1165,7 +1195,7 @@ async function main(argv: string[]) {
               contentType: collectedContentType,
               errorMessage,
               abortReason: err.abortReason,
-              ttfbMs: collectedTtfbMs ?? (Date.now() - attemptStart),
+              ttfbMs: collectedTtfbMs ?? Date.now() - attemptStart,
               bodyMs: 0,
             };
           }
@@ -1228,7 +1258,10 @@ async function main(argv: string[]) {
     const originalResponseBodyDataUrl =
       finalResult.hasResponseHookChanges && finalResult.originalBodyBuffer
         ? finalResult.originalBodyBuffer.length > 0
-          ? bufferToDataUrl(finalResult.originalBodyBuffer, finalResult.originalContentType ?? undefined)
+          ? bufferToDataUrl(
+              finalResult.originalBodyBuffer,
+              finalResult.originalContentType ?? undefined,
+            )
           : null
         : null;
 
@@ -1323,7 +1356,15 @@ async function main(argv: string[]) {
 
     const targetUrl = buildTargetUrl(matched.rule, requestUrl);
 
-    handleWebSocketProxy(req, socket, head, targetUrl, INSTANCE_NAME, matched.rule.name, matched.rule.id);
+    handleWebSocketProxy(
+      req,
+      socket,
+      head,
+      targetUrl,
+      INSTANCE_NAME,
+      matched.rule.name,
+      matched.rule.id,
+    );
   });
 
   server.on("error", (error) => {
@@ -1344,7 +1385,7 @@ async function main(argv: string[]) {
   // 注册 server 到 globalThis，以便 shutdown 消息处理可以访问
   globalThis.__proxyServer = server;
 
-  server.listen(PROXY_PORT, () => {
+  server.listen(Number(PROXY_PORT), "0.0.0.0", () => {
     console.log(`Proxy running on http://localhost:${PROXY_PORT} (instance: ${INSTANCE_NAME})`);
   });
 
