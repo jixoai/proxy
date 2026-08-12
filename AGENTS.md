@@ -41,4 +41,5 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 <architecture_notes>
 - 2026-08-12 原始需求：同名 forward 组会自动轮换；需要为单个节点提供“锁”开关，使其在自动排序时保持当前组内 index。
 - 同名 forward 的健康度排序先生成完整排名，再将 `orderLocked` 节点放回当前槽位，其他节点按排名稳定填充空槽位。锁不影响请求候选资格或健康度采样。
+- 2026-08-12 原始需求：在本机先排查 `aiweb.xin` 直连异常。直连同一 IP `39.107.213.167` 时，Node TLS 1.3 可得到 HTTP 401，Bun 1.3.14 与 macOS LibreSSL 在 ClientHello 后收到 `ECONNRESET`；清除所有代理环境变量后结论不变。该失败发生在 HTTPS 建连前，与 Proxy 路由和 new-api HTTP 应用层无关；本地兼容策略是仅在 Bun TLS reset 后使用 Node TLS bridge 重试。
 </architecture_notes>
