@@ -940,11 +940,54 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
         let bufferedLen = 0;
         const MAX_PEEK_BYTES = 64 * 1024;
 
+        // 预读最多 MAX_PEEK_BYTES 字节以判定真实负载类型。
+        // 某些上游网关（如 newapi / cloudflare 包装的 DeepSeek）即便返回 JSON 错误，
+        // 也会带 `content-type: text/event-stream`（body 直接是 `{"error":...}`，没有 event/data 帧）。
+        // 这种情况下 Droid 客户端的 SSE 解析器会抛出 "OpenAI response failed" 并终止整个会话。
+        // 我们这里在 peek 阶段额外识别这种情况，将其改写成真正的 SSE 错误事件，
+        // 让 Droid 把它当作可恢复的错误（进而触发 retry / compact），而不是硬性中断。
         const tryExtractFirstBlock = () => {
           const normalized = bufferedText.replace(/\r\n/g, "\n");
           const idx = normalized.indexOf("\n\n");
           if (idx === -1) return null;
           return { normalized, idx };
+        };
+
+        const looksLikeRawJson = (text: string): boolean => {
+          const trimmed = text.trimStart();
+          return trimmed.startsWith("{") || trimmed.startsWith("[");
+        };
+
+        const rewriteRawJsonAsSseError = (rawJson: string) => {
+          // 先尝试让 rewriteResponse 把它转成 context_length_exceeded / server_anomaly 等结构化错误；
+          // 否则原样塞进 data: 帧，至少保证 SSE 形状正确，避免 Droid 解析器硬性中断。
+          const rewritten = rewriteResponse({
+            meta: params.meta,
+            body: Buffer.from(rawJson, "utf-8"),
+            requestContentLength: store.requestBodyLength,
+            serverAnomalyThreshold,
+          });
+
+          const payloadText = rewritten.rewritten
+            ? rewritten.body.toString("utf-8")
+            : rawJson;
+          const sseLines = payloadText.split("\n").map((l) => `data: ${l}`);
+          const out = [`event: error`, ...sseLines, "", ""].join("\n");
+
+          const sseMeta = {
+            statusCode: rewritten.rewritten
+              ? (rewritten.meta.statusCode ?? params.meta.statusCode)
+              : params.meta.statusCode,
+            headers: {
+              ...(params.meta.headers ?? {}),
+              "content-type": "text/event-stream; charset=utf-8",
+            },
+          };
+
+          return {
+            meta: sseMeta,
+            body: streamFromBuffer(Buffer.from(out, "utf-8")),
+          } as ResponseHookResult;
         };
 
         while (bufferedLen < MAX_PEEK_BYTES) {
@@ -1017,6 +1060,26 @@ export function createDroidPlugin(options: DroidPluginOptions = {}): ProxyPlugin
             });
             return { body: passthrough };
           }
+
+          // 已经读到明显是 JSON 起头，且不是 SSE 帧（没有 event:/data: 行），
+          // 等到攒够一小段或流结束再判定，避免把合法的多行 JSON 提前当作错误。
+          if (looksLikeRawJson(bufferedText) && !bufferedText.includes("\n\n")) {
+            // 继续读到流结束或遇到换行分隔的下一帧
+            continue;
+          }
+        }
+
+        // Peek 结束：若发现其实是 JSON 错误负载（没有 SSE 帧头），改成 SSE error 事件后下发。
+        const trimmed = bufferedText.trim();
+        if (
+          bufferedLen > 0 &&
+          !bufferedText.includes("\n\n") &&
+          looksLikeRawJson(bufferedText) &&
+          !trimmed.startsWith("event:") &&
+          !trimmed.startsWith("data:")
+        ) {
+          await reader.cancel().catch(() => undefined);
+          return rewriteRawJsonAsSseError(bufferedText);
         }
 
         // Peek limit reached or stream ended before block: passthrough

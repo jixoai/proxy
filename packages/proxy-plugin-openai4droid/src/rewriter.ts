@@ -9,6 +9,60 @@ import type { RequestBody, RewriteResult, AnyTool } from "./types";
 import { isWebSearchTool } from "./types";
 import { CODEX_INSTRUCTIONS } from "./constants";
 
+/**
+ * 某些上游（如 DeepSeek）会严格校验 Responses API 的 schema，要求 `function_call` /
+ * `function_call_output` / `web_search_call` 等条目必须携带 `id` 字段，而 Droid 客户端
+ * 并不会发送它。为了避免破坏这类上游，我们对所有缺失 `id` 的非 message input 条目
+ * 基于其稳定字段（`call_id` 或 `name`）派生一个确定性的 id（同一请求多次重试时保持一致）。
+ *
+ * 该处理对 OpenAI 官方 Responses API（id 是可选的）以及其它上游也是兼容的，
+ * 不会影响其它模型的现有行为。
+ */
+const MISSING_ID_TYPES = new Set([
+  "function_call",
+  "function_call_output",
+  "web_search_call",
+]);
+
+/**
+ * 将 SHA256 字符串转换为稳定的 UUID（version 8 / variant 9）
+ */
+function sha256ToStableUuid(sha256Hex: string): string {
+  const hex = sha256Hex.replace(/[^a-fA-F0-9]/g, "").toLowerCase();
+
+  if (hex.length < 32) {
+    throw new Error("输入字符串长度不足，无法生成 UUID");
+  }
+
+  let p1 = hex.substring(0, 8);
+  let p2 = hex.substring(8, 12);
+  let p3 = hex.substring(12, 16);
+  let p4 = hex.substring(16, 20);
+  let p5 = hex.substring(20, 32);
+
+  const version = "8";
+  p3 = version + p3.substring(1);
+
+  const variant = "9";
+  p4 = variant + p4.substring(1);
+
+  return `${p1}-${p2}-${p3}-${p4}-${p5}`;
+}
+
+function deriveItemId(item: Record<string, unknown>, index: number): string {
+  const callId = typeof item.call_id === "string" ? item.call_id : "";
+  const name = typeof item.name === "string" ? item.name : "";
+  const seed = callId || name || `item-${index}`;
+  if (seed) {
+    try {
+      return sha256ToStableUuid(createHash("sha256").update(seed).digest("hex"));
+    } catch {
+      // fallthrough to random
+    }
+  }
+  return `item_${randomUUID()}`;
+}
+
 const CODEX_TUI_USER_AGENT =
   "codex-tui/0.125.0 (Mac OS 15.6.1; arm64) Apple_Terminal/455.1 (codex-tui; 0.125.0)";
 
@@ -92,12 +146,28 @@ function normalizeMessageInputItems(input: RequestBody["input"]): RequestBody["i
     return input;
   }
 
-  return input.map((item) => {
+  return input.map((item, index) => {
     if (typeof item !== "object" || item === null) {
       return item;
     }
 
     const record = item as unknown as Record<string, unknown>;
+
+    // 为 function_call / function_call_output / web_search_call 等条目补充缺失的 id 字段。
+    // 某些上游（如 DeepSeek 网关）会严格反序列化校验，缺少 id 时直接返回 400。
+    // 同一请求多次经过插件时应得到相同的 id（幂等），所以基于稳定字段派生。
+    if (
+      typeof record.type === "string" &&
+      MISSING_ID_TYPES.has(record.type) &&
+      record.id == null
+    ) {
+      return {
+        ...record,
+        id: deriveItemId(record, index),
+      } as typeof item;
+    }
+
+    // 补充缺失的 type=message（Droid 原生格式）
     if (record.type == null && "role" in record && "content" in record) {
       return {
         ...record,
@@ -129,31 +199,6 @@ function stripUnsupportedBodyFields(requestBody: RequestBody): RequestBody {
   safeRequestBody.input = normalizeMessageInputItems(safeRequestBody.input);
 
   return safeRequestBody;
-}
-
-/**
- * 将 SHA256 字符串转换为稳定的 UUID
- */
-function sha256ToStableUuid(sha256Hex: string): string {
-  const hex = sha256Hex.replace(/[^a-fA-F0-9]/g, "").toLowerCase();
-
-  if (hex.length < 32) {
-    throw new Error("输入字符串长度不足，无法生成 UUID");
-  }
-
-  let p1 = hex.substring(0, 8);
-  let p2 = hex.substring(8, 12);
-  let p3 = hex.substring(12, 16);
-  let p4 = hex.substring(16, 20);
-  let p5 = hex.substring(20, 32);
-
-  const version = "8";
-  p3 = version + p3.substring(1);
-
-  const variant = "9";
-  p4 = variant + p4.substring(1);
-
-  return `${p1}-${p2}-${p3}-${p4}-${p5}`;
 }
 
 /**

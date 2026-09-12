@@ -591,4 +591,215 @@ describe("rewriteRequest", () => {
       "user-agent": "j1/JS 6.25.0",
     });
   });
+
+  it("synthesizes deterministic ids for function_call / function_call_output items missing id (DeepSeek gateway compatibility)", () => {
+    // DeepSeek 等网关严格校验 Responses schema，缺少 id 时返回 400
+    // missing field `id` at messages[3]
+    const originalBody = {
+      model: "deepseek-v4-flash",
+      instructions:
+        "You are Droid, an AI software engineering agent built by Factory. Focus on the requested coding task.",
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        {
+          type: "message",
+          id: "msg_001",
+          role: "assistant",
+          content: [{ type: "output_text", text: "ok" }],
+        },
+        {
+          type: "function_call",
+          call_id: "call_abc",
+          name: "TodoWrite",
+          arguments: "{\"todos\":\"test\"}",
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_abc",
+          output: "TODO List Updated",
+        },
+        {
+          type: "web_search_call",
+          id: "ws_existing",
+          status: "completed",
+        },
+      ],
+      stream: true,
+    };
+
+    const result = rewriteRequest({
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(originalBody),
+    });
+
+    const parsed = JSON.parse(result.body!);
+    const items = parsed.input as Array<Record<string, unknown>>;
+
+    // user message -> type message injected, no id needed
+    expect(items[0]!.type).toBe("message");
+
+    // existing assistant message -> preserved
+    expect(items[1]!.id).toBe("msg_001");
+
+    // function_call missing id -> derived from call_id (stable uuid)
+    expect(items[2]!.type).toBe("function_call");
+    expect(typeof items[2]!.id).toBe("string");
+    expect(items[2]!.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-9[0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+
+    // function_call_output missing id -> derived from call_id (stable uuid)
+    expect(items[3]!.type).toBe("function_call_output");
+    expect(typeof items[3]!.id).toBe("string");
+    expect(items[3]!.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-9[0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+
+    // web_search_call WITH id -> preserved verbatim
+    expect(items[4]!.id).toBe("ws_existing");
+
+    // 幂等：再次重写同一 body 应得到完全一致的 id
+    const result2 = rewriteRequest({
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(originalBody),
+    });
+    const parsed2 = JSON.parse(result2.body!);
+    expect((parsed2.input as Array<Record<string, unknown>>)[2]!.id).toBe(items[2]!.id);
+    expect((parsed2.input as Array<Record<string, unknown>>)[3]!.id).toBe(items[3]!.id);
+  });
+
+  it("keeps function_call items untouched when id already present", () => {
+    const originalBody = {
+      model: "gpt-5.4",
+      instructions:
+        "You are Droid, an AI software engineering agent built by Factory. Focus on the requested coding task.",
+      input: [
+        {
+          type: "function_call",
+          id: "fc_keep",
+          call_id: "call_keep",
+          name: "Read",
+          arguments: "{}",
+        },
+      ],
+      stream: true,
+    };
+
+    const result = rewriteRequest({
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(originalBody),
+    });
+
+    const parsed = JSON.parse(result.body!);
+    expect(parsed.input[0]!.id).toBe("fc_keep");
+  });
+
+  it("preserves input_image parts verbatim (vision is handled by image-vision plugin)", () => {
+    // openai4droid 不再处理 image part；image-vision 插件会负责把图片转成文字描述。
+    // 这里验证 image part 经过 openai4droid 后保持原样不变。
+    const originalBody = {
+      model: "deepseek-v4-flash",
+      instructions:
+        "You are Droid, an AI software engineering agent built by Factory. Focus on the requested coding task.",
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "look at this" },
+            {
+              type: "input_image",
+              image_url: "data:image/png;base64,abc",
+              detail: "auto",
+            },
+          ],
+        },
+      ],
+      stream: true,
+    };
+
+    const result = rewriteRequest({
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(originalBody),
+    });
+
+    const parsed = JSON.parse(result.body!);
+    const types = parsed.input[0].content.map((c: { type: string }) => c.type);
+    expect(types).toEqual(["input_text", "input_image"]);
+    expect(parsed.input[0].content[1].image_url).toBe("data:image/png;base64,abc");
+  });
+});
+
+describe("createDroidPlugin.onResponse JSON-as-SSE error normalization", () => {
+  it("rewrites upstream JSON error disguised as text/event-stream into a real SSE error event", async () => {
+    // 复现 req 16606: content-type=text/event-stream 但 body 是裸 JSON
+    // {"error":{"message":"Service temporarily overloaded",...}}
+    // Droid 客户端的 SSE 解析器遇到这种情况会抛 "OpenAI response failed" 并中断整个会话。
+    const plugin = createDroidPlugin();
+    const jsonError = JSON.stringify({
+      error: {
+        message: "Service temporarily overloaded",
+        type: "bad_response_status_code",
+        param: "",
+        code: "bad_response_status_code",
+      },
+    });
+
+    const result = await plugin.onResponse!({
+      meta: {
+        statusCode: 529,
+        headers: { "content-type": "text/event-stream" },
+      },
+      body: streamFromBuffer(Buffer.from(jsonError, "utf-8")),
+      store: createMockStore({
+        activated: true as const,
+        requestBodyLength: 341_950,
+        requestKind: "standard" as const,
+      }),
+    });
+
+    expect(result).not.toBeNull();
+    const modifiedResult = result as {
+      meta?: { headers?: Record<string, string> };
+      body?: ReadableStream<Uint8Array>;
+    };
+    expect(modifiedResult.meta?.headers?.["content-type"]).toContain("text/event-stream");
+
+    const bodyText = (await readStreamToBuffer(modifiedResult.body!)).toString("utf-8");
+    // 必须是合法 SSE：以 "event: error" 开头，data: 帧后面跟原 JSON
+    expect(bodyText.startsWith("event: error\n")).toBe(true);
+    expect(bodyText).toContain("data: ");
+    // 原 message 应当保留，便于客户端展示
+    expect(bodyText).toContain("Service temporarily overloaded");
+  });
+
+  it("passes through real SSE streams unchanged when first event is not error", async () => {
+    const plugin = createDroidPlugin();
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_test","status":"in_progress"}}',
+      "",
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"hello"}',
+      "",
+    ].join("\n");
+
+    const result = await plugin.onResponse!({
+      meta: {
+        statusCode: 200,
+        headers: { "content-type": "text/event-stream" },
+      },
+      body: streamFromBuffer(Buffer.from(sse, "utf-8")),
+      store: createMockStore({
+        activated: true as const,
+        requestBodyLength: 1_000,
+        requestKind: "standard" as const,
+      }),
+    });
+
+    // 不应改写为 error
+    const modifiedResult = result as { body?: ReadableStream<Uint8Array> } | null;
+    const bodyText = (await readStreamToBuffer(modifiedResult!.body!)).toString("utf-8");
+    expect(bodyText).toContain("response.created");
+    expect(bodyText).not.toStartWith("event: error");
+  });
 });
