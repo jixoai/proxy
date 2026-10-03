@@ -312,7 +312,11 @@ function getAllRequestsSummaryFiltered(
  * @param port 监听端口
  * @returns Bun Server 实例
  */
-export function startViewerServer(manager: ProxyInstancesManager, port: number) {
+export function startViewerServer(
+  manager: ProxyInstancesManager,
+  port: number,
+  options: { hostname?: string; publicUrl?: string } = {},
+) {
   const wsClients = new Set<ServerWebSocket<unknown>>();
   const logClients = new Set<ServerWebSocket<unknown>>();
   const statsClients = new Set<ServerWebSocket<unknown>>();
@@ -695,6 +699,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
 
   const server = serve({
     port,
+    hostname: options.hostname,
 
     routes: {
       // ========== 配置文件 API（单一数据源）==========
@@ -1531,7 +1536,7 @@ export function startViewerServer(manager: ProxyInstancesManager, port: number) 
   });
 
   console.log(`\n🚀 Proxy Viewer 已启动`);
-  console.log(`📊 查看地址: ${server.url}`);
+  console.log(`📊 查看地址: ${options.publicUrl ?? server.url}`);
   console.log(`📁 数据目录: ${getDataDir()}\n`);
 
   return server;

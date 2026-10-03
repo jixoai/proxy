@@ -16,7 +16,7 @@ import {
   getConfigFilePath,
   setConfigFilePath,
 } from "./lib/config-store";
-import { ProxyInstancesManager } from "./proxy-instances-manager";
+import { ProxyInstancesManager, type InstanceStatusEvent } from "./proxy-instances-manager";
 import { startViewerServer } from "./viewer-server";
 import {
   getVersion,
@@ -27,9 +27,9 @@ import {
   getDefaultDataDir,
 } from "./lib/runtime-paths";
 import { openBrowser } from "./lib/open-browser";
+import { DEFAULT_VIEWER_PORT, resolveViewerAddress } from "./lib/start-options";
+import type { PortlessInstanceRoutes } from "./lib/portless";
 
-/** 默认前端端口 */
-const DEFAULT_PORT = 33000;
 /** 端口递增最大尝试次数 */
 const PORT_INCREMENT_MAX = 10;
 
@@ -68,8 +68,22 @@ async function main() {
     .option("port", {
       alias: "p",
       type: "number",
-      description: "Web UI port",
-      default: DEFAULT_PORT,
+      description: "Web UI port (default: 33000; automatically assigned in Portless mode)",
+    })
+    .option("portless", {
+      type: "boolean",
+      description: "Use named localhost URLs with trusted local HTTPS via Portless",
+      default: false,
+    })
+    .option("portless-name", {
+      type: "string",
+      description: "Portless viewer hostname prefix",
+      default: "proxy",
+    })
+    .option("lan", {
+      type: "boolean",
+      description: "Expose Portless HTTPS URLs to the local network",
+      default: false,
     })
     .option("config", {
       alias: "c",
@@ -92,6 +106,23 @@ async function main() {
     .help()
     .alias("help", "h")
     .parseAsync();
+
+  const lanEnabled = argv.lan || (argv.portless && process.env.PORTLESS_LAN === "1");
+  if (argv.portless && !process.env.PORTLESS_URL && process.env.JIXO_PORTLESS_CHILD !== "1") {
+    const { runWithPortless } = await import("./lib/portless");
+    const availablePort = argv.port ?? pickWebUiPort(DEFAULT_VIEWER_PORT, PORT_INCREMENT_MAX);
+    process.exit(await runWithPortless(argv.portlessName, availablePort || undefined, lanEnabled));
+  }
+  if (argv.lan && !argv.portless && !process.env.PORTLESS_URL) {
+    throw new Error("The --lan option requires --portless.");
+  }
+  const address = resolveViewerAddress(argv.port, {
+    ...process.env,
+    JIXO_PORTLESS_LAN: lanEnabled ? "1" : process.env.JIXO_PORTLESS_LAN,
+  });
+  if (address.publicUrl && !isWebUiPortAvailable(address.port)) {
+    throw new Error(`Portless assigned port ${address.port}, but it is already in use.`);
+  }
 
   // 设置配置文件路径
   if (argv.config) {
@@ -149,12 +180,27 @@ async function main() {
   console.log("[Init] Creating ProxyInstancesManager...");
   const manager = new ProxyInstancesManager();
 
+  let instanceRoutes: PortlessInstanceRoutes | undefined;
+  if (address.publicUrl) {
+    const { PortlessInstanceRoutes } = await import("./lib/portless");
+    instanceRoutes = new PortlessInstanceRoutes(address.publicUrl);
+    process.once("exit", () => instanceRoutes?.close());
+    manager.on("instance-state-changed", ({ instanceName, status }: InstanceStatusEvent) => {
+      try {
+        const url = instanceRoutes?.update(instanceName, status);
+        if (url) console.log(`[Portless] Instance ${instanceName}: ${url}`);
+      } catch (error) {
+        console.error(`[Portless] Failed to update route for ${instanceName}:`, error);
+      }
+    });
+  }
+
   // 自动启动已启用的实例
   await manager.autoStartEnabledInstances();
 
   // 查找可用端口
-  let port = argv.port;
-  const selectedPort = pickWebUiPort(port, PORT_INCREMENT_MAX);
+  let port = address.port;
+  const selectedPort = address.publicUrl ? port : pickWebUiPort(port, PORT_INCREMENT_MAX);
   if (selectedPort === 0) {
     console.log(
       `[Init] Ports ${port}-${port + PORT_INCREMENT_MAX} are all in use, using random port...`,
@@ -168,25 +214,32 @@ async function main() {
   console.log(
     `[Init] Starting Viewer Server on ${selectedPort === 0 ? "random port" : `port ${port}`}...`,
   );
-  const server = startViewerServer(manager, selectedPort);
+  const server = startViewerServer(manager, selectedPort, address);
   const actualPort = server.port;
+  if (address.publicUrl) {
+    console.log(`[Portless] Local viewer: http://localhost:${actualPort}`);
+  }
   if (selectedPort === 0) {
     console.log(`[Init] Using random port ${actualPort}`);
   }
 
   // 打开浏览器
   if (argv.open) {
-    const url = `http://localhost:${actualPort}`;
+    const url = address.publicUrl ?? `http://localhost:${actualPort}`;
     openBrowser(url);
   }
 
   // 优雅退出处理
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log("\n\n[Shutdown] Received shutdown signal, gracefully shutting down...");
 
     try {
       // 停止所有代理实例
       await manager.stopAll();
+      instanceRoutes?.close();
 
       // 关闭 Viewer Server
       console.log("[Shutdown] Stopping Viewer Server...");

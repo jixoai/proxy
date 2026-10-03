@@ -15,6 +15,62 @@ bun install
 
 ## 使用方法
 
+### 使用 `bun start` 启动
+
+默认仍使用 localhost 端口模式，并自动启动 JSON 配置中已启用的代理实例：
+
+```bash
+bun start
+# 查看器：http://localhost:33000（占用时自动尝试下一个端口）
+
+bun start --port 33001
+```
+
+加上 `--portless` 切换到带 HTTPS 证书的命名域名模式：
+
+```bash
+bun start --portless
+# 查看器：https://proxy.localhost
+# 代理实例：https://<实例名>.proxy.localhost
+
+bun start --portless --portless-name my-proxy
+# 查看器：https://my-proxy.localhost
+
+bun start --portless --no-open
+# 不自动打开浏览器
+
+bun start --portless --lan
+# 同时启用局域网 HTTPS
+```
+
+Portless 模式会同时提供 `http://localhost:<端口>` 和 HTTPS 域名，两个地址共享同一进程、同一份请求记录；启动日志会打印本地端口。默认会优先使用 `33000`，端口占用时尝试后续端口，也可用 `--port` 指定。要同时使用两种访问方式，只启动一个 `bun start --portless` 即可；不要再单独启动第二个 `bun start`，避免重复启动同一代理实例和并发访问数据库。
+
+例如配置中名为 `llm-lab`、监听 `20002` 的实例，会注册为 `https://llm-lab.proxy.localhost`。
+实例域名由 `proxy-config.json` 的 `name` 派生，不需要另写一份配置；不适合作为 DNS 标签的名称会规范化并添加短哈希避免冲突，实际 URL 会打印在启动日志中。实例启动、停止时同步注册、删除域名路由。应用退出只清理自己的路由，不会停止其他项目共用的 Portless 服务。
+
+HTTPS 默认只在本机访问。需要局域网访问时启动 `bun start --portless --lan`；Portless 会改用 `.local` 域名和局域网地址。如果现有 Portless 服务尚未启用 LAN，先执行 `bunx --no-install portless proxy stop` 再启动；这会暂时中断该服务上的其他路由。手机等客户端必须能解析 mDNS，并安装并信任本机 Portless CA（默认 `$HOME/.portless/ca.pem`），否则 HTTPS 证书会报不受信任。Portless HTTPS 是共用服务；启用 LAN 会让该 Portless 服务中的其他已注册路由也能从局域网访问。
+
+Portless 模式需要 **Node.js 24+** 和 OpenSSL，项目本身仍由 Bun 运行。执行 `bun install` 会安装固定版本的 Portless。
+首次运行时，Portless 自动生成本地 CA 和 HTTPS 证书，并可能要求系统授权以信任 CA、监听标准 HTTPS 端口 `443` 或更新 hosts 文件。
+这只是本地开发证书，不是公网证书，也不会自动将服务暴露到互联网。
+
+如果浏览器提示证书不受信任，可执行：
+
+```bash
+bunx --no-install portless trust
+bunx --no-install portless doctor
+```
+
+某些 API 客户端不使用系统证书存储，需要单独信任本地 CA。例如默认状态目录下可用以下命令验证（不要使用 `curl -k` 或关闭 TLS 校验）：
+
+```bash
+curl --cacert "$HOME/.portless/ca.pem" https://proxy.localhost/api/config
+```
+
+如已设置 `PORTLESS_STATE_DIR`，请改用该目录内的 `ca.pem`。也可以预先通过 Portless 的 `proxy start --cert /path/to/cert.pem --key /path/to/key.pem` 配置自己的证书；证书必须覆盖查看器和实例子域名。更改已运行的 Portless 服务配置需要手动重启，会影响其他共用该服务的项目。
+
+应用内部依然监听端口，只是不需要在 HTTPS URL 中填写端口。显式 `--port` 会作为内部端口；HTTPS 入口使用标准 443 端口，因此不要设置非标准的 `PORTLESS_PORT`。
+
 ### 启动代理服务器
 
 ```bash
