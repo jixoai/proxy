@@ -697,11 +697,20 @@ export function startViewerServer(
     return formatted;
   }
 
-  const server = serve({
-    port,
-    hostname: options.hostname,
+  // Portless 转发会保留原始 Host（如 proxy.local），而 Bun 对 HTML 路由（HTML import）
+  // 只放行 localhost / *.localhost / IP / 与绑定 hostname 相同的 Host，其余一律
+  // 403 "Blocked: Host header does not match the dev server"。因此 Portless 模式下
+  // 优先绑定公网 hostname（portless 保证会话期间该域名解析到本机）。
+  const publicHostname = options.publicUrl
+    ? new URL(options.publicUrl).hostname
+    : undefined;
 
-    routes: {
+  const createViewerServer = (hostname?: string) =>
+    serve({
+      port,
+      hostname,
+
+      routes: {
       // ========== 配置文件 API（单一数据源）==========
       "/api/config": {
         async GET() {
@@ -1420,6 +1429,23 @@ export function startViewerServer(
       console: true,
     },
   });
+
+  let server: ReturnType<typeof createViewerServer>;
+  if (publicHostname && publicHostname !== options.hostname) {
+    try {
+      server = createViewerServer(publicHostname);
+      log.info(`[Portless] Viewer bound to hostname ${publicHostname} (dev-host allowlist)`);
+    } catch (error) {
+      log.error(
+        `[Portless] Failed to bind hostname ${publicHostname}, falling back to ` +
+          `${options.hostname ?? "default interface"}: ${String(error)}. ` +
+          "Requests forwarded by Portless will be rejected by Bun's dev-host check (403).",
+      );
+      server = createViewerServer(options.hostname);
+    }
+  } else {
+    server = createViewerServer(options.hostname);
+  }
 
   requestEvents.on("created", (request: LoggedRequest) => {
     log.debug(`[Event] Received 'created' event for request: ${request.id}`);
