@@ -20,9 +20,11 @@ export function resolveViewerAddress(
   if (url.protocol !== "https:") {
     throw new Error("Portless must use HTTPS. Restart it with `portless proxy start --https`.");
   }
-  if (url.port) {
+  // 默认 443 无需端口；自定义 PORTLESS_PORT（非特权端口）时 URL 会带端口，只允许两者一致
+  const expectedProxyPort = env.PORTLESS_PORT || "443";
+  if (url.port && url.port !== expectedProxyPort) {
     throw new Error(
-      `Portless is using HTTPS port ${url.port}. Unset PORTLESS_PORT and restart Portless to use URLs without a port.`,
+      `Portless is using HTTPS port ${url.port}, which does not match PORTLESS_PORT=${expectedProxyPort}.`,
     );
   }
   if (env.JIXO_PORTLESS_LAN === "1" && !url.hostname.endsWith(".local")) {
