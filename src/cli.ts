@@ -223,10 +223,10 @@ async function main() {
     console.log(`[Init] Using random port ${actualPort}`);
   }
 
-  // 打开浏览器
+  // 打开浏览器（异步且带超时，绝不阻塞服务）
   if (argv.open) {
     const url = address.publicUrl ?? `http://localhost:${actualPort}`;
-    openBrowser(url);
+    void openBrowser(url);
   }
 
   // 优雅退出处理
