@@ -8,6 +8,7 @@ import type {
   HooksConfig,
 } from "../types/proxy";
 import { DEFAULT_DB_PATH_TEMPLATE } from "./runtime-paths";
+import { providerRoutingSchema } from "./provider-routing-config";
 
 const httpHookSchema = z.object({
   type: z.literal("http"),
@@ -69,6 +70,7 @@ export const proxyForwardSchema = z
     hooks: hooksSchema,
     timeout: z.number().finite().nonnegative().optional().nullable(),
   })
+  .extend(providerRoutingSchema.shape)
   .transform<ProxyForwardConfig>((forward) => ({
     ...forward,
     methods:

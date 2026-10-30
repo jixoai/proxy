@@ -67,6 +67,7 @@ async function importPlugin(config: HookConfig): Promise<ProxyPlugin> {
     () => (typeof (mod as any).default === "function" ? (mod as any).default(pluginConfig) : (mod as any).default),
     () => (typeof (mod as any).plugin === "function" ? (mod as any).plugin(pluginConfig) : (mod as any).plugin),
     () => (typeof (mod as any).createPlugin === "function" ? (mod as any).createPlugin(pluginConfig) : undefined),
+    () => (typeof (mod as any).createCodexPlugin === "function" ? (mod as any).createCodexPlugin(pluginConfig) : undefined),
     () =>
       typeof (mod as any).createDroidPlugin === "function"
         ? (mod as any).createDroidPlugin(pluginConfig)

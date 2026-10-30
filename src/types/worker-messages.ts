@@ -1,7 +1,7 @@
-import type { HooksConfig } from "./proxy";
+import type { HooksConfig, ProviderRoutingConfig } from "./proxy";
 
 /** 转发规则配置（运行时使用） */
-export interface ForwardRuleConfig {
+export interface ForwardRuleConfig extends ProviderRoutingConfig {
   id: string;
   name: string;
   target: string;

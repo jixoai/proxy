@@ -6,6 +6,7 @@ import {
   type ForwardConfig,
 } from "./proxy-manager";
 import { getAllInstances, getNormalizedForwards } from "./lib/config-store";
+import { getProviderRoutingConfig } from "./lib/provider-routing-config";
 import { killPort } from "./lib/kill-port";
 import { createLogger, type Logger } from "./lib/logger";
 import type { InstanceRuntimeConfig } from "./types/worker-messages";
@@ -53,6 +54,7 @@ function toForwardConfigs(instanceName: string): ForwardConfig[] {
     headers: f.headers ?? null,
     hooks: f.hooks ?? null,
     timeout: f.timeout ?? null,
+    ...getProviderRoutingConfig(f),
   }));
 }
 

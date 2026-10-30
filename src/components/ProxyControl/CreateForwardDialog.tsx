@@ -14,7 +14,9 @@ import { Label } from "@/components/ui/label";
 import { Plus, Tag, ExternalLink as LinkIcon } from "lucide-react";
 import { CustomHeadersInput } from "./CustomHeadersInput";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { ProxyConfigFile } from "@/types/proxy";
+import type { ProxyConfigFile, ProviderRoutingConfig } from "@/types/proxy";
+import { ProviderRoutingInput } from "./ProviderRoutingInput";
+import { createProviderRoutingDraft, parseProviderRoutingDraft } from "@/lib/provider-routing-form";
 
 interface CreateForwardDialogProps {
   instanceName: string;
@@ -22,7 +24,7 @@ interface CreateForwardDialogProps {
   /** 创建成功回调，参数为新创建的forward名称 */
   onCreated: (newForwardName?: string) => void;
   /** 预填充数据（用于复制功能） */
-  initialData?: {
+  initialData?: ProviderRoutingConfig & {
     name?: string;
     path?: string;
     target?: string;
@@ -33,7 +35,12 @@ interface CreateForwardDialogProps {
   };
 }
 
-export function CreateForwardDialog({ instanceName, trigger, onCreated, initialData }: CreateForwardDialogProps) {
+export function CreateForwardDialog({
+  instanceName,
+  trigger,
+  onCreated,
+  initialData,
+}: CreateForwardDialogProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -43,6 +50,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
   const [customHeaders, setCustomHeaders] = useState("");
   const [hooks, setHooks] = useState("");
   const [timeoutValue, setTimeoutValue] = useState("");
+  const [routing, setRouting] = useState(() => createProviderRoutingDraft());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -57,6 +65,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
       setDescription(initialData.description ?? "");
       setCustomHeaders(initialData.headers ? JSON.stringify(initialData.headers, null, 2) : "");
       setHooks(initialData.hooks ?? "");
+      setRouting(createProviderRoutingDraft(initialData));
     }
   };
 
@@ -69,7 +78,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
       const response = await fetch("/api/config");
       const config: ProxyConfigFile = await response.json();
       const instance = config.instances.find((i) => i.name === instanceName);
-      
+
       if (!instance) {
         throw new Error("Instance not found");
       }
@@ -85,9 +94,13 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
       }
 
       // 解析 methods
-      const methods = method.trim() === "*" || !method.trim() 
-        ? ["*"] 
-        : method.split(",").map(m => m.trim().toUpperCase()).filter(Boolean);
+      const methods =
+        method.trim() === "*" || !method.trim()
+          ? ["*"]
+          : method
+              .split(",")
+              .map((m) => m.trim().toUpperCase())
+              .filter(Boolean);
 
       // 解析 hooks
       let parsedHooks = null;
@@ -119,6 +132,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
         headers,
         hooks: parsedHooks,
         timeout: parsedTimeout,
+        ...parseProviderRoutingDraft(routing),
       });
 
       const saveResponse = await fetch("/api/config", {
@@ -142,6 +156,7 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
       setCustomHeaders("");
       setHooks("");
       setTimeoutValue("");
+      setRouting(createProviderRoutingDraft());
       onCreated(createdName);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
@@ -243,7 +258,18 @@ export function CreateForwardDialog({ instanceName, trigger, onCreated, initialD
                   请求超时时间（秒）。留空表示无超时限制。
                 </p>
               </div>
-              {error && <div className="text-destructive text-sm">{error}</div>}
+              <ProviderRoutingInput
+                value={routing}
+                onChange={setRouting}
+                hasLegacyRewrite={
+                  /x-target-model/i.test(customHeaders) || hooks.includes("model-rewrite")
+                }
+              />
+              {error && (
+                <div role="alert" className="text-destructive text-sm">
+                  {error}
+                </div>
+              )}
             </div>
           </ScrollArea>
           <DialogFooter>

@@ -11,6 +11,7 @@ import { EndpointStatusIndicator } from "@/components/EndpointStatusIndicator";
 import type { ForwardStats } from "@/hooks/useForwardStats";
 import { getHookConfigSummaries, getHookPluginName, hooksConfigToList } from "@/lib/hooks-config";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
+import { API_FORMAT_LABELS, getProviderRoutingConfig } from "@/lib/provider-routing-config";
 
 interface ForwardRuleItemProps {
   forward: ProxyForwardConfig;
@@ -113,7 +114,7 @@ export function ForwardRuleItem({
       className={`bg-card flex items-center justify-between gap-4 rounded-lg border p-3 transition-all ${
         highlighted ? "border-primary/60 bg-primary/5 shadow-sm" : ""
       } ${priorRuleName ? "opacity-75" : ""} ${
-        isDisabled ? "opacity-50 bg-muted/30 border-dashed" : ""
+        isDisabled ? "bg-muted/30 border-dashed opacity-50" : ""
       }`}
     >
       <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -134,8 +135,20 @@ export function ForwardRuleItem({
             <Badge variant="outline" className="px-1.5 py-0.5 font-mono text-[10px]">
               {methodLabel}
             </Badge>
+            <p className="text-muted-foreground text-xs">
+              {forward.models?.length ? `${forward.models.length} 个模型` : "全部模型"}
+              {" · "}
+              {Object.keys(forward.modelMapping ?? {}).length
+                ? `${Object.keys(forward.modelMapping!).length} 条映射`
+                : "模型原名透传"}
+              {" · "}
+              {forward.apiFormats?.length
+                ? forward.apiFormats.map((format) => API_FORMAT_LABELS[format]).join(" / ")
+                : "API 不限制"}
+              {Object.keys(forward.modelApiFormats ?? {}).length > 0 && " · 有模型 API 限制"}
+            </p>
             {priorRuleName && (
-              <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300">
+              <Badge variant="outline" className="border-amber-300 text-[10px] text-amber-600">
                 会先尝试 {priorRuleName}
               </Badge>
             )}
@@ -163,22 +176,29 @@ export function ForwardRuleItem({
                   summary.tooltip ? (
                     <Tooltip key={`${summary.label}-${index}`}>
                       <TooltipTrigger asChild>
-                        <Badge variant="outline" className="cursor-help px-1.5 py-0 font-mono text-[10px]">
+                        <Badge
+                          variant="outline"
+                          className="cursor-help px-1.5 py-0 font-mono text-[10px]"
+                        >
                           {summary.label}
                         </Badge>
                       </TooltipTrigger>
-                      <TooltipContent className="max-w-xs whitespace-pre-wrap font-mono text-[11px]">
+                      <TooltipContent className="max-w-xs font-mono text-[11px] whitespace-pre-wrap">
                         {summary.tooltip}
                       </TooltipContent>
                     </Tooltip>
                   ) : (
-                    <Badge key={`${summary.label}-${index}`} variant="outline" className="px-1.5 py-0 font-mono text-[10px]">
+                    <Badge
+                      key={`${summary.label}-${index}`}
+                      variant="outline"
+                      className="px-1.5 py-0 font-mono text-[10px]"
+                    >
                       {summary.label}
                     </Badge>
                   ),
                 )}
                 {disabledHookCount > 0 && (
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-muted-foreground text-[10px]">
                     ({disabledHookCount} disabled)
                   </span>
                 )}
@@ -238,6 +258,7 @@ export function ForwardRuleItem({
             if (newName) jumpToForwardRule(instanceName, newName);
           }}
           initialData={{
+            ...getProviderRoutingConfig(forward),
             name: forward.name,
             path: forward.path ?? undefined,
             target: forward.target,

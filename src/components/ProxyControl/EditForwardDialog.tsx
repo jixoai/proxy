@@ -16,6 +16,8 @@ import { CustomHeadersInput } from "./CustomHeadersInput";
 import { HooksInput } from "./HooksInput";
 import type { ProxyForwardConfig, ProxyConfigFile, HooksConfig } from "@/types/proxy";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ProviderRoutingInput } from "./ProviderRoutingInput";
+import { createProviderRoutingDraft, parseProviderRoutingDraft } from "@/lib/provider-routing-form";
 
 interface EditForwardDialogProps {
   forward: ProxyForwardConfig;
@@ -43,6 +45,7 @@ export function EditForwardDialog({
   const [customHeaders, setCustomHeaders] = useState("");
   const [hooks, setHooks] = useState("");
   const [timeoutValue, setTimeoutValue] = useState("");
+  const [routing, setRouting] = useState(() => createProviderRoutingDraft());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -56,6 +59,7 @@ export function EditForwardDialog({
       setCustomHeaders(forward.headers ? JSON.stringify(forward.headers) : "");
       setHooks(forward.hooks ? JSON.stringify(forward.hooks) : "");
       setTimeoutValue(forward.timeout ? String(forward.timeout) : "");
+      setRouting(createProviderRoutingDraft(forward));
       setError("");
     }
   }, [open, forward]);
@@ -69,7 +73,7 @@ export function EditForwardDialog({
       const response = await fetch("/api/config");
       const config: ProxyConfigFile = await response.json();
       const instance = config.instances.find((i) => i.name === instanceName);
-      
+
       if (!instance || !instance.forwards[forwardIndex]) {
         throw new Error("Forward not found");
       }
@@ -95,9 +99,13 @@ export function EditForwardDialog({
       }
 
       // 解析 methods
-      const methods = method.trim() === "*" || !method.trim() 
-        ? ["*"] 
-        : method.split(",").map(m => m.trim().toUpperCase()).filter(Boolean);
+      const methods =
+        method.trim() === "*" || !method.trim()
+          ? ["*"]
+          : method
+              .split(",")
+              .map((m) => m.trim().toUpperCase())
+              .filter(Boolean);
 
       // 解析 timeout
       let parsedTimeout: number | null = null;
@@ -119,6 +127,11 @@ export function EditForwardDialog({
         headers,
         hooks: parsedHooks,
         timeout: parsedTimeout,
+        models: undefined,
+        modelMapping: undefined,
+        apiFormats: undefined,
+        modelApiFormats: undefined,
+        ...parseProviderRoutingDraft(routing),
       };
 
       const saveResponse = await fetch("/api/config", {
@@ -251,7 +264,18 @@ export function EditForwardDialog({
                   请求超时时间（秒）。留空表示无超时限制。
                 </p>
               </div>
-              {error && <div className="text-destructive text-sm">{error}</div>}
+              <ProviderRoutingInput
+                value={routing}
+                onChange={setRouting}
+                hasLegacyRewrite={
+                  /x-target-model/i.test(customHeaders) || hooks.includes("model-rewrite")
+                }
+              />
+              {error && (
+                <div role="alert" className="text-destructive text-sm">
+                  {error}
+                </div>
+              )}
             </div>
           </ScrollArea>
           <DialogFooter>

@@ -20,7 +20,16 @@ import { handleWebSocketProxy } from "./lib/websocket-proxy";
 import { HooksExecutor, stopAllHooks, type PrecheckSummary, type LoadedHook } from "./lib/hooks-executor";
 import { streamFromBuffer, readStreamToBuffer, teeStream, isPluginStoreHeader } from "@jixo/proxy-plugin";
 import { nodeReadableToWebStream, pipeWebStreamToNodeResponse } from "./lib/node-stream-adapter";
-import type { HooksConfig, HookLayer } from "./types/proxy";
+import type { HooksConfig, HookLayer, ProviderRoutingConfig } from "./types/proxy";
+import { getProviderRoutingConfig } from "./lib/provider-routing-config";
+import { hooksConfigToList } from "./lib/hooks-config";
+import {
+  hasProviderRouting,
+  inspectModelRequest,
+  providerIncompatibility,
+  resolveProviderModel,
+  rewriteRequestModel,
+} from "./lib/provider-routing";
 import type {
   WorkerMessage,
   WorkerResponse,
@@ -144,7 +153,7 @@ async function main(argv: string[]) {
     });
   }
 
-  interface ForwardRule {
+  interface ForwardRule extends ProviderRoutingConfig {
     id: string;
     name: string;
     target: string;
@@ -227,6 +236,7 @@ async function main(argv: string[]) {
         headers: f.headers,
         hooks: f.hooks,
         timeout: f.timeout ?? null,
+        ...getProviderRoutingConfig(f),
       })),
     };
   }
@@ -602,13 +612,56 @@ async function main(argv: string[]) {
       candidateIndexes.push(matched.index);
     }
 
-    const candidateAttempts = buildForwardAttempts(requestUrl, matched.rule, candidateIndexes);
-
     const requestBodyChunks: Buffer[] = [];
     for await (const chunk of req) {
       requestBodyChunks.push(chunk as Buffer);
     }
     const originalRequestBody = Buffer.concat(requestBodyChunks);
+    const modelRequest = inspectModelRequest(
+      originalRequestBody, method, requestUrl.pathname, matched.rule.path,
+    );
+    const excludedProviders: { reason: string }[] = [];
+    const hasActiveHooks = (hooks: HooksConfig | undefined) =>
+      hooksConfigToList(hooks).some((hook) => !hook.disabled);
+    const candidateAttempts = buildForwardAttempts(requestUrl, matched.rule, candidateIndexes).filter(
+      (candidate) => {
+        const rule = candidate.transportRule;
+        const mappedModel = resolveProviderModel(rule, modelRequest.model);
+        const hasMapping = modelRequest.model !== null &&
+          Object.hasOwn(rule.modelMapping ?? {}, modelRequest.model);
+        const deferModel = !hasMapping &&
+          (hasActiveHooks(instanceHooks) || hasActiveHooks(candidate.hookRule.hooks));
+        const reason = providerIncompatibility(
+          rule, modelRequest, mappedModel, deferModel, candidate.hookRule,
+        );
+        if (reason) excludedProviders.push({ reason });
+        return !reason;
+      },
+    );
+    const sendRoutingError = () => {
+      if (isClientDisconnected || res.writableEnded) return;
+      const missingModel = excludedProviders.length > 0 &&
+        excludedProviders.every((provider) => provider.reason === "missing_model");
+      res.writeHead(missingModel ? 400 : 422, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        error: {
+          code: missingModel ? "invalid_model_request" : "no_compatible_provider",
+          message: missingModel
+            ? (modelRequest.invalidJson
+                ? "Invalid JSON for a model-restricted provider"
+                : "A nonempty string model is required")
+            : "No enabled provider supports the requested model and API in this group",
+          group: matched.rule.name,
+          model: modelRequest.model,
+          apiFormat: modelRequest.apiFormat,
+          reasons: [...new Set(excludedProviders.map((provider) => provider.reason))],
+        },
+      }));
+    };
+    if (!candidateAttempts.length) {
+      sendRoutingError();
+      return;
+    }
     const requestContentType = (req.headers["content-type"] as string) || null;
     const originalRequestBodyDataUrl =
       originalRequestBody.length > 0
@@ -703,6 +756,15 @@ async function main(argv: string[]) {
       let hasRequestHookChanges = false;
       let requestHookLayers: HookLayer[] | undefined;
 
+      const mappedModel = resolveProviderModel(forwardRule, modelRequest.model);
+      const hasMapping =
+        modelRequest.requiresModel && modelRequest.model !== null &&
+        Object.hasOwn(forwardRule.modelMapping ?? {}, modelRequest.model);
+      if (hasMapping && mappedModel !== null) {
+        hookedRequestBody = rewriteRequestModel(originalRequestBody, mappedModel);
+        hookedForwardHeaders["x-target-model"] = mappedModel;
+      }
+
       if (hooksExecutor?.hasRequestHooksFor(forwardHooksLoaded)) {
         try {
           // 添加 proxy URL header，让插件知道如何发起回环请求（如心跳）
@@ -723,6 +785,13 @@ async function main(argv: string[]) {
           );
           // 检查是否是 respondWith - 短路请求，直接返回响应
           if (hookExecResult.respondWith) {
+            const shortcutReason = providerIncompatibility(
+              forwardRule, modelRequest, mappedModel, false, candidate.hookRule,
+            );
+            if (shortcutReason) {
+              excludedProviders.push({ reason: shortcutReason });
+              continue;
+            }
             const { statusCode, headers, body } = hookExecResult.respondWith;
             res.writeHead(statusCode, headers as http.OutgoingHttpHeaders);
             if (body && body.length > 0) {
@@ -747,6 +816,32 @@ async function main(argv: string[]) {
         } catch (err) {
           console.error("[Hooks] Request hook error:", err);
         }
+      }
+
+      if (hasMapping && mappedModel !== null && hasRequestHookChanges) {
+        try {
+          hookedRequestBody = rewriteRequestModel(hookedRequestBody, mappedModel);
+        } catch {
+          excludedProviders.push({ reason: "mapping_requires_json_body" });
+          continue;
+        }
+      }
+      const finalModel = hasMapping
+        ? mappedModel
+        : hasRequestHookChanges
+          ? inspectModelRequest(hookedRequestBody, method, requestUrl.pathname, matched.rule.path).model
+          : modelRequest.model;
+      const finalReason = providerIncompatibility(
+        forwardRule, modelRequest, finalModel, false, candidate.hookRule,
+      );
+      if (finalReason) {
+        excludedProviders.push({ reason: finalReason });
+        continue;
+      }
+      if (hasMapping) {
+        hasRequestHookChanges = true;
+        requestHookLayers ??= [];
+        requestHookLayers.push({ pluginName: "provider-model-mapping", modified: true });
       }
 
       const hookedRequestBodyDataUrl =
@@ -1383,6 +1478,10 @@ async function main(argv: string[]) {
     }
 
     if (!finalResult || !finalResult.forwardRule || dbRecordId === null) {
+      if (excludedProviders.length) {
+        sendRoutingError();
+        return;
+      }
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "No available forward result" }));
       return;
@@ -1564,6 +1663,19 @@ async function main(argv: string[]) {
     }
 
     const targetUrl = buildTargetUrl(matched.rule, requestUrl);
+
+    if (forwards.some((rule) =>
+      rule.enabled && rule.name === matched.rule.name && hasProviderRouting(rule),
+    )) {
+      const body = JSON.stringify({
+        error: {
+          code: "websocket_model_routing_not_supported",
+          message: "WebSocket model routing is not supported for groups with model, mapping or API restrictions; use HTTP/SSE",
+        },
+      });
+      socket.end(`HTTP/1.1 422 Unprocessable Content\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+      return;
+    }
 
     handleWebSocketProxy(req, socket, head, targetUrl, INSTANCE_NAME, matched.rule.name, matched.rule.id);
   });

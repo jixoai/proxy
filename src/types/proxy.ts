@@ -40,7 +40,16 @@ export interface HookLayer {
   contentType?: string | null;
 }
 
-export interface ProxyForwardConfig {
+export type ApiFormat = "responses" | "anthropic-messages" | "chat-completions";
+
+export interface ProviderRoutingConfig {
+  models?: string[] | null;
+  modelMapping?: Record<string, string> | null;
+  apiFormats?: ApiFormat[] | null;
+  modelApiFormats?: Record<string, ApiFormat[]> | null;
+}
+
+export interface ProxyForwardConfig extends ProviderRoutingConfig {
   /** 唯一标识符，为空时自动生成 UUID */
   id?: string;
   name: string;

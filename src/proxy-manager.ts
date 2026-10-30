@@ -1,7 +1,8 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { createLogger, type Logger } from "./lib/logger";
-import type { HooksConfig } from "./types/proxy";
+import type { HooksConfig, ProviderRoutingConfig } from "./types/proxy";
+import { getProviderRoutingConfig } from "./lib/provider-routing-config";
 import type { WorkerMessage, WorkerResponse, InstanceRuntimeConfig } from "./types/worker-messages";
 import { getInstanceByName } from "./lib/config-store";
 import { getInstanceConfigPath, getTempConfigDir, getDataDir } from "./lib/runtime-paths";
@@ -55,7 +56,7 @@ export interface ProxyLogMessage {
 type LogCallback = (log: ProxyLogMessage) => void;
 
 /** 转发规则配置 */
-export interface ForwardConfig {
+export interface ForwardConfig extends ProviderRoutingConfig {
   id: string;
   name: string;
   enabled: boolean;
@@ -430,6 +431,7 @@ export class ProxyManager {
         headers: f.headers,
         hooks: f.hooks,
         timeout: f.timeout ?? null,
+        ...getProviderRoutingConfig(f),
       })),
     };
   }
