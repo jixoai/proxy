@@ -226,6 +226,7 @@ async function main(argv: string[]) {
         methods: f.methods,
         headers: f.headers,
         hooks: f.hooks,
+        timeout: f.timeout ?? null,
       })),
     };
   }

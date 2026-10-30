@@ -18,7 +18,9 @@ const WORKER_STOP_TIMEOUT_MS = 3000;
 /** 健康检查间隔（毫秒） */
 const HEALTH_CHECK_INTERVAL_MS = 10000;
 /** 健康检查失败阈值（毫秒） */
-const HEALTH_CHECK_FAILURE_THRESHOLD_MS = 15000;
+const HEALTH_CHECK_FAILURE_LIMIT = 3;
+const WORKER_RESTART_LIMIT = 5;
+const WORKER_RESTART_RESET_MS = 60000;
 /** 等待响应超时（毫秒） */
 const RESPONSE_TIMEOUT_MS = 5000;
 
@@ -63,6 +65,7 @@ export interface ForwardConfig {
   methods?: string[];
   headers?: Record<string, string> | null;
   hooks?: HooksConfig | null;
+  timeout?: number | null;
 }
 
 /**
@@ -95,7 +98,12 @@ export class ProxyManager {
   private readonly log: Logger;
   private currentForwards: ForwardConfig[] = [];
   private healthCheckTimer: NodeJS.Timeout | null = null;
-  private lastPongTime: number = 0;
+  private readonly statusCallbacks = new Set<() => void>();
+  private desiredRunning = false;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartAttempts = 0;
+  private lastRestartTime = 0;
+  private lifecycleGeneration = 0;
 
   constructor(
     instanceName: string,
@@ -118,10 +126,22 @@ export class ProxyManager {
   async start(forwards?: ForwardConfig[]): Promise<void> {
     if (this.isRunning()) throw new Error("Proxy is already running");
 
+    this.cancelRecovery();
+    const generation = this.lifecycleGeneration;
+    this.desiredRunning = true;
+    this.restartAttempts = 0;
     this.currentForwards = forwards ?? [];
 
     // 统一使用 Worker 模式
-    await this.startWorker(forwards);
+    try {
+      await this.startWorker(forwards);
+    } catch (error) {
+      if (generation === this.lifecycleGeneration) {
+        this.desiredRunning = false;
+        this.handleWorkerDeath(this.worker, error, false);
+      }
+      throw error;
+    }
   }
 
   /** Worker 模式启动 */
@@ -135,20 +155,16 @@ export class ProxyManager {
     const argv = ["-p", String(this.port), "-i", this.instanceName];
     if (configPath) argv.push("-c", configPath);
 
-    this.worker = new Worker(new URL("./proxy-server.js", import.meta.url).href);
+    const worker = new Worker(new URL("./proxy-server.js", import.meta.url).href);
+    this.worker = worker;
+    let ready = false;
 
     this.configPath = configPath;
     this.startTime = Date.now();
 
-    this.worker.addEventListener("message", (event) => {
+    worker.addEventListener("message", (event) => {
+      if (this.worker !== worker) return;
       const msg = event.data as WorkerResponse;
-
-      // 处理 pong 响应，更新心跳时间
-      if (msg?.type === "pong") {
-        this.lastPongTime = Date.now();
-        // pong 响应同时通过 sendMessage 的 Promise 处理
-        return;
-      }
 
       // 处理配置相关响应
       if (msg?.type === "reload-result" || msg?.type === "config" || msg?.type === "init-result") {
@@ -183,56 +199,70 @@ export class ProxyManager {
       if (msg?.type === "server-error") {
         this.log.error(`[ProxyManager] Worker server error: ${msg.error} code=${msg.code ?? ""}`);
         // 服务器错误也应该触发 Worker 清理
-        this.handleWorkerDeath();
+        this.handleWorkerDeath(
+          worker,
+          new Error(`Server error: ${msg.error} (${msg.code ?? "unknown"})`),
+          ready,
+        );
       }
     });
 
-    this.worker.addEventListener("error", (error) => {
+    worker.addEventListener("error", (error) => {
+      if (this.worker !== worker) return;
       console.error(`[ProxyManager] Worker error (${this.instanceName}):`, error);
-      this.handleWorkerDeath();
+      this.handleWorkerDeath(worker, error, ready);
     });
 
-    this.worker.addEventListener("close", (event) => {
+    worker.addEventListener("close", (event) => {
+      if (this.worker !== worker) return;
       this.log.warn(`[ProxyManager] Worker for ${this.instanceName} exited`, event);
-      this.handleWorkerDeath();
+      this.handleWorkerDeath(worker, new Error("Worker exited unexpectedly"), ready);
     });
     await this.waitForResponse("env-ready", RESPONSE_TIMEOUT_MS);
 
     const preInitRes = this.waitForResponse("pre-init-done", RESPONSE_TIMEOUT_MS);
-    this.worker.postMessage({ type: "pre-init", argv } satisfies WorkerMessage);
+    worker.postMessage({ type: "pre-init", argv } satisfies WorkerMessage);
 
     // 启动阶段快速捕获端口占用等致命错误
     const cachePo = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 2500);
+      const timer = setTimeout(() => {
+        worker.removeEventListener("message", handler);
+        resolve();
+      }, 2500);
       const handler = (event: MessageEvent) => {
         const msg = event.data as WorkerResponse;
         if (msg?.type === "server-error") {
           clearTimeout(timer);
-          this.worker?.removeEventListener("message", handler);
-          this.worker?.terminate();
-          this.worker = null;
+          worker.removeEventListener("message", handler);
           reject(
             new Error(`Worker failed to listen on port ${msg.port ?? this.port}: ${msg.error}`),
           );
         }
       };
-      this.worker?.addEventListener("message", handler);
+      worker.addEventListener("message", handler);
     });
 
     // 发送 init 消息初始化 Worker 中的数据库
-    await preInitRes;
-    this.worker.postMessage({ type: "init", dataDir: getDataDir() } satisfies WorkerMessage);
-
-    const initResponse = await this.waitForResponse("init-result", RESPONSE_TIMEOUT_MS);
+    const initialize = async () => {
+      await preInitRes;
+      if (this.worker !== worker) throw new Error("Worker stopped during startup");
+      return this.waitForResponse("init-result", RESPONSE_TIMEOUT_MS, {
+        type: "init",
+        dataDir: getDataDir(),
+      });
+    };
+    const [initResponse] = await Promise.all([initialize(), cachePo]);
     if (initResponse.type === "init-result" && !initResponse.success) {
-      throw new Error(
-        `Worker database init failed: ${initResponse.error ?? "Unknown error"}`,
-      );
+      throw new Error(`Worker database init failed: ${initResponse.error ?? "Unknown error"}`);
     }
 
     // 启动健康检查
+    if (this.worker !== worker || !this.desiredRunning) {
+      throw new Error("Worker stopped during startup");
+    }
+    ready = true;
     this.startHealthCheck();
-    await cachePo;
+    this.notifyStatusChange();
 
     console.log(`[ProxyManager] Started proxy instance ${this.instanceName} on port ${this.port}`);
   }
@@ -242,16 +272,20 @@ export class ProxyManager {
    * 发送 shutdown 消息让 Worker 优雅关闭，超时后强制终止
    */
   async stop(): Promise<void> {
-    if (!this.isRunning()) throw new Error("Proxy is not running");
-
+    this.desiredRunning = false;
+    this.cancelRecovery();
     this.stopHealthCheck();
+
+    if (!this.worker) {
+      this.cleanupConfigFile();
+      return;
+    }
 
     const workerRef = this.worker!;
 
     // 先清理状态，避免 handleWorkerDeath 的竞态条件
     this.worker = null;
     this.startTime = null;
-    this.lastPongTime = 0;
 
     // 等待 Worker 退出，超时后强制终止
     await this.waitForWorkerExit(workerRef);
@@ -330,9 +364,7 @@ export class ProxyManager {
     };
 
     const message: WorkerMessage = { type: "reload", config };
-    this.worker!.postMessage(message);
-
-    const response = await this.waitForResponse("reload-result", RESPONSE_TIMEOUT_MS);
+    const response = await this.waitForResponse("reload-result", RESPONSE_TIMEOUT_MS, message);
     if (response.type === "reload-result" && !response.success) {
       throw new Error(response.error || "Reload failed");
     }
@@ -352,9 +384,7 @@ export class ProxyManager {
     if (!this.worker) return null;
 
     const message: WorkerMessage = { type: "get-config" };
-    this.worker.postMessage(message);
-
-    const response = await this.waitForResponse("config", RESPONSE_TIMEOUT_MS);
+    const response = await this.waitForResponse("config", RESPONSE_TIMEOUT_MS, message);
     if (response.type === "config") {
       return response.config;
     }
@@ -399,6 +429,7 @@ export class ProxyManager {
         methods: f.methods,
         headers: f.headers,
         hooks: f.hooks,
+        timeout: f.timeout ?? null,
       })),
     };
   }
@@ -434,10 +465,16 @@ export class ProxyManager {
   }
 
   /** 等待特定类型的响应 */
-  private waitForResponse(expectedType: string, timeoutMs: number): Promise<WorkerResponse> {
+  private waitForResponse(
+    expectedType: string,
+    timeoutMs: number,
+    message?: WorkerMessage,
+  ): Promise<WorkerResponse> {
+    const worker = this.worker;
+    if (!worker) return Promise.reject(new Error("Proxy is not running"));
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.worker?.removeEventListener("message", handler);
+        worker.removeEventListener("message", handler);
         reject(new Error(`Timeout waiting for ${expectedType}`));
       }, timeoutMs);
 
@@ -445,12 +482,21 @@ export class ProxyManager {
         const msg = event.data as WorkerResponse;
         if (msg?.type === expectedType) {
           clearTimeout(timeout);
-          this.worker?.removeEventListener("message", handler);
+          worker.removeEventListener("message", handler);
           resolve(msg);
         }
       };
 
-      this.worker?.addEventListener("message", handler);
+      worker.addEventListener("message", handler);
+      if (message) {
+        try {
+          worker.postMessage(message);
+        } catch (error) {
+          clearTimeout(timeout);
+          worker.removeEventListener("message", handler);
+          reject(error);
+        }
+      }
     });
   }
 
@@ -514,6 +560,21 @@ export class ProxyManager {
     return () => this.logCallbacks.delete(callback);
   }
 
+  onStatusChange(callback: () => void): () => void {
+    this.statusCallbacks.add(callback);
+    return () => this.statusCallbacks.delete(callback);
+  }
+
+  private notifyStatusChange(): void {
+    for (const callback of this.statusCallbacks) {
+      try {
+        callback();
+      } catch (error) {
+        console.error(`[ProxyManager] Status callback failed (${this.instanceName}):`, error);
+      }
+    }
+  }
+
   /** 写入 instance 配置文件（单一数据源） */
   private writeConfigFile(forwards: ForwardConfig[]): string {
     const configDir = getTempConfigDir();
@@ -553,32 +614,40 @@ export class ProxyManager {
 
   /** 启动健康检查定时器 */
   private startHealthCheck(): void {
-    this.lastPongTime = Date.now();
+    this.stopHealthCheck();
+    const worker = this.worker;
+    let probePending = false;
+    let failedProbes = 0;
+    let lastProbeTime = Date.now();
 
     this.healthCheckTimer = setInterval(async () => {
-      if (!this.worker) {
-        this.stopHealthCheck();
-        return;
+      if (!worker || this.worker !== worker || probePending) return;
+      const probeTime = Date.now();
+      if (probeTime - lastProbeTime > HEALTH_CHECK_INTERVAL_MS + RESPONSE_TIMEOUT_MS) {
+        failedProbes = 0;
       }
-
-      const now = Date.now();
-      // 检查上次 pong 是否超过阈值（允许一次失败）
-      if (this.lastPongTime > 0 && now - this.lastPongTime > HEALTH_CHECK_FAILURE_THRESHOLD_MS) {
-        this.log.warn(
-          `Health check failed for ${this.instanceName}, no pong in ${HEALTH_CHECK_FAILURE_THRESHOLD_MS}ms`,
-        );
-        this.handleWorkerDeath();
-        return;
-      }
-
+      lastProbeTime = probeTime;
+      probePending = true;
       try {
         const message: WorkerMessage = { type: "ping" };
-        this.worker.postMessage(message);
-        await this.waitForResponse("pong", RESPONSE_TIMEOUT_MS);
-        // lastPongTime 已在 message handler 中更新
+        await this.waitForResponse("pong", RESPONSE_TIMEOUT_MS, message);
+        failedProbes = 0;
       } catch (error) {
+        if (this.worker !== worker) return;
+        if (Date.now() - probeTime > RESPONSE_TIMEOUT_MS * 2) {
+          failedProbes = 0;
+          return;
+        }
+        failedProbes++;
         this.log.warn(`Ping failed for ${this.instanceName}: ${error}`);
-        // 不立即清理，等待下次检查
+        if (failedProbes >= HEALTH_CHECK_FAILURE_LIMIT) {
+          this.handleWorkerDeath(
+            worker,
+            new Error(`${failedProbes} consecutive heartbeat probes failed`),
+          );
+        }
+      } finally {
+        probePending = false;
       }
     }, HEALTH_CHECK_INTERVAL_MS);
   }
@@ -592,17 +661,58 @@ export class ProxyManager {
   }
 
   /** 处理 Worker 异常退出（清理资源） */
-  private handleWorkerDeath(): void {
+  private handleWorkerDeath(
+    worker = this.worker,
+    reason: unknown = new Error("Worker stopped"),
+    recover = true,
+  ): void {
+    if (!worker || this.worker !== worker) return;
     this.stopHealthCheck();
-    if (this.worker) {
-      try {
-        this.worker.terminate();
-      } catch {
-        // 忽略终止错误
-      }
-      this.worker = null;
-      this.startTime = null;
-      this.lastPongTime = 0;
+    this.worker = null;
+    this.startTime = null;
+    try {
+      worker.terminate();
+    } catch {}
+    console.error(`[ProxyManager] Instance ${this.instanceName} stopped unexpectedly:`, reason);
+    this.notifyStatusChange();
+    if (recover && this.desiredRunning) this.scheduleRecovery();
+  }
+
+  private cancelRecovery(): void {
+    this.lifecycleGeneration++;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
     }
+  }
+
+  private scheduleRecovery(): void {
+    if (!this.desiredRunning || this.worker || this.restartTimer) return;
+    if (Date.now() - this.lastRestartTime > WORKER_RESTART_RESET_MS) this.restartAttempts = 0;
+    if (this.restartAttempts >= WORKER_RESTART_LIMIT) {
+      this.desiredRunning = false;
+      console.error(
+        `[ProxyManager] Recovery limit reached for ${this.instanceName}; restart the instance manually.`,
+      );
+      return;
+    }
+    const delay = Math.min(1000 * 2 ** this.restartAttempts, 16000);
+    this.restartAttempts++;
+    this.lastRestartTime = Date.now();
+    const generation = this.lifecycleGeneration;
+    console.error(
+      `[ProxyManager] Restarting ${this.instanceName} in ${delay}ms (attempt ${this.restartAttempts}/${WORKER_RESTART_LIMIT})`,
+    );
+    this.restartTimer = setTimeout(async () => {
+      if (!this.desiredRunning || generation !== this.lifecycleGeneration) return;
+      this.restartTimer = null;
+      try {
+        await this.startWorker(this.currentForwards);
+      } catch (error) {
+        if (generation !== this.lifecycleGeneration) return;
+        this.handleWorkerDeath(this.worker, error, false);
+        this.scheduleRecovery();
+      }
+    }, delay);
   }
 }

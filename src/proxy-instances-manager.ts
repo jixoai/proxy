@@ -52,6 +52,7 @@ function toForwardConfigs(instanceName: string): ForwardConfig[] {
     methods: f.methods && f.methods.length ? f.methods : ["*"],
     headers: f.headers ?? null,
     hooks: f.hooks ?? null,
+    timeout: f.timeout ?? null,
   }));
 }
 
@@ -97,7 +98,12 @@ export class ProxyInstancesManager extends EventEmitter {
   async startInstance(instanceName: string): Promise<void> {
     const instance = getAllInstances().find((i) => i.name === instanceName);
     if (!instance) throw new Error("Instance not found");
-    if (this.managers.has(instanceName)) throw new Error("Instance already running");
+    const previous = this.managers.get(instanceName);
+    if (previous?.getStatus().running) throw new Error("Instance already running");
+    if (previous) {
+      await previous.stop();
+      this.managers.delete(instanceName);
+    }
 
     const forwards = toForwardConfigs(instanceName);
     const manager = new ProxyManager(
@@ -106,6 +112,9 @@ export class ProxyInstancesManager extends EventEmitter {
       instance.headers ?? null,
       instance.hooks ?? null,
     );
+    manager.onStatusChange(() => {
+      if (this.managers.get(instanceName) === manager) this.emitStatusChange(instanceName);
+    });
 
     // 转发日志到已注册的回调
     manager.onLog((log) => {
