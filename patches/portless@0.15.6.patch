@@ -1,0 +1,31 @@
+diff --git a/dist/chunk-SLEZT6EJ.js b/dist/chunk-SLEZT6EJ.js
+index 76791c619bf72a8c5b99eb2f086e150b3cef9466..6a726ac6b1e7ed3111b1970f376f4d0d6345be69 100644
+--- a/dist/chunk-SLEZT6EJ.js
++++ b/dist/chunk-SLEZT6EJ.js
+@@ -478,6 +478,7 @@ function createProxyServer(options) {
+     if (!proxyReqHeaders.host) {
+       proxyReqHeaders.host = getRequestHost(req);
+     }
++    const proxyStartedAt = Date.now();
+     const proxyReq = http.request(
+       {
+         // Dial via createLoopbackConnection so ::1-only backends work too.
+@@ -506,7 +507,8 @@ function createProxyServer(options) {
+       }
+     );
+     proxyReq.on("error", (err) => {
+-      onError(`Proxy error for ${getRequestHost(req)}: ${err.message}`);
++      if (req.aborted || res.destroyed || res.writableEnded) return;
++      onError(`[${new Date().toISOString()}] Proxy error for ${getRequestHost(req)}: ${err.message || err.code || err.name} (code=${err.code || "UNKNOWN"}, method=${req.method}, backend=127.0.0.1:${route.port}, elapsed=${Date.now() - proxyStartedAt}ms, headersSent=${res.headersSent})`);
+       if (!res.headersSent) {
+         const errWithCode = err;
+         const detail = errWithCode.code === "ECONNREFUSED" ? "The target app is not responding. It may have crashed." : "The target app may not be running.";
+@@ -518,6 +520,8 @@ function createProxyServer(options) {
+             `<div class="content"><p class="desc">${escapeHtml(detail)}</p></div>`
+           )
+         );
++      } else {
++        res.destroy();
+       }
+     });
+     res.on("close", () => {

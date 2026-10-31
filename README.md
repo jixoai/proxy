@@ -73,7 +73,7 @@ curl --cacert "$HOME/.portless/ca.pem" https://proxy.localhost/api/config
 
 #### 排查 `Proxy error` 和实例恢复
 
-`Proxy error for <实例域名>: socket hang up` 表示 Portless 到本地实例的连接被提前关闭；连续出现只有冒号的空白错误，可能是 Node.js 双栈连接均被拒绝时产生的空消息 `AggregateError`，不等于证书或 DNS 错误。可先对比 HTTPS 域名与 `http://127.0.0.1:<实例端口>`，并查看终端的 `[ProxyManager]` 异常日志。
+`Proxy error for <实例域名>: socket hang up` 不一定表示 Worker 崩溃：旧版 Portless 在客户端主动取消、尚未收到响应头时也打印同样错误。本项目通过 Bun 持久化补丁区分主动取消与真正的后端错误；运行 `bun install` 会自动应用。真正的错误仍返回 502，并记录时间、错误码、目标端口和耗时；空消息的双栈连接错误也会显示 `ECONNREFUSED`。可先对比 HTTPS 域名与 `http://127.0.0.1:<实例端口>`，并查看终端的 `[ProxyManager]` 异常日志。详细复现、流转发修复与验证边界见 `docs/portless-worker-recovery.md`。
 
 实例心跳会主动探测 Worker，连续三次失败才判断失效；系统休眠或事件循环长暂停后会重新探测，不会仅因旧心跳过期直接杀掉实例。意外退出会同步移除域名路由并自动恢复，重试间隔为 1、2、4、8、16 秒；恢复后重新注册路由。连续恢复失败五次会停止自动重试，可在 UI 中重新启动实例。手动停止及退出程序都会取消恢复任务。
 

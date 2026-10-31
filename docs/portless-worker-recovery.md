@@ -34,6 +34,28 @@ Portless 0.15.6 的 HTTP 转发在本地 `ClientRequest` 发生错误时打印 `
 
 集成测试使用随机非特权端口和 `tests` 内临时目录，不需要 sudo，也不操作现网 Portless。它验证的是本地转发和恢复链路，不是完整 TLS/mDNS 链路。原有 `tests/portless.test.ts` 的非标准 HTTPS 端口错误文案断言与现有实现不一致，是本次修改前已有失败，未顺带修改。
 
+## 2026-10-31 再次排查：主动取消误报与流转发挂起
+
+这次现场未观察到 Worker 退出或整组不可用：实例端口仍在监听，本地未匹配路径约 1ms 返回，使用受信任 CA、固定解析到回环地址的 HTTPS 入口约 10ms 返回同样结果。只读采样启动后的请求元数据，仍有大量正常完成的 200 请求，也存在 `client_disconnect` 记录。因此不能凭一条 `socket hang up` 认定整个进程崩溃，也不能凭这些采样认定已经还原用户之前的所有卡死。
+
+已独立复现另外两类问题：
+
+1. **Portless 把主动取消误记成后端错误。** 客户端在响应头到达前取消请求时，Portless 的下游 `close` 回调主动销毁本地 `proxyReq`，Node 随后发出 `ECONNRESET / socket hang up`。原来的错误回调不检查客户端是否已经断开，仍打印相同错误。这个现象在真实 Node HTTP/1.1 和带证书校验的 HTTPS/2 上都能复现，不需要 Worker 故障。
+2. **Node/Web 流桥接可能永久挂起并滞留资源。** 原来的输入适配器只监听 `data/end/error`，上游提前 `close` 而未发出 `end/error` 时，Web reader 永不完成；它还会无背压地将 Node 流灌入 Web 队列。输出适配器等待 `reader.read()` 或 `drain` 时，不处理下游 `close/error`，客户端取消后可能永久等待，也没有取消 reader。积累这些任务会增加资源压力，但不能据此断言已经证明现网某次全局卡死的唯一原因。
+
+本次修复：
+
+- 使用 `Readable.toWeb` 和 `pipeline` 连接 Node/Web 流，统一处理背压、提前关闭、错误传播、上游取消与输出完成。进度回调异常也会终止管道；截断的响应不会被当成正常 EOF。
+- 通过 Bun 的 `patchedDependencies` 持久化 Portless 0.15.6 补丁，不依赖手工修改 `node_modules`。只有下游已取消/关闭/完成时不再打印请求错误；真实后端断连、端口拒绝仍记录错误并返回 502，已经发送响应头时销毁响应，避免悬挂。
+- 真正的错误附带时间戳、错误码、HTTP 方法、本地目标端口、耗时和响应头状态；空消息的 `AggregateError` 也会显示 `ECONNREFUSED`。不记录请求体、密钥或完整 URL。
+- 不自动重放 POST，不给未配置超时的请求强加超时，也不因单个客户端取消重启 Worker。
+
+新增 `tests/node-stream-adapter.test.ts`：提前关闭、停止读取时的背压、等待数据或 `drain` 时断连、正常完成、进度异常、上游错误。修复前这些场景分别暴露挂起、未取消或错误完成；修复后覆盖资源释放和错误传播。
+
+新增 `tests/portless-disconnect.test.ts`：使用真实 Node Portless，在 HTTP/1.1 和 HTTPS/2 下验证主动取消不误报、真实断连返回 502、连接拒绝仍打印错误码、之后的新请求正常、没有请求重放。HTTPS/2 使用 `tests` 内临时生成的独立证书并正常校验证书，不关闭 TLS 校验，不读写现网 CA，也不验证 mDNS。
+
+`tests/proxy-worker-recovery.test.ts` 另覆盖真实 Node Portless → Bun Worker → 本地 SSE 上游：连续五次断流均取消上游，后续请求正常，Worker 不重启；原有 Worker 崩溃与恢复测试继续保留。
+
 ## 应用与现场检查
 
 运行中的生产模式 Bun 进程不会自动加载源码修改，应用修复需要重新启动原来的 `bun start --portless --lan` 会话。重启会中断在途请求，应由使用者选择合适时间。

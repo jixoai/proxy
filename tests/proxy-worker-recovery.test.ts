@@ -19,6 +19,7 @@ let upstream: ReturnType<typeof Bun.serve>;
 let edge: ReturnType<typeof Bun.spawn>;
 let edgePort: number;
 let instancePort: number;
+let canceledStreams = 0;
 
 async function waitFor(predicate: () => boolean, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
@@ -58,6 +59,12 @@ beforeAll(async () => {
     async fetch(req) {
       const pathname = new URL(req.url).pathname;
       upstreamRequests.push(pathname);
+      if (pathname === "/stream") {
+        return new Response(new ReadableStream({
+          start(controller) { controller.enqueue(Buffer.from('data: {"ok":true}\n\n')); },
+          cancel() { canceledStreams++; },
+        }), { headers: { "content-type": "text/event-stream" } });
+      }
       if (pathname === "/slow" || pathname === "/timeout") await Bun.sleep(2000);
       return Response.json({ ok: true, pathname });
     },
@@ -125,6 +132,29 @@ afterAll(async () => {
   setConfigFilePath(path.resolve("proxy-config.json"));
   rmSync(directory, { recursive: true, force: true });
 });
+
+test("repeated streaming disconnects cancel upstream without restarting or blocking the worker", async () => {
+  const proxy = manager["managers"].get("recovery")!;
+  const worker = proxy["worker"];
+  for (let iteration = 0; iteration < 5; iteration++) {
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(`http://127.0.0.1:${edgePort}/stream`, {
+        method: "POST", headers: { host: "recovery.proxy.localhost" },
+        signal: AbortSignal.timeout(5000),
+      }, (res) => {
+        res.once("data", () => { res.destroy(); resolve(); });
+        res.on("error", reject);
+      });
+      req.on("error", reject);
+      req.end("{}");
+    });
+    await waitFor(() => canceledStreams === iteration + 1);
+    expect((await request("/after-disconnect")).status).toBe(200);
+  }
+  expect(proxy["worker"]).toBe(worker);
+  expect(statuses).toEqual([true]);
+  expect(upstreamRequests.filter((pathname) => pathname === "/stream")).toHaveLength(5);
+}, 10000);
 
 test("real Node Portless recovers routes after a worker crash without replaying an in-flight POST", async () => {
   const initial = await request("/before");
