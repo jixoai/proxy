@@ -14,10 +14,8 @@ import { Label } from "@/components/ui/label";
 import { Tag, ExternalLink as LinkIcon } from "lucide-react";
 import { CustomHeadersInput } from "./CustomHeadersInput";
 import { HooksInput } from "./HooksInput";
-import type { ProxyForwardConfig, ProxyConfigFile, HooksConfig } from "@/types/proxy";
+import type { ProxyForwardConfig, HooksConfig } from "@/types/proxy";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ProviderRoutingInput } from "./ProviderRoutingInput";
-import { createProviderRoutingDraft, parseProviderRoutingDraft } from "@/lib/provider-routing-form";
 
 interface EditForwardDialogProps {
   forward: ProxyForwardConfig;
@@ -30,7 +28,6 @@ interface EditForwardDialogProps {
 
 export function EditForwardDialog({
   forward,
-  forwardIndex,
   instanceName,
   trigger,
   onUpdated,
@@ -45,7 +42,6 @@ export function EditForwardDialog({
   const [customHeaders, setCustomHeaders] = useState("");
   const [hooks, setHooks] = useState("");
   const [timeoutValue, setTimeoutValue] = useState("");
-  const [routing, setRouting] = useState(() => createProviderRoutingDraft());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -59,7 +55,6 @@ export function EditForwardDialog({
       setCustomHeaders(forward.headers ? JSON.stringify(forward.headers) : "");
       setHooks(forward.hooks ? JSON.stringify(forward.hooks) : "");
       setTimeoutValue(forward.timeout ? String(forward.timeout) : "");
-      setRouting(createProviderRoutingDraft(forward));
       setError("");
     }
   }, [open, forward]);
@@ -70,13 +65,7 @@ export function EditForwardDialog({
     setLoading(true);
 
     try {
-      const response = await fetch("/api/config");
-      const config: ProxyConfigFile = await response.json();
-      const instance = config.instances.find((i) => i.name === instanceName);
-
-      if (!instance || !instance.forwards[forwardIndex]) {
-        throw new Error("Forward not found");
-      }
+      if (!forward.id) throw new Error("规则缺少 ID，请重新加载配置");
 
       // 解析 headers
       let headers: Record<string, string> | null = null;
@@ -117,8 +106,7 @@ export function EditForwardDialog({
         parsedTimeout = num;
       }
 
-      instance.forwards[forwardIndex] = {
-        ...instance.forwards[forwardIndex]!,
+      const patch = {
         name,
         target: targetUrl,
         description: description || null,
@@ -127,18 +115,16 @@ export function EditForwardDialog({
         headers,
         hooks: parsedHooks,
         timeout: parsedTimeout,
-        models: undefined,
-        modelMapping: undefined,
-        apiFormats: undefined,
-        modelApiFormats: undefined,
-        ...parseProviderRoutingDraft(routing),
       };
 
-      const saveResponse = await fetch("/api/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
+      const saveResponse = await fetch(
+        `/api/config/instances/${encodeURIComponent(instanceName)}/forwards/${encodeURIComponent(forward.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        },
+      );
 
       if (!saveResponse.ok) {
         const data = await saveResponse.json();
@@ -264,13 +250,9 @@ export function EditForwardDialog({
                   请求超时时间（秒）。留空表示无超时限制。
                 </p>
               </div>
-              <ProviderRoutingInput
-                value={routing}
-                onChange={setRouting}
-                hasLegacyRewrite={
-                  /x-target-model/i.test(customHeaders) || hooks.includes("model-rewrite")
-                }
-              />
+              <p className="text-muted-foreground text-xs">
+                模型、别名和 API 请直接在规则卡片中配置；保存基础设置不会覆盖模型配置。
+              </p>
               {error && (
                 <div role="alert" className="text-destructive text-sm">
                   {error}

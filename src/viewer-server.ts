@@ -1,4 +1,6 @@
 import { serve, type ServerWebSocket } from "bun";
+import { ZodError } from "zod";
+import { ModelRoutingUpdateError } from "./lib/model-routing-update";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
@@ -728,6 +730,56 @@ export function startViewerServer(
             return Response.json({ success: true });
           } catch (error) {
             return Response.json({ success: false, error: String(error) }, { status: 500 });
+          }
+        },
+      },
+
+      "/api/config/instances/:name/forwards/:id/model-routing": {
+        async PATCH(req) {
+          try {
+            const forward = getProxyConfigStore().updateModelRouting(
+              req.params.name,
+              req.params.id,
+              await req.json(),
+            );
+            return Response.json({ success: true, forward });
+          } catch (error) {
+            const status = error instanceof ModelRoutingUpdateError
+              ? error.status
+              : error instanceof ZodError || error instanceof SyntaxError ? 400 : 500;
+            return Response.json(
+              {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                issues: error instanceof ZodError ? error.issues : undefined,
+              },
+              { status },
+            );
+          }
+        },
+      },
+
+      "/api/config/instances/:name/forwards/:id": {
+        async PATCH(req) {
+          try {
+            const forward = getProxyConfigStore().updateForwardBasics(
+              req.params.name,
+              req.params.id,
+              await req.json(),
+            );
+            return Response.json({ success: true, forward });
+          } catch (error) {
+            const status = error instanceof ModelRoutingUpdateError
+              ? error.status
+              : error instanceof ZodError || error instanceof SyntaxError ? 400 : 500;
+            return Response.json(
+              {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+                issues: error instanceof ZodError ? error.issues : undefined,
+              },
+              { status },
+            );
           }
         },
       },

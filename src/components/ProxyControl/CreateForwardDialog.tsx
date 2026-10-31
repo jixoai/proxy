@@ -15,8 +15,6 @@ import { Plus, Tag, ExternalLink as LinkIcon } from "lucide-react";
 import { CustomHeadersInput } from "./CustomHeadersInput";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { ProxyConfigFile, ProviderRoutingConfig } from "@/types/proxy";
-import { ProviderRoutingInput } from "./ProviderRoutingInput";
-import { createProviderRoutingDraft, parseProviderRoutingDraft } from "@/lib/provider-routing-form";
 
 interface CreateForwardDialogProps {
   instanceName: string;
@@ -50,7 +48,6 @@ export function CreateForwardDialog({
   const [customHeaders, setCustomHeaders] = useState("");
   const [hooks, setHooks] = useState("");
   const [timeoutValue, setTimeoutValue] = useState("");
-  const [routing, setRouting] = useState(() => createProviderRoutingDraft());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -65,7 +62,6 @@ export function CreateForwardDialog({
       setDescription(initialData.description ?? "");
       setCustomHeaders(initialData.headers ? JSON.stringify(initialData.headers, null, 2) : "");
       setHooks(initialData.hooks ?? "");
-      setRouting(createProviderRoutingDraft(initialData));
     }
   };
 
@@ -132,7 +128,7 @@ export function CreateForwardDialog({
         headers,
         hooks: parsedHooks,
         timeout: parsedTimeout,
-        ...parseProviderRoutingDraft(routing),
+        modelRouting: initialData?.modelRouting ?? null,
       });
 
       const saveResponse = await fetch("/api/config", {
@@ -156,7 +152,6 @@ export function CreateForwardDialog({
       setCustomHeaders("");
       setHooks("");
       setTimeoutValue("");
-      setRouting(createProviderRoutingDraft());
       onCreated(createdName);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
@@ -258,13 +253,9 @@ export function CreateForwardDialog({
                   请求超时时间（秒）。留空表示无超时限制。
                 </p>
               </div>
-              <ProviderRoutingInput
-                value={routing}
-                onChange={setRouting}
-                hasLegacyRewrite={
-                  /x-target-model/i.test(customHeaders) || hooks.includes("model-rewrite")
-                }
-              />
+              <p className="text-muted-foreground text-xs">
+                模型、别名和 API 可在创建后的规则卡片中直接配置。
+              </p>
               {error && (
                 <div role="alert" className="text-destructive text-sm">
                   {error}

@@ -48,7 +48,7 @@ const headersSchema = z
   })
   .default(null);
 
-export const proxyForwardSchema = z
+const proxyForwardObjectSchema = z
   .object({
     id: z.string().trim().min(1).optional(),
     name: z.string().min(1).trim(),
@@ -70,12 +70,28 @@ export const proxyForwardSchema = z
     hooks: hooksSchema,
     timeout: z.number().finite().nonnegative().optional().nullable(),
   })
-  .extend(providerRoutingSchema.shape)
-  .transform<ProxyForwardConfig>((forward) => ({
+  .extend(providerRoutingSchema.shape);
+
+export const forwardBasicsUpdateSchema = z
+  .object({
+    name: z.unknown().optional(),
+    target: z.unknown().optional(),
+    description: z.unknown().optional(),
+    path: z.unknown().optional(),
+    methods: z.unknown().optional(),
+    headers: z.unknown().optional(),
+    hooks: z.unknown().optional(),
+    timeout: z.unknown().optional(),
+  })
+  .strict();
+
+export const proxyForwardSchema = proxyForwardObjectSchema.transform<ProxyForwardConfig>(
+  (forward) => ({
     ...forward,
     methods:
       forward.methods && forward.methods.length > 0 ? Array.from(new Set(forward.methods)) : ["*"],
-  }));
+  }),
+);
 
 export const proxyInstanceSettingsSchema = z
   .object({
@@ -102,16 +118,15 @@ export const proxyInstanceSchema = z
     settings: instance.settings ?? null,
   }));
 
-export const proxyGlobalSettingsSchema = z
-  .preprocess(
-    (value) => (value == null ? undefined : value),
-    z
-      .object({
-        frontendAutoPullConfig: z.boolean().default(true),
-        dbPath: z.string().default(DEFAULT_DB_PATH_TEMPLATE),
-      })
-      .default({ frontendAutoPullConfig: true, dbPath: DEFAULT_DB_PATH_TEMPLATE }),
-  );
+export const proxyGlobalSettingsSchema = z.preprocess(
+  (value) => (value == null ? undefined : value),
+  z
+    .object({
+      frontendAutoPullConfig: z.boolean().default(true),
+      dbPath: z.string().default(DEFAULT_DB_PATH_TEMPLATE),
+    })
+    .default({ frontendAutoPullConfig: true, dbPath: DEFAULT_DB_PATH_TEMPLATE }),
+);
 
 export const proxyConfigSchema = z
   .object({

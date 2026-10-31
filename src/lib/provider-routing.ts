@@ -1,4 +1,4 @@
-import type { ApiFormat, ProviderRoutingConfig } from "../types/proxy";
+import type { ApiFormat, ModelRoutingEntry, ProviderRoutingConfig } from "../types/proxy";
 
 export interface ModelRequest {
   model: string | null;
@@ -62,9 +62,26 @@ export function resolveProviderModel(
   original: string | null,
 ): string | null {
   if (original === null) return null;
-  return config.modelMapping && Object.hasOwn(config.modelMapping, original)
-    ? config.modelMapping[original]!
-    : original;
+  return findProviderModel(config, original)?.name ?? original;
+}
+
+export function findProviderModel(
+  config: ProviderRoutingConfig,
+  model: string | null,
+): ModelRoutingEntry | undefined {
+  return model === null
+    ? undefined
+    : config.modelRouting?.models.find(
+        (entry) => entry.name === model || entry.aliases?.includes(model),
+      );
+}
+
+export function hasProviderModelAlias(
+  config: ProviderRoutingConfig,
+  model: string | null,
+): boolean {
+  const entry = findProviderModel(config, model);
+  return Boolean(entry && entry.name !== model);
 }
 
 export function providerIncompatibility(
@@ -72,20 +89,15 @@ export function providerIncompatibility(
   request: ModelRequest,
   model: string | null,
   deferModel = false,
-  apiConfig: ProviderRoutingConfig = config,
 ): "api_not_supported" | "model_not_supported" | "missing_model" | null {
   const format = request.apiFormat;
-  if (format && apiConfig.apiFormats?.length && !apiConfig.apiFormats.includes(format))
-    return "api_not_supported";
   if (deferModel) return null;
-  if (request.requiresModel && config.models?.length) {
+  const entry = config.modelRouting?.models.find((entry) => entry.name === model);
+  if (request.requiresModel && config.modelRouting?.mode === "listed") {
     if (model === null) return "missing_model";
-    if (!config.models.includes(model)) return "model_not_supported";
+    if (!entry) return "model_not_supported";
   }
-  const formats =
-    model && apiConfig.modelApiFormats && Object.hasOwn(apiConfig.modelApiFormats, model)
-      ? apiConfig.modelApiFormats[model]
-      : null;
+  const formats = entry?.apiFormats;
   if (format && formats?.length && !formats.includes(format)) return "api_not_supported";
   return null;
 }
@@ -97,10 +109,5 @@ export function rewriteRequestModel(body: Buffer, model: string): Buffer {
 }
 
 export function hasProviderRouting(config: ProviderRoutingConfig): boolean {
-  return Boolean(
-    config.models?.length ||
-    config.apiFormats?.length ||
-    Object.keys(config.modelMapping ?? {}).length ||
-    Object.values(config.modelApiFormats ?? {}).some((formats) => formats.length),
-  );
+  return Boolean(config.modelRouting?.mode === "listed" || config.modelRouting?.models.length);
 }

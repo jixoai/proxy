@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { ProxyConfigStore } from "./store/proxy-config-store";
 import type { ProxyConfigFile, ProxyForwardConfig, ProxyInstanceConfig } from "../types/proxy";
 import { normalizeForwardGroups } from "./forward-utils";
+import { proxyConfigSchema } from "./config-schema";
 
 const DEFAULT_CONFIG_PATH = path.resolve(process.cwd(), "proxy-config.json");
 
@@ -54,6 +55,7 @@ export function loadConfig(): ProxyConfigFile {
 }
 
 export function saveConfig(config: ProxyConfigFile): void {
+  config = proxyConfigSchema.parse(config);
   // For backward compatibility, we need to update the store's data and save
   const currentStore = getStore();
 

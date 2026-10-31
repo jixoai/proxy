@@ -155,10 +155,10 @@ beforeAll(async () => {
               name: "models",
               path: "/group",
               target: upstream.url.origin,
-              models: ["startup"],
-              modelMapping: { local: "startup" },
-              apiFormats: ["responses"],
-              modelApiFormats: { startup: ["responses"] },
+              modelRouting: {
+                mode: "listed",
+                models: [{ name: "startup", aliases: ["local"], apiFormats: ["responses"] }],
+              },
             },
           ],
         },
@@ -168,10 +168,10 @@ beforeAll(async () => {
   setConfigFilePath(configPath);
   await manager.startInstance("routing-test");
   expect((await manager.getInstanceWorkerConfig("routing-test"))?.forwards[0]).toMatchObject({
-    models: ["startup"],
-    modelMapping: { local: "startup" },
-    apiFormats: ["responses"],
-    modelApiFormats: { startup: ["responses"] },
+    modelRouting: {
+      mode: "listed",
+      models: [{ name: "startup", aliases: ["local"], apiFormats: ["responses"] }],
+    },
   });
   expect(await manager.checkInstanceConfigSync("routing-test")).toBe(true);
 }, 15000);
@@ -199,9 +199,25 @@ test("default provider passes arbitrary models and original JSON bytes", async (
 
 test("multiple model names select the right enabled provider in order", async () => {
   await configure([
-    { endpoint: "disabled", models: ["glm-5.3-flash"], enabled: false },
-    { endpoint: "full", models: ["glm-5.3"] },
-    { endpoint: "flash", models: ["glm-5.3-flash"] },
+    {
+      endpoint: "disabled",
+      enabled: false,
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "glm-5.3-flash", aliases: [], apiFormats: [] }],
+      },
+    },
+    {
+      endpoint: "full",
+      modelRouting: { mode: "listed", models: [{ name: "glm-5.3", aliases: [], apiFormats: [] }] },
+    },
+    {
+      endpoint: "flash",
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "glm-5.3-flash", aliases: [], apiFormats: [] }],
+      },
+    },
   ]);
   expect((await request("glm-5.3")).status).toBe(200);
   expect((await request("glm-5.3-flash")).status).toBe(200);
@@ -212,7 +228,17 @@ test("multiple model names select the right enabled provider in order", async ()
 });
 
 test("multiple mappings route by target model and unmatched names still pass without a whitelist", async () => {
-  await configure([{ modelMapping: { local: "glm-5.3", fast: "glm-5.3-flash" } }]);
+  await configure([
+    {
+      modelRouting: {
+        mode: "all",
+        models: [
+          { name: "glm-5.3", aliases: ["local"], apiFormats: [] },
+          { name: "glm-5.3-flash", aliases: ["fast"], apiFormats: [] },
+        ],
+      },
+    },
+  ]);
   for (const model of ["local", "fast", "new-model"])
     expect((await request(model)).status).toBe(200);
   expect(upstreamRequests.map((item) => item.model)).toEqual([
@@ -220,15 +246,34 @@ test("multiple mappings route by target model and unmatched names still pass wit
     "glm-5.3-flash",
     "new-model",
   ]);
-  await configure([{ models: ["glm-5.3"], modelMapping: { local: "glm-5.3" } }]);
+  await configure([
+    {
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "glm-5.3", aliases: ["local"], apiFormats: [] }],
+      },
+    },
+  ]);
   expect((await request()).status).toBe(200);
   expect(upstreamRequests[0]!.model).toBe("glm-5.3");
 });
 
 test("concurrent model requests keep provider selection and mappings isolated", async () => {
   await configure([
-    { endpoint: "full", models: ["glm-5.3"], modelMapping: { local: "glm-5.3" } },
-    { endpoint: "flash", models: ["glm-5.3-flash"], modelMapping: { fast: "glm-5.3-flash" } },
+    {
+      endpoint: "full",
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "glm-5.3", aliases: ["local"], apiFormats: [] }],
+      },
+    },
+    {
+      endpoint: "flash",
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "glm-5.3-flash", aliases: ["fast"], apiFormats: [] }],
+      },
+    },
   ]);
   await Promise.all(
     Array.from({ length: 12 }, async (_, index) => {
@@ -242,10 +287,91 @@ test("concurrent model requests keep provider selection and mappings isolated", 
   expect(upstreamRequests).toHaveLength(12);
 });
 
+test("two models on the same provider have independent APIs, including aliases and unknown defaults", async () => {
+  await configure([
+    {
+      endpoint: "primary",
+      modelRouting: {
+        mode: "all",
+        models: [
+          { name: "glm-5.3", aliases: ["local"], apiFormats: ["responses"] },
+          { name: "glm-5.3-flash", aliases: ["fast"], apiFormats: ["anthropic-messages"] },
+        ],
+      },
+    },
+    {
+      endpoint: "fallback",
+      modelRouting: {
+        mode: "listed",
+        models: [
+          { name: "glm-5.3", aliases: ["local"], apiFormats: ["anthropic-messages"] },
+          { name: "glm-5.3-flash", aliases: ["fast"], apiFormats: ["responses"] },
+        ],
+      },
+    },
+  ]);
+  for (const model of ["local", "glm-5.3"]) {
+    expect((await request(model)).status).toBe(200);
+    expect(upstreamRequests.at(-1)).toMatchObject({
+      path: "/primary/v1/responses",
+      model: "glm-5.3",
+    });
+    expect((await request(model, "/v1/messages")).status).toBe(200);
+    expect(upstreamRequests.at(-1)).toMatchObject({
+      path: "/fallback/v1/messages",
+      model: "glm-5.3",
+    });
+  }
+  for (const model of ["fast", "glm-5.3-flash"]) {
+    expect((await request(model)).status).toBe(200);
+    expect(upstreamRequests.at(-1)).toMatchObject({
+      path: "/fallback/v1/responses",
+      model: "glm-5.3-flash",
+    });
+    expect((await request(model, "/v1/messages")).status).toBe(200);
+    expect(upstreamRequests.at(-1)).toMatchObject({
+      path: "/primary/v1/messages",
+      model: "glm-5.3-flash",
+    });
+  }
+  for (const suffix of ["/v1/responses", "/v1/messages", "/v1/chat/completions"]) {
+    expect((await request("unknown", suffix)).status).toBe(200);
+    expect(upstreamRequests.at(-1)).toMatchObject({ path: `/primary${suffix}`, model: "unknown" });
+  }
+});
+
+test("legacy-hook final model API is enforced before forwarding", async () => {
+  await configure([
+    {
+      endpoint: "wrong",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "legacy", apiFormats: ["anthropic-messages"] }],
+      },
+      hooks: rewriteHook("legacy"),
+    },
+    { endpoint: "fallback" },
+  ]);
+  expect((await request()).status).toBe(200);
+  expect(upstreamRequests.map((item) => item.path)).toEqual(["/fallback/v1/responses"]);
+});
+
 test("fallback remaps each provider from the original body", async () => {
   await configure([
-    { endpoint: "fail", models: ["first"], modelMapping: { local: "first" } },
-    { endpoint: "ok", models: ["second"], modelMapping: { local: "second" } },
+    {
+      endpoint: "fail",
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "first", aliases: ["local"], apiFormats: [] }],
+      },
+    },
+    {
+      endpoint: "ok",
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "second", aliases: ["local"], apiFormats: [] }],
+      },
+    },
   ]);
   const response = await request("local", "/v1/responses", { metadata: { keep: true } });
   expect(response.status).toBe(200);
@@ -256,13 +382,27 @@ test("fallback remaps each provider from the original body", async () => {
 
 test("API filtering and per-model restrictions skip incompatible providers", async () => {
   await configure([
-    { endpoint: "messages", apiFormats: ["anthropic-messages"] },
+    {
+      endpoint: "messages",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["anthropic-messages"] }],
+      },
+    },
     {
       endpoint: "flash",
-      modelMapping: { local: "flash" },
-      modelApiFormats: { flash: ["anthropic-messages"] },
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "flash", aliases: ["local"], apiFormats: ["anthropic-messages"] }],
+      },
     },
-    { endpoint: "responses", apiFormats: ["responses"] },
+    {
+      endpoint: "responses",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["responses"] }],
+      },
+    },
   ]);
   expect((await request()).status).toBe(200);
   expect(upstreamRequests.map((item) => item.path)).toEqual(["/responses/v1/responses"]);
@@ -272,21 +412,47 @@ test("API filtering and per-model restrictions skip incompatible providers", asy
 
 test("Chat Completions and per-model API declarations filter by the original protocol", async () => {
   await configure([
-    { endpoint: "wrong", apiFormats: ["responses"] },
-    { endpoint: "model-api", modelApiFormats: { local: ["anthropic-messages"] } },
-    { endpoint: "chat", apiFormats: ["chat-completions"] },
+    {
+      endpoint: "wrong",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["responses"] }],
+      },
+    },
+    {
+      endpoint: "model-api",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["anthropic-messages"] }],
+      },
+    },
+    {
+      endpoint: "chat",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["chat-completions"] }],
+      },
+    },
   ]);
   expect((await request("local", "/v1/chat/completions")).status).toBe(200);
   expect(upstreamRequests.map((item) => item.path)).toEqual(["/chat/v1/chat/completions"]);
   await configure([
-    { apiFormats: ["responses"], modelApiFormats: { local: ["anthropic-messages"] } },
+    {
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["anthropic-messages"] }],
+      },
+    },
   ]);
   expect((await request()).status).toBe(422);
   expect(upstreamRequests).toHaveLength(0);
 });
 
 test("no compatible provider returns 422 with no upstream call or unrelated fallback", async () => {
-  await configure([{ models: ["other"] }, { name: "unrelated", path: "/other" }]);
+  await configure([
+    { modelRouting: { mode: "listed", models: [{ name: "other", aliases: [], apiFormats: [] }] } },
+    { name: "unrelated", path: "/other" },
+  ]);
   const response = await request();
   expect(response.status).toBe(422);
   expect((await response.json()).error).toMatchObject({
@@ -299,7 +465,9 @@ test("no compatible provider returns 422 with no upstream call or unrelated fall
 });
 
 test("missing and invalid models return 400 only when explicit restrictions require them", async () => {
-  await configure([{ models: ["target"] }]);
+  await configure([
+    { modelRouting: { mode: "listed", models: [{ name: "target", aliases: [], apiFormats: [] }] } },
+  ]);
   for (const model of [null, 123, ""]) expect((await request(model)).status).toBe(400);
   expect(
     (
@@ -323,7 +491,14 @@ test("missing and invalid models return 400 only when explicit restrictions requ
 });
 
 test("generic requests and model-list GET do not require a model", async () => {
-  await configure([{ models: ["target"], apiFormats: ["responses"] }]);
+  await configure([
+    {
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "target", aliases: [], apiFormats: ["responses"] }],
+      },
+    },
+  ]);
   expect((await fetch(`http://127.0.0.1:${port}/group/v1/models`)).status).toBe(200);
   expect(
     (await fetch(`http://127.0.0.1:${port}/group/health`, { method: "POST", body: "not-json" }))
@@ -333,18 +508,31 @@ test("generic requests and model-list GET do not require a model", async () => {
 });
 
 test("legacy model hook is checked after rewriting, new mapping takes precedence", async () => {
-  await configure([{ models: ["legacy"], hooks: rewriteHook("legacy") }]);
+  await configure([
+    {
+      hooks: rewriteHook("legacy"),
+      modelRouting: { mode: "listed", models: [{ name: "legacy", aliases: [], apiFormats: [] }] },
+    },
+  ]);
   expect((await request()).status).toBe(200);
   expect(upstreamRequests[0]!.model).toBe("legacy");
-  await configure([{ models: ["target"], hooks: rewriteHook("wrong") }, { endpoint: "fallback" }]);
+  await configure([
+    {
+      hooks: rewriteHook("wrong"),
+      modelRouting: { mode: "listed", models: [{ name: "target", aliases: [], apiFormats: [] }] },
+    },
+    { endpoint: "fallback" },
+  ]);
   expect((await request()).status).toBe(200);
   expect(upstreamRequests.map((item) => item.path)).toEqual(["/fallback/v1/responses"]);
   await configure([
     {
-      models: ["mapped"],
-      modelMapping: { local: "mapped" },
       headers: { "x-target-model": "old" },
       hooks: rewriteHook("wrong"),
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "mapped", aliases: ["local"], apiFormats: [] }],
+      },
     },
   ]);
   expect((await request()).status).toBe(200);
@@ -357,10 +545,11 @@ test("Responses conversion hooks see the mapped model and client-facing API decl
     {
       endpoint: "v1/messages",
       path: "/group/v1/responses",
-      models: ["mapped"],
-      modelMapping: { local: "mapped" },
-      apiFormats: ["responses"],
       hooks: conversionHook("anthropic4codex"),
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "mapped", aliases: ["local"], apiFormats: ["responses"] }],
+      },
     },
   ]);
   const response = await request("local", "/v1/responses", {
@@ -379,10 +568,11 @@ test("Messages conversion and count_tokens retain their existing behavior", asyn
     {
       endpoint: "v1/responses",
       path: "/group/v1/messages",
-      models: ["mapped"],
-      modelMapping: { local: "mapped" },
-      apiFormats: ["anthropic-messages"],
       hooks: conversionHook("responses4claudecode"),
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "mapped", aliases: ["local"], apiFormats: ["anthropic-messages"] }],
+      },
     },
   ]);
   const response = await request("local", "/v1/messages", {
@@ -405,9 +595,11 @@ test("Messages conversion and count_tokens retain their existing behavior", asyn
 test("local hook responses cannot bypass explicit model restrictions", async () => {
   await configure([
     {
-      models: ["supported"],
-      apiFormats: ["anthropic-messages"],
       hooks: conversionHook("responses4claudecode"),
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "supported", aliases: [], apiFormats: ["anthropic-messages"] }],
+      },
     },
   ]);
   const rejected = await request("unlisted", "/v1/messages/count_tokens", {
@@ -427,8 +619,18 @@ test("local hook responses cannot bypass explicit model restrictions", async () 
 
 test("compact endpoint uses Responses capability and model mapping", async () => {
   await configure([
-    { apiFormats: ["anthropic-messages"] },
-    { apiFormats: ["responses"], modelMapping: { local: "compact-model" } },
+    {
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["anthropic-messages"] }],
+      },
+    },
+    {
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "compact-model", aliases: ["local"], apiFormats: ["responses"] }],
+      },
+    },
   ]);
   expect((await request("local", "/v1/responses/compact")).status).toBe(200);
   expect(upstreamRequests).toHaveLength(1);
@@ -441,15 +643,20 @@ test("Droid alias fallback retains source hooks but uses transport model mapping
       name: "droid",
       path: "/droid",
       endpoint: "fail",
-      modelMapping: { local: "first" },
       hooks: rewriteHook("old-hook"),
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "first", aliases: ["local"], apiFormats: [] }],
+      },
     },
     {
       name: "anthropic",
       path: "/anthropic",
       endpoint: "ok",
-      models: ["second"],
-      modelMapping: { local: "second" },
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "second", aliases: ["local"], apiFormats: [] }],
+      },
     },
   ]);
   const response = await fetch(`http://127.0.0.1:${port}/droid/v1/messages`, {
@@ -463,7 +670,13 @@ test("Droid alias fallback retains source hooks but uses transport model mapping
 
 test("SSE mapping streams without trying a second provider after success", async () => {
   await configure([
-    { endpoint: "sse", modelMapping: { local: "stream-model" } },
+    {
+      endpoint: "sse",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "stream-model", aliases: ["local"], apiFormats: [] }],
+      },
+    },
     { endpoint: "not-used" },
   ]);
   const response = await request("local", "/v1/responses", { stream: true });
@@ -474,10 +687,48 @@ test("SSE mapping streams without trying a second provider after success", async
   expect(upstreamRequests[0]!.model).toBe("stream-model");
 });
 
+test("Droid fallback checks the transport model's API, not the source model's API", async () => {
+  await configure([
+    {
+      name: "droid",
+      path: "/droid",
+      endpoint: "not-called",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "first", aliases: ["local"], apiFormats: ["responses"] }],
+      },
+      hooks: rewriteHook("legacy"),
+    },
+    {
+      name: "anthropic",
+      path: "/anthropic",
+      endpoint: "transport",
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "second", aliases: ["local"], apiFormats: ["anthropic-messages"] }],
+      },
+    },
+  ]);
+  const response = await fetch(`http://127.0.0.1:${port}/droid/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "local", messages: [] }),
+  });
+  expect(response.status).toBe(200);
+  expect(upstreamRequests).toHaveLength(1);
+  expect(upstreamRequests[0]).toMatchObject({ model: "second", path: "/transport/v1/messages" });
+});
+
 test("client abort cancels mapped upstream without fallback", async () => {
   slowAborted = false;
   await configure([
-    { endpoint: "slow", modelMapping: { local: "slow-model" } },
+    {
+      endpoint: "slow",
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "slow-model", aliases: ["local"], apiFormats: [] }],
+      },
+    },
     { endpoint: "not-used" },
   ]);
   const controller = new AbortController();
@@ -496,8 +747,20 @@ test("client abort cancels mapped upstream without fallback", async () => {
 
 test("timeout preserves request-wide abort semantics without replaying to another provider", async () => {
   await configure([
-    { endpoint: "slow", timeout: 1, modelMapping: { local: "slow-model" } },
-    { modelMapping: { local: "fast-model" } },
+    {
+      endpoint: "slow",
+      timeout: 1,
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "slow-model", aliases: ["local"], apiFormats: [] }],
+      },
+    },
+    {
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "fast-model", aliases: ["local"], apiFormats: [] }],
+      },
+    },
   ]);
   const response = await request();
   expect(response.status).toBe(504);
@@ -506,10 +769,10 @@ test("timeout preserves request-wide abort semantics without replaying to anothe
 
 test("capabilities survive worker snapshots and reload changes affect subsequent requests", async () => {
   const routing: ProviderRoutingConfig = {
-    models: ["mapped"],
-    modelMapping: { local: "mapped" },
-    apiFormats: ["responses"],
-    modelApiFormats: { mapped: ["responses"] },
+    modelRouting: {
+      mode: "listed",
+      models: [{ name: "mapped", aliases: ["local"], apiFormats: ["responses"] }],
+    },
   };
   await configure([routing]);
   expect((await manager.getInstanceWorkerConfig("routing-test"))?.forwards[0]).toMatchObject(
@@ -518,20 +781,37 @@ test("capabilities survive worker snapshots and reload changes affect subsequent
   expect(await manager.checkInstanceConfigSync("routing-test")).toBe(true);
   expect(loadConfig().instances[0]!.forwards[0]).toMatchObject(routing);
   expect((await request()).status).toBe(200);
-  await configure([{ models: ["other"] }]);
+  await configure([
+    { modelRouting: { mode: "listed", models: [{ name: "other", aliases: [], apiFormats: [] }] } },
+  ]);
   expect((await request()).status).toBe(422);
   expect(await manager.checkInstanceConfigSync("routing-test")).toBe(true);
-  await configure([{ models: [], modelMapping: {}, apiFormats: [], modelApiFormats: {} }]);
+  await configure([{ modelRouting: null }]);
   expect((await request("new")).status).toBe(200);
   expect(await manager.checkInstanceConfigSync("routing-test")).toBe(true);
 });
 
 test("WebSocket restrictions reject upgrade explicitly", async () => {
   for (const routing of [
-    { models: ["local"] },
-    { modelMapping: { local: "target" } },
-    { apiFormats: ["responses"] },
-    { modelApiFormats: { local: ["responses"] } },
+    { modelRouting: { mode: "listed", models: [{ name: "local", aliases: [], apiFormats: [] }] } },
+    {
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "target", aliases: ["local"], apiFormats: [] }],
+      },
+    },
+    {
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["responses"] }],
+      },
+    },
+    {
+      modelRouting: {
+        mode: "all",
+        models: [{ name: "local", aliases: [], apiFormats: ["responses"] }],
+      },
+    },
   ]) {
     await configure([routing as ProviderRoutingConfig]);
     const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {

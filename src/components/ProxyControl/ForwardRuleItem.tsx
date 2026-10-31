@@ -11,13 +11,15 @@ import { EndpointStatusIndicator } from "@/components/EndpointStatusIndicator";
 import type { ForwardStats } from "@/hooks/useForwardStats";
 import { getHookConfigSummaries, getHookPluginName, hooksConfigToList } from "@/lib/hooks-config";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
-import { API_FORMAT_LABELS, getProviderRoutingConfig } from "@/lib/provider-routing-config";
+import { getProviderRoutingConfig } from "@/lib/provider-routing-config";
+import { InlineModelRouting } from "./InlineModelRouting";
 
 interface ForwardRuleItemProps {
   forward: ProxyForwardConfig;
   forwardIndex: number;
   instanceName: string;
-  onUpdate: () => void;
+  onUpdate: () => void | Promise<void>;
+  showModelRouting?: boolean;
   highlighted?: boolean;
   instanceHeaders?: Record<string, string> | null;
   /** 如果有值，表示会先尝试该规则名 */
@@ -40,6 +42,7 @@ export function ForwardRuleItem({
   showDragHandle = false,
   dragHandleProps,
   stats = null,
+  showModelRouting = true,
 }: ForwardRuleItemProps) {
   const [deleting, setDeleting] = useState(false);
   const { jumpToForwardRule } = useProxyViewer();
@@ -111,172 +114,169 @@ export function ForwardRuleItem({
 
   return (
     <div
-      className={`bg-card flex items-center justify-between gap-4 rounded-lg border p-3 transition-all ${
+      className={`bg-card flex min-w-0 flex-col gap-3 rounded-lg border p-3 transition-all ${
         highlighted ? "border-primary/60 bg-primary/5 shadow-sm" : ""
-      } ${priorRuleName ? "opacity-75" : ""} ${
-        isDisabled ? "bg-muted/30 border-dashed opacity-50" : ""
-      }`}
+      } ${priorRuleName ? "opacity-75" : ""} ${isDisabled ? "bg-muted/30 border-dashed" : ""}`}
     >
-      <div className="flex min-w-0 flex-1 items-start gap-3">
-        {showDragHandle && (
-          <div
-            className="text-muted-foreground flex cursor-grab items-center pt-1"
-            {...dragHandleProps}
-          >
-            <GripVertical className="h-4 w-4" />
-          </div>
-        )}
-        <EndpointStatusIndicator stats={stats} size="md" />
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className={`font-medium ${isDisabled ? "text-muted-foreground" : ""}`}>
-              {forward.name}
-            </span>
-            <Badge variant="outline" className="px-1.5 py-0.5 font-mono text-[10px]">
-              {methodLabel}
-            </Badge>
-            <p className="text-muted-foreground text-xs">
-              {forward.models?.length ? `${forward.models.length} 个模型` : "全部模型"}
-              {" · "}
-              {Object.keys(forward.modelMapping ?? {}).length
-                ? `${Object.keys(forward.modelMapping!).length} 条映射`
-                : "模型原名透传"}
-              {" · "}
-              {forward.apiFormats?.length
-                ? forward.apiFormats.map((format) => API_FORMAT_LABELS[format]).join(" / ")
-                : "API 不限制"}
-              {Object.keys(forward.modelApiFormats ?? {}).length > 0 && " · 有模型 API 限制"}
-            </p>
-            {priorRuleName && (
-              <Badge variant="outline" className="border-amber-300 text-[10px] text-amber-600">
-                会先尝试 {priorRuleName}
-              </Badge>
-            )}
-            {customHeadersCount > 0 && (
-              <Badge variant="outline" className="text-xs">
-                {customHeadersCount} 个自定义 Header
-              </Badge>
-            )}
-          </div>
-
-          {forward.description && (
-            <p className="text-muted-foreground text-xs">{forward.description}</p>
-          )}
-
-          <div className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs">
-            <div className="flex items-center gap-1">
-              <span>路由前缀</span>
-              <span className="bg-muted rounded px-1 py-0.5 font-mono">{routeLabel}</span>
-            </div>
-            {hooksList.length > 0 && (
-              <div className="flex items-center gap-1">
-                <span>Hooks</span>
-                <span className="bg-muted rounded px-1 py-0.5 font-mono">{hooksLabel}</span>
-                {hookSummaries.map((summary, index) =>
-                  summary.tooltip ? (
-                    <Tooltip key={`${summary.label}-${index}`}>
-                      <TooltipTrigger asChild>
-                        <Badge
-                          variant="outline"
-                          className="cursor-help px-1.5 py-0 font-mono text-[10px]"
-                        >
-                          {summary.label}
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs font-mono text-[11px] whitespace-pre-wrap">
-                        {summary.tooltip}
-                      </TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <Badge
-                      key={`${summary.label}-${index}`}
-                      variant="outline"
-                      className="px-1.5 py-0 font-mono text-[10px]"
-                    >
-                      {summary.label}
-                    </Badge>
-                  ),
-                )}
-                {disabledHookCount > 0 && (
-                  <span className="text-muted-foreground text-[10px]">
-                    ({disabledHookCount} disabled)
-                  </span>
-                )}
-              </div>
-            )}
-            <a
-              href={forward.target}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`flex items-center gap-1 hover:underline ${isDisabled ? "text-muted-foreground" : "text-primary"}`}
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-[1_1_18rem] items-start gap-3">
+          {showDragHandle && (
+            <div
+              className="text-muted-foreground flex cursor-grab items-center pt-1"
+              {...dragHandleProps}
             >
-              {forward.target}
-              <ExternalLink className="h-3 w-3 flex-shrink-0" />
-            </a>
-            {priorRuleName && (
-              <span className="text-[11px] text-amber-600">
-                若 {priorRuleName} 失败会回落到此规则
+              <GripVertical className="h-4 w-4" />
+            </div>
+          )}
+          <EndpointStatusIndicator stats={stats} size="md" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className={`font-medium ${isDisabled ? "text-muted-foreground" : ""}`}>
+                {forward.name}
               </span>
+              <Badge variant="outline" className="px-1.5 py-0.5 font-mono text-[10px]">
+                {methodLabel}
+              </Badge>
+              {priorRuleName && (
+                <Badge variant="outline" className="border-amber-300 text-[10px] text-amber-600">
+                  会先尝试 {priorRuleName}
+                </Badge>
+              )}
+              {customHeadersCount > 0 && (
+                <Badge variant="outline" className="text-xs">
+                  {customHeadersCount} 个自定义 Header
+                </Badge>
+              )}
+            </div>
+
+            {forward.description && (
+              <p className="text-muted-foreground text-xs">{forward.description}</p>
             )}
+
+            <div className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs">
+              <div className="flex items-center gap-1">
+                <span>路由前缀</span>
+                <span className="bg-muted rounded px-1 py-0.5 font-mono">{routeLabel}</span>
+              </div>
+              {hooksList.length > 0 && (
+                <div className="flex items-center gap-1">
+                  <span>Hooks</span>
+                  <span className="bg-muted rounded px-1 py-0.5 font-mono">{hooksLabel}</span>
+                  {hookSummaries.map((summary, index) =>
+                    summary.tooltip ? (
+                      <Tooltip key={`${summary.label}-${index}`}>
+                        <TooltipTrigger asChild>
+                          <Badge
+                            variant="outline"
+                            className="cursor-help px-1.5 py-0 font-mono text-[10px]"
+                          >
+                            {summary.label}
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs font-mono text-[11px] whitespace-pre-wrap">
+                          {summary.tooltip}
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <Badge
+                        key={`${summary.label}-${index}`}
+                        variant="outline"
+                        className="px-1.5 py-0 font-mono text-[10px]"
+                      >
+                        {summary.label}
+                      </Badge>
+                    ),
+                  )}
+                  {disabledHookCount > 0 && (
+                    <span className="text-muted-foreground text-[10px]">
+                      ({disabledHookCount} disabled)
+                    </span>
+                  )}
+                </div>
+              )}
+              <a
+                href={forward.target}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`flex min-w-0 items-center gap-1 break-all hover:underline ${isDisabled ? "text-muted-foreground" : "text-primary"}`}
+              >
+                {forward.target}
+                <ExternalLink className="h-3 w-3 flex-shrink-0" />
+              </a>
+              {priorRuleName && (
+                <span className="text-[11px] text-amber-600">
+                  若 {priorRuleName} 失败会回落到此规则
+                </span>
+              )}
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="ml-4 flex items-center gap-3">
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="inline-flex">
-                <Switch
-                  checked={forward.enabled}
-                  onCheckedChange={handleToggle}
-                  aria-label={forward.enabled ? "禁用规则" : "启用规则"}
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              {forward.enabled ? "已启用，点击禁用" : "已禁用，点击启用"}
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-        <EditForwardDialog
-          forward={forward}
-          forwardIndex={forwardIndex}
-          instanceName={instanceName}
-          instanceHeaders={instanceHeaders}
-          onUpdated={onUpdate}
-          trigger={
-            <Button size="sm" variant="ghost">
-              <Edit className="h-4 w-4" />
-            </Button>
-          }
-        />
-        <CreateForwardDialog
-          instanceName={instanceName}
-          onCreated={(newName) => {
-            onUpdate();
-            if (newName) jumpToForwardRule(instanceName, newName);
-          }}
-          initialData={{
-            ...getProviderRoutingConfig(forward),
-            name: forward.name,
-            path: forward.path ?? undefined,
-            target: forward.target,
-            methods: forward.methods,
-            description: forward.description,
-            headers: forward.headers,
-            hooks: forward.hooks ? JSON.stringify(forward.hooks) : undefined,
-          }}
-          trigger={
-            <Button size="sm" variant="ghost">
-              <Copy className="h-4 w-4" />
-            </Button>
-          }
-        />
-        <Button size="sm" variant="ghost" onClick={handleDelete} disabled={deleting}>
-          <Trash2 className="text-destructive h-4 w-4" />
-        </Button>
+        <div className="ml-auto flex shrink-0 flex-wrap items-center gap-1">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="inline-flex">
+                  <Switch
+                    checked={forward.enabled}
+                    onCheckedChange={handleToggle}
+                    aria-label={forward.enabled ? "禁用规则" : "启用规则"}
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                {forward.enabled ? "已启用，点击禁用" : "已禁用，点击启用"}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <EditForwardDialog
+            forward={forward}
+            forwardIndex={forwardIndex}
+            instanceName={instanceName}
+            instanceHeaders={instanceHeaders}
+            onUpdated={onUpdate}
+            trigger={
+              <Button size="sm" variant="ghost" aria-label={`基础设置 ${forward.name}`}>
+                <Edit className="h-4 w-4" />
+              </Button>
+            }
+          />
+          <CreateForwardDialog
+            instanceName={instanceName}
+            onCreated={(newName) => {
+              onUpdate();
+              if (newName) jumpToForwardRule(instanceName, newName);
+            }}
+            initialData={{
+              ...getProviderRoutingConfig(forward),
+              name: forward.name,
+              path: forward.path ?? undefined,
+              target: forward.target,
+              methods: forward.methods,
+              description: forward.description,
+              headers: forward.headers,
+              hooks: forward.hooks ? JSON.stringify(forward.hooks) : undefined,
+            }}
+            trigger={
+              <Button size="sm" variant="ghost" aria-label={`复制规则 ${forward.name}`}>
+                <Copy className="h-4 w-4" />
+              </Button>
+            }
+          />
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label={`删除规则 ${forward.name}`}
+            onClick={handleDelete}
+            disabled={deleting}
+          >
+            <Trash2 className="text-destructive h-4 w-4" />
+          </Button>
+        </div>
       </div>
+      {showModelRouting && (
+        <InlineModelRouting forward={forward} instanceName={instanceName} onUpdate={onUpdate} />
+      )}
     </div>
   );
 }

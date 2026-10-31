@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { CreateForwardDialog } from "./CreateForwardDialog";
 import { ForwardRuleItem } from "./ForwardRuleItem";
+import { ModelRoutingDraftProvider } from "./ModelRoutingDraftProvider";
 import type { ProxyConfigFile, ProxyForwardConfig } from "@/types/proxy";
 import { useProxyViewer } from "@/components/ProxyViewerContext";
 import { normalizeForwardGroups, normalizePathname } from "@/lib/forward-utils";
@@ -212,7 +213,11 @@ function SortableItem({
 }
 
 export function ForwardRulesList(props: ForwardRulesListProps) {
-  return <InstanceForwardRulesList key={props.instanceName} {...props} />;
+  return (
+    <ModelRoutingDraftProvider key={props.instanceName}>
+      <InstanceForwardRulesList {...props} />
+    </ModelRoutingDraftProvider>
+  );
 }
 
 function InstanceForwardRulesList({ instanceName, focusedForwardName }: ForwardRulesListProps) {
@@ -254,6 +259,7 @@ function InstanceForwardRulesList({ instanceName, focusedForwardName }: ForwardR
   const loadForwards = useCallback(async () => {
     try {
       const response = await fetch("/api/config");
+      if (!response.ok) throw new Error("无法载入最新配置，请重试");
       const config: ProxyConfigFile = await response.json();
       setConfigData(config);
 
@@ -267,8 +273,10 @@ function InstanceForwardRulesList({ instanceName, focusedForwardName }: ForwardR
         setForwards([]);
         setInstanceHeaders(null);
       }
+      return true;
     } catch (error) {
       console.error("Failed to load config:", error);
+      return false;
     } finally {
       setLoading(false);
     }
@@ -653,12 +661,15 @@ function InstanceForwardRulesList({ instanceName, focusedForwardName }: ForwardR
                           <div className="flex flex-col gap-2 p-2">
                             {group.items.map((forward, itemIndex) => (
                               <SortableItem
-                                key={forward.originalIndex}
+                                key={forward.id}
                                 id={`item-${forward.originalIndex}`}
                                 forward={forward}
                                 instanceName={instanceName}
                                 instanceHeaders={instanceHeaders}
-                                onUpdate={loadForwards}
+                                onUpdate={async () => {
+                                  if (!(await loadForwards()))
+                                    throw new Error("无法载入最新配置，请重试");
+                                }}
                                 highlighted={focusedForwardIndex === forward.originalIndex}
                                 priorRuleName={priorRuleNames.get(forward.originalIndex) ?? null}
                                 showDragHandle={isMultiItemGroup}
@@ -692,6 +703,7 @@ function InstanceForwardRulesList({ instanceName, focusedForwardName }: ForwardR
                     showName={false}
                     showDragHandle={true}
                     stats={null}
+                    showModelRouting={false}
                   />
                 </div>
               ) : null}

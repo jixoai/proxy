@@ -25,6 +25,7 @@ import { getProviderRoutingConfig } from "./lib/provider-routing-config";
 import { hooksConfigToList } from "./lib/hooks-config";
 import {
   hasProviderRouting,
+  hasProviderModelAlias,
   inspectModelRequest,
   providerIncompatibility,
   resolveProviderModel,
@@ -627,12 +628,11 @@ async function main(argv: string[]) {
       (candidate) => {
         const rule = candidate.transportRule;
         const mappedModel = resolveProviderModel(rule, modelRequest.model);
-        const hasMapping = modelRequest.model !== null &&
-          Object.hasOwn(rule.modelMapping ?? {}, modelRequest.model);
+        const hasMapping = hasProviderModelAlias(rule, modelRequest.model);
         const deferModel = !hasMapping &&
           (hasActiveHooks(instanceHooks) || hasActiveHooks(candidate.hookRule.hooks));
         const reason = providerIncompatibility(
-          rule, modelRequest, mappedModel, deferModel, candidate.hookRule,
+          rule, modelRequest, mappedModel, deferModel,
         );
         if (reason) excludedProviders.push({ reason });
         return !reason;
@@ -759,7 +759,7 @@ async function main(argv: string[]) {
       const mappedModel = resolveProviderModel(forwardRule, modelRequest.model);
       const hasMapping =
         modelRequest.requiresModel && modelRequest.model !== null &&
-        Object.hasOwn(forwardRule.modelMapping ?? {}, modelRequest.model);
+        hasProviderModelAlias(forwardRule, modelRequest.model);
       if (hasMapping && mappedModel !== null) {
         hookedRequestBody = rewriteRequestModel(originalRequestBody, mappedModel);
         hookedForwardHeaders["x-target-model"] = mappedModel;
@@ -786,7 +786,7 @@ async function main(argv: string[]) {
           // 检查是否是 respondWith - 短路请求，直接返回响应
           if (hookExecResult.respondWith) {
             const shortcutReason = providerIncompatibility(
-              forwardRule, modelRequest, mappedModel, false, candidate.hookRule,
+              forwardRule, modelRequest, mappedModel,
             );
             if (shortcutReason) {
               excludedProviders.push({ reason: shortcutReason });
@@ -832,7 +832,7 @@ async function main(argv: string[]) {
           ? inspectModelRequest(hookedRequestBody, method, requestUrl.pathname, matched.rule.path).model
           : modelRequest.model;
       const finalReason = providerIncompatibility(
-        forwardRule, modelRequest, finalModel, false, candidate.hookRule,
+        forwardRule, modelRequest, finalModel,
       );
       if (finalReason) {
         excludedProviders.push({ reason: finalReason });

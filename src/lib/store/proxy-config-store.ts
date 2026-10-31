@@ -2,9 +2,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { BaseStore, type StoreOptions, type StoreChangeEvent } from "./base-store";
-import { proxyConfigSchema, parseConfigFile, serializeConfigFile } from "../config-schema";
+import {
+  proxyConfigSchema,
+  parseConfigFile,
+  serializeConfigFile,
+  forwardBasicsUpdateSchema,
+  proxyForwardSchema,
+} from "../config-schema";
 import type { ProxyConfigFile, ProxyInstanceConfig, ProxyForwardConfig } from "../../types/proxy";
 import { getConfigExample } from "../config-template.macro" with { type: "macro" };
+import { modelRoutingFingerprint } from "../provider-routing-config";
+import { ModelRoutingUpdateError, modelRoutingUpdateSchema } from "../model-routing-update";
 
 /** 生成 UUID */
 function generateUUID(): string {
@@ -152,7 +160,7 @@ export class ProxyConfigStore extends BaseStore<ProxyConfigFile> {
 
   /** 保存配置前确保所有 forwards 都有 id */
   private saveWithIds(config: ProxyConfigFile, changeType: "create" | "update" | "delete"): void {
-    const configWithIds = ensureForwardIds(config);
+    const configWithIds = ensureForwardIds(proxyConfigSchema.parse(config));
     this.setData(configWithIds, changeType);
     this.saveToFileSync();
   }
@@ -168,6 +176,57 @@ export class ProxyConfigStore extends BaseStore<ProxyConfigFile> {
   getInstanceByName(name: string): ProxyInstanceConfig | null {
     const instance = this.data.instances.find((i) => i.name === name);
     return instance ? { ...instance, forwards: [...instance.forwards] } : null;
+  }
+
+  updateModelRouting(instanceName: string, forwardId: string, input: unknown): ProxyForwardConfig {
+    const patch = modelRoutingUpdateSchema.parse(input);
+    const config = this.cloneData(this.data);
+    const instance = config.instances.find((item) => item.name === instanceName);
+    const index = instance?.forwards.findIndex((item) => item.id === forwardId) ?? -1;
+    if (!instance || index === -1)
+      throw new ModelRoutingUpdateError(404, "规则已删除或不存在，请重新加载配置");
+    const previousForward = instance.forwards[index]!;
+    if (
+      modelRoutingFingerprint(previousForward.modelRouting) !==
+      modelRoutingFingerprint(patch.expected)
+    ) {
+      throw new ModelRoutingUpdateError(
+        409,
+        "模型配置已被其他操作修改，草稿已保留，请重新载入后重试",
+      );
+    }
+    const forward = { ...previousForward, modelRouting: patch.modelRouting };
+    instance.forwards[index] = forward;
+    this.saveWithIds(config, "update");
+    this.emit("forward-change", {
+      type: "update",
+      instanceName,
+      forwardIndex: index,
+      forward,
+      previousForward,
+    } satisfies ForwardChangeEvent);
+    return forward;
+  }
+
+  updateForwardBasics(instanceName: string, forwardId: string, input: unknown): ProxyForwardConfig {
+    const patch = forwardBasicsUpdateSchema.parse(input);
+    const config = this.cloneData(this.data);
+    const instance = config.instances.find((item) => item.name === instanceName);
+    const index = instance?.forwards.findIndex((item) => item.id === forwardId) ?? -1;
+    if (!instance || index === -1)
+      throw new ModelRoutingUpdateError(404, "规则已删除或不存在，请重新加载配置");
+    const previousForward = instance.forwards[index]!;
+    const forward = proxyForwardSchema.parse({ ...previousForward, ...patch });
+    instance.forwards[index] = forward;
+    this.saveWithIds(config, "update");
+    this.emit("forward-change", {
+      type: "update",
+      instanceName,
+      forwardIndex: index,
+      forward,
+      previousForward,
+    } satisfies ForwardChangeEvent);
+    return forward;
   }
 
   /** 创建或更新实例 */

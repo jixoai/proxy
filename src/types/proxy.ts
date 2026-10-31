@@ -42,11 +42,19 @@ export interface HookLayer {
 
 export type ApiFormat = "responses" | "anthropic-messages" | "chat-completions";
 
-export interface ProviderRoutingConfig {
-  models?: string[] | null;
-  modelMapping?: Record<string, string> | null;
+export interface ModelRoutingEntry {
+  name: string;
+  aliases?: string[];
   apiFormats?: ApiFormat[] | null;
-  modelApiFormats?: Record<string, ApiFormat[]> | null;
+}
+
+export interface ModelRouting {
+  mode: "all" | "listed";
+  models: ModelRoutingEntry[];
+}
+
+export interface ProviderRoutingConfig {
+  modelRouting?: ModelRouting | null;
 }
 
 export interface ProxyForwardConfig extends ProviderRoutingConfig {

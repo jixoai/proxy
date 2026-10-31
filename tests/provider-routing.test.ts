@@ -1,16 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import type { ProviderRoutingConfig } from "../src/types/proxy";
+import type { ModelRouting, ProviderRoutingConfig } from "../src/types/proxy";
 import { proxyForwardSchema, parseConfigFile, serializeConfigFile } from "../src/lib/config-schema";
 import {
   getProviderRoutingConfig,
   providerRoutingSchema,
+  modelRoutingFingerprint,
 } from "../src/lib/provider-routing-config";
+import { createModelRoutingDraft, parseModelRoutingDraft } from "../src/lib/provider-routing-form";
 import {
-  createProviderRoutingDraft,
-  parseProviderRoutingDraft,
-} from "../src/lib/provider-routing-form";
+  createModelRoutingDraftStore,
+  createModelRoutingSession,
+} from "../src/lib/model-routing-drafts";
 import {
   hasProviderRouting,
+  hasProviderModelAlias,
   identifyApiFormat,
   inspectModelRequest,
   providerIncompatibility,
@@ -25,110 +28,153 @@ const request = inspectModelRequest(
   "/group/v1/responses",
   "/group",
 );
+const routing: ModelRouting = {
+  mode: "all",
+  models: [
+    { name: "glm-5.3", aliases: ["local"], apiFormats: ["responses"] },
+    { name: "glm-5.3-flash", aliases: ["fast"], apiFormats: ["anthropic-messages"] },
+  ],
+};
 
-describe("provider capabilities", () => {
-  test("omitted, null and empty configuration mean unrestricted", () => {
+describe("model capabilities", () => {
+  test("omitted, null and empty all declarations mean unrestricted", () => {
     for (const input of [
       {},
-      { models: null, modelMapping: null, apiFormats: null, modelApiFormats: null },
-      { models: [], modelMapping: {}, apiFormats: [], modelApiFormats: { local: [] } },
+      { modelRouting: null },
+      { modelRouting: {} },
+      { modelRouting: { mode: "all", models: [] } },
     ]) {
       const config = providerRoutingSchema.parse(input);
       expect(hasProviderRouting(config)).toBe(false);
       expect(resolveProviderModel(config, "local")).toBe("local");
       expect(providerIncompatibility(config, request, "local")).toBeNull();
+      expect(config.modelRouting).toBeNull();
     }
   });
 
-  test("normalizes and deduplicates model names and capabilities", () => {
+  test("trims names, deduplicates aliases/APIs and removes own-name aliases", () => {
     expect(
       providerRoutingSchema.parse({
-        models: [" glm-5.3 ", "glm-5.3"],
-        modelMapping: { " local ": " glm-5.3 " },
-        apiFormats: ["responses", "responses"],
-        modelApiFormats: { " glm-5.3 ": ["responses", "responses"] },
-      }),
+        modelRouting: {
+          models: [
+            {
+              name: " glm ",
+              aliases: [" local ", "local", "glm"],
+              apiFormats: ["responses", "responses"],
+            },
+          ],
+        },
+      }).modelRouting,
     ).toEqual({
-      models: ["glm-5.3"],
-      modelMapping: { local: "glm-5.3" },
-      apiFormats: ["responses"],
-      modelApiFormats: { "glm-5.3": ["responses"] },
+      mode: "all",
+      models: [{ name: "glm", aliases: ["local"], apiFormats: ["responses"] }],
     });
   });
 
-  test("rejects invalid declarations instead of silently accepting them", () => {
-    for (const input of [
-      { models: [""] },
-      { apiFormats: ["unknown"] },
-      { modelMapping: { local: "" } },
-      { modelApiFormats: { local: ["bad"] } },
-    ]) {
-      expect(providerRoutingSchema.safeParse(input).success).toBe(false);
+  test("rejects all legacy fields even when empty or null", () => {
+    for (const field of ["models", "modelMapping", "apiFormats", "modelApiFormats"]) {
+      for (const value of [null, [], {}, ["responses"]]) {
+        const parsed = providerRoutingSchema.safeParse({ [field]: value });
+        expect(parsed.success).toBe(false);
+        if (!parsed.success) expect(parsed.error.issues[0]!.message).toContain("旧模型字段已移除");
+      }
     }
   });
 
-  test("mapping is independent of model whitelist, exact and case-sensitive", () => {
-    const config = { modelMapping: { local: "glm-5.3", fast: "glm-5.3-flash" } };
+  test("rejects empty listed mode, invalid entries and cross-row conflicts", () => {
+    for (const modelRouting of [
+      { mode: "listed", models: [] },
+      { models: [{ name: " " }] },
+      { models: [{ name: "target", apiFormats: ["unknown"] }] },
+      { models: [{ name: "same" }, { name: "same" }] },
+      {
+        models: [
+          { name: "one", aliases: ["local"] },
+          { name: "two", aliases: [" local "] },
+        ],
+      },
+      { models: [{ name: "one", aliases: ["two"] }, { name: "two" }] },
+      { models: [{ name: "one" }, { name: "two", aliases: ["one"] }] },
+      { apiFormats: ["responses"] },
+    ])
+      expect(providerRoutingSchema.safeParse({ modelRouting }).success).toBe(false);
+  });
+
+  test("aliases are exact, case-sensitive and do not create a whitelist", () => {
+    const config = { modelRouting: routing };
     expect(resolveProviderModel(config, "local")).toBe("glm-5.3");
     expect(resolveProviderModel(config, "fast")).toBe("glm-5.3-flash");
-    expect(resolveProviderModel(config, "Local")).toBe("Local");
-    expect(resolveProviderModel(config, "unlisted")).toBe("unlisted");
-    expect(providerIncompatibility(config, request, "unlisted")).toBeNull();
-    expect(resolveProviderModel(config, "toString")).toBe("toString");
-    expect(resolveProviderModel(config, null)).toBeNull();
-  });
-
-  test("checks target model, not client alias", () => {
-    const config = { models: ["glm-5.3", "glm-5.3-flash"], modelMapping: { local: "glm-5.3" } };
+    for (const model of ["Local", "toString", "unknown", null])
+      expect(resolveProviderModel(config, model)).toBe(model);
+    expect(hasProviderModelAlias(config, "local")).toBe(true);
+    expect(hasProviderModelAlias(config, "glm-5.3")).toBe(false);
+    expect(providerIncompatibility(config, request, "unknown")).toBeNull();
     expect(
-      providerIncompatibility(config, request, resolveProviderModel(config, request.model)),
+      providerIncompatibility(config, { ...request, apiFormat: "chat-completions" }, "unknown"),
     ).toBeNull();
+  });
+
+  test("each model and its aliases use that model's API without provider-wide inheritance", () => {
+    const config = { modelRouting: routing };
+    for (const name of ["local", "glm-5.3"])
+      expect(
+        providerIncompatibility(config, request, resolveProviderModel(config, name)),
+      ).toBeNull();
+    for (const name of ["fast", "glm-5.3-flash"]) {
+      expect(providerIncompatibility(config, request, resolveProviderModel(config, name))).toBe(
+        "api_not_supported",
+      );
+      expect(
+        providerIncompatibility(
+          config,
+          { ...request, apiFormat: "anthropic-messages" },
+          resolveProviderModel(config, name),
+        ),
+      ).toBeNull();
+    }
+    expect(
+      providerIncompatibility(config, { ...request, apiFormat: null }, "glm-5.3-flash"),
+    ).toBeNull();
+  });
+
+  test("listed mode checks canonical targets and missing models", () => {
+    const config: ProviderRoutingConfig = { modelRouting: { ...routing, mode: "listed" } };
+    expect(providerIncompatibility(config, request, "unknown")).toBe("model_not_supported");
     expect(providerIncompatibility(config, request, "local")).toBe("model_not_supported");
-    expect(providerIncompatibility(config, request, "glm-5.3-flash")).toBeNull();
-  });
-
-  test("API restriction and model restriction intersect", () => {
-    const config = providerRoutingSchema.parse({
-      apiFormats: ["responses"],
-      modelApiFormats: { local: ["anthropic-messages"] },
-    });
-    expect(providerIncompatibility(config, request, "local")).toBe("api_not_supported");
     expect(
-      providerIncompatibility(config, { ...request, apiFormat: "anthropic-messages" }, "local"),
-    ).toBe("api_not_supported");
-    expect(providerIncompatibility(config, request, "other")).toBeNull();
-    expect(providerIncompatibility(config, { ...request, apiFormat: null }, "local")).toBeNull();
-  });
-
-  test("model compatibility can be deferred for legacy hooks, but not provider API", () => {
-    expect(providerIncompatibility({ models: ["target"] }, request, "local", true)).toBeNull();
-    expect(
-      providerIncompatibility({ apiFormats: ["anthropic-messages"] }, request, "local", true),
-    ).toBe("api_not_supported");
-  });
-
-  test("missing model cannot bypass explicit whitelist", () => {
-    expect(providerIncompatibility({ models: ["target"] }, { ...request, model: null }, null)).toBe(
+      providerIncompatibility(config, request, resolveProviderModel(config, "local")),
+    ).toBeNull();
+    expect(providerIncompatibility(config, { ...request, model: null }, null)).toBe(
       "missing_model",
     );
-    expect(providerIncompatibility({}, { ...request, model: null }, null)).toBeNull();
+    expect(providerIncompatibility(config, { ...request, requiresModel: false }, null)).toBeNull();
   });
 
-  test("only nonempty declarations require WebSocket guard", () => {
-    for (const config of [
-      { models: ["target"] },
-      { modelMapping: { local: "target" } },
-      { apiFormats: ["responses"] as const },
-      { modelApiFormats: { local: ["responses"] as const } },
-    ]) {
-      expect(hasProviderRouting(providerRoutingSchema.parse(config))).toBe(true);
-    }
+  test("legacy hooks defer both model and per-model API checks until final target is known", () => {
+    expect(
+      providerIncompatibility(
+        { modelRouting: { ...routing, mode: "listed" } },
+        request,
+        "unknown",
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      providerIncompatibility({ modelRouting: routing }, request, "glm-5.3-flash", true),
+    ).toBeNull();
+  });
+
+  test("only configured routes require the explicit WebSocket guard", () => {
+    expect(hasProviderRouting({})).toBe(false);
+    expect(hasProviderRouting({ modelRouting: routing })).toBe(true);
+    expect(
+      hasProviderRouting({ modelRouting: { mode: "listed", models: [{ name: "target" }] } }),
+    ).toBe(true);
   });
 });
 
-describe("request inspection and rewrite", () => {
-  test("recognizes original API endpoints, prefixes and helper endpoints", () => {
-    expect(identifyApiFormat("/group/v1/responses", "/group/")).toBe("responses");
+describe("HTTP request inspection", () => {
+  test("identifies HTTP API variants and exact group prefixes", () => {
     expect(identifyApiFormat("/v1/responses/compact")).toBe("responses");
     expect(identifyApiFormat("/group/messages/count_tokens", "/group")).toBe("anthropic-messages");
     expect(identifyApiFormat("/v1/chat/completions/")).toBe("chat-completions");
@@ -140,9 +186,10 @@ describe("request inspection and rewrite", () => {
 
   test("malformed, missing, empty and non-string models are identified", () => {
     for (const payload of [null, [], {}, { model: 123 }, { model: " " }]) {
-      const result = inspectModelRequest(body(payload), "POST", "/responses");
-      expect(result.model).toBeNull();
-      expect(result.requiresModel).toBe(true);
+      expect(inspectModelRequest(body(payload), "POST", "/responses")).toMatchObject({
+        model: null,
+        requiresModel: true,
+      });
     }
     expect(inspectModelRequest(Buffer.from("{"), "POST", "/responses").invalidJson).toBe(true);
     expect(inspectModelRequest(Buffer.alloc(0), "GET", "/v1/models").requiresModel).toBe(false);
@@ -154,7 +201,7 @@ describe("request inspection and rewrite", () => {
     );
   });
 
-  test("unmapped body remains byte-for-byte untouched and attempts do not share mutations", () => {
+  test("unmapped bytes and attempt bodies are isolated", () => {
     const original = Buffer.from('{ "model": "local", "messages": [], "stream": true }');
     expect(rewriteRequestModel(original, "local")).toBe(original);
     expect(JSON.parse(rewriteRequestModel(original, "first").toString()).model).toBe("first");
@@ -169,81 +216,94 @@ describe("request inspection and rewrite", () => {
 });
 
 describe("configuration and viewer drafts", () => {
-  test("capability fields survive JSON round-trip and runtime extraction", () => {
-    const routing: ProviderRoutingConfig = {
-      models: ["glm-5.3"],
-      modelMapping: { local: "glm-5.3" },
-      apiFormats: ["responses"],
-      modelApiFormats: { "glm-5.3": ["responses"] },
-    };
+  test("model entries survive JSON round-trip, extraction and form round-trip", () => {
     const forward = proxyForwardSchema.parse({
       name: "group",
       target: "https://example.com",
-      ...routing,
+      modelRouting: routing,
     });
-    const serialized = serializeConfigFile({
-      instances: [
-        {
-          name: "test",
-          port: 12345,
-          enabled: true,
-          description: null,
-          headers: null,
-          forwards: [forward],
-        },
-      ],
-    });
-    const parsed = parseConfigFile(serialized).instances[0]!.forwards[0]!;
-    expect(getProviderRoutingConfig(parsed)).toEqual(routing);
-    expect(parseProviderRoutingDraft(createProviderRoutingDraft(parsed))).toEqual(routing);
+    const parsed = parseConfigFile(
+      serializeConfigFile({
+        instances: [
+          {
+            name: "test",
+            port: 12345,
+            enabled: true,
+            description: null,
+            headers: null,
+            forwards: [forward],
+          },
+        ],
+      }),
+    ).instances[0]!.forwards[0]!;
+    expect(getProviderRoutingConfig(parsed)).toEqual({ modelRouting: routing });
+    expect(parseModelRoutingDraft(createModelRoutingDraft(parsed.modelRouting))).toEqual(routing);
   });
 
-  test("empty draft restores unrestricted defaults", () => {
-    const parsed = parseProviderRoutingDraft(createProviderRoutingDraft());
-    expect(hasProviderRouting(parsed)).toBe(false);
-    expect(JSON.stringify(parsed)).toBe("{}");
+  test("empty draft and equivalent API order have stable fingerprints", () => {
+    expect(parseModelRoutingDraft(createModelRoutingDraft())).toBeNull();
+    expect(modelRoutingFingerprint(undefined)).toBe(
+      modelRoutingFingerprint({ mode: "all", models: [] }),
+    );
+    expect(
+      modelRoutingFingerprint({
+        mode: "all",
+        models: [{ name: "one", apiFormats: ["responses", "anthropic-messages"] }],
+      }),
+    ).toBe(
+      modelRoutingFingerprint({
+        mode: "all",
+        models: [{ name: "one", apiFormats: ["anthropic-messages", "responses", "responses"] }],
+      }),
+    );
   });
 
-  test("mapping-only draft does not create supported-model list", () => {
-    const draft = createProviderRoutingDraft();
-    draft.mappings.push({ from: " alias ", to: " target " });
-    const config = parseProviderRoutingDraft(draft);
-    expect(config.models).toBeUndefined();
-    expect(config.modelMapping).toEqual({ alias: "target" });
+  test("aliases split on commas and newlines; incomplete/duplicate rows stay invalid", () => {
+    const draft = createModelRoutingDraft(routing);
+    draft.models[0]!.aliases = " local, extra，another\nlast ";
+    expect(parseModelRoutingDraft(draft)?.models[0]!.aliases).toEqual([
+      "local",
+      "extra",
+      "another",
+      "last",
+    ]);
+    draft.models[0]!.name = "";
+    expect(() => parseModelRoutingDraft(draft)).toThrow();
+    draft.models[0]!.name = draft.models[1]!.name;
+    expect(() => parseModelRoutingDraft(draft)).toThrow("重复");
   });
 
-  test("incomplete and duplicate rows fail rather than silently overwriting", () => {
-    const draft = createProviderRoutingDraft();
-    draft.mappings = [{ from: "local", to: "" }];
-    expect(() => parseProviderRoutingDraft(draft)).toThrow("同时填写");
-    draft.mappings = [
-      { from: "local", to: "one" },
-      { from: " local ", to: "two" },
-    ];
-    expect(() => parseProviderRoutingDraft(draft)).toThrow("重复映射");
-    draft.mappings = [];
-    draft.modelApis = [{ model: "", formats: ["responses"] }];
-    expect(() => parseProviderRoutingDraft(draft)).toThrow("目标模型名称");
-    draft.modelApis = [
-      { model: "local", formats: ["responses"] },
-      { model: " local ", formats: [] },
-    ];
-    expect(() => parseProviderRoutingDraft(draft)).toThrow("重复配置");
+  test("drafts and expected snapshot do not mutate saved configuration", () => {
+    const initial = JSON.stringify(routing);
+    const session = createModelRoutingSession(routing);
+    session.draft.models[0]!.name = "changed";
+    session.draft.models[0]!.apiFormats.push("anthropic-messages");
+    session.expected!.models[0]!.aliases!.push("another");
+    expect(JSON.stringify(routing)).toBe(initial);
   });
 
-  test("editing drafts does not mutate input configuration", () => {
-    const config = providerRoutingSchema.parse({
-      models: ["local"],
-      modelMapping: { local: "target" },
-      apiFormats: ["responses"],
-      modelApiFormats: { local: ["responses"] },
-    });
-    const initial = JSON.stringify(config);
-    const draft = createProviderRoutingDraft(config);
-    draft.models.push("another");
-    draft.mappings[0]!.to = "changed";
-    draft.apiFormats.push("anthropic-messages");
-    draft.modelApis[0]!.formats.push("anthropic-messages");
-    expect(JSON.stringify(config)).toBe(initial);
+  test("per-ID drafts survive unsubscribe/collapse and reorder without cross-card updates", () => {
+    const store = createModelRoutingDraftStore();
+    const first = JSON.stringify(["instance", "id-1"]);
+    const second = JSON.stringify(["instance", "id-2"]);
+    let firstUpdates = 0;
+    let secondUpdates = 0;
+    const unsubscribe = store.subscribe(first, () => firstUpdates++);
+    store.subscribe(second, () => secondUpdates++);
+    const session = createModelRoutingSession(routing);
+    store.set(first, session);
+    expect(firstUpdates).toBe(1);
+    expect(secondUpdates).toBe(0);
+    unsubscribe();
+    expect(store.get(first)).toBe(session);
+    store.set(second, createModelRoutingSession());
+    store.subscribe(first, () => firstUpdates++);
+    expect(store.get(first)).toBe(session);
+    store.set(first, { ...session, error: "network failure" });
+    expect(firstUpdates).toBe(2);
+    expect(secondUpdates).toBe(1);
+    expect(store.get(second)?.draft.models).toEqual([]);
+    store.set(first, undefined);
+    expect(store.get(first)).toBeUndefined();
   });
 });

@@ -13,6 +13,8 @@ import {
   upsertForward,
   deleteForward,
   reorderForwards,
+  loadConfig,
+  saveConfig,
 } from "../src/lib/config-store";
 import type { ProxyInstanceConfig, ProxyForwardConfig } from "../src/types/proxy";
 
@@ -35,6 +37,18 @@ describe("Config Store v2", () => {
     expect(fs.existsSync(getConfigFilePath())).toBe(true);
     const instances = getAllInstances();
     expect(instances.length).toBeGreaterThan(0);
+  });
+
+  test("rejects legacy model fields before partially updating settings or instances", () => {
+    const initial = loadConfig();
+    const initialFile = fs.readFileSync(TEST_CONFIG_PATH, "utf8");
+    const next = structuredClone(initial);
+    next.settings = { frontendAutoPullConfig: false, dbPath: "must-not-be-saved" };
+    next.instances[0]!.name = "must-not-be-saved";
+    Object.assign(next.instances[0]!.forwards[0]!, { apiFormats: ["responses"] });
+    expect(() => saveConfig(next)).toThrow("旧模型字段已移除");
+    expect(loadConfig()).toEqual(initial);
+    expect(fs.readFileSync(TEST_CONFIG_PATH, "utf8")).toBe(initialFile);
   });
 
   test("should upsert instance by name", () => {
