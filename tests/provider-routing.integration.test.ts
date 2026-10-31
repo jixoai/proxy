@@ -410,6 +410,41 @@ test("API filtering and per-model restrictions skip incompatible providers", asy
   expect(upstreamRequests.at(-1)!.path).toBe("/messages/v1/messages");
 });
 
+test("provider matching starts with the original client name even when upstream names differ", async () => {
+  await configure([
+    {
+      endpoint: "not-called",
+      modelRouting: {
+        mode: "listed",
+        models: [
+          { name: "vendor-messages/glm", aliases: ["glm-5.3"], apiFormats: ["anthropic-messages"] },
+        ],
+      },
+    },
+    {
+      endpoint: "fail",
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "vendor-a/glm-full", aliases: ["glm-5.3"], apiFormats: ["responses"] }],
+      },
+    },
+    {
+      endpoint: "ok",
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "vendor-b/glm-v5", aliases: ["glm-5.3"], apiFormats: ["responses"] }],
+      },
+    },
+  ]);
+  const response = await request("glm-5.3");
+  expect(response.status).toBe(200);
+  expect((await response.json()).model).toBe("vendor-b/glm-v5");
+  expect(upstreamRequests.map((item) => ({ path: item.path, model: item.model }))).toEqual([
+    { path: "/fail/v1/responses", model: "vendor-a/glm-full" },
+    { path: "/ok/v1/responses", model: "vendor-b/glm-v5" },
+  ]);
+});
+
 test("Chat Completions and per-model API declarations filter by the original protocol", async () => {
   await configure([
     {

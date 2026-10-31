@@ -98,15 +98,23 @@ export function InlineModelRouting({
 }) {
   const key = JSON.stringify([instanceName, forward.id]);
   const { session, store } = useModelRoutingSession(key);
+  const [detailsOpen, setDetailsOpen] = useState(() => Boolean(session));
   const [expanded, setExpanded] = useState(false);
   const [notice, setNotice] = useState("");
   const formId = useId();
+  const detailsId = `${formId}-details`;
   const savedDraft = useMemo(
     () => createModelRoutingDraft(forward.modelRouting),
     [forward.modelRouting],
   );
   const rows = session?.draft.models ?? savedDraft.models;
   const mode = session?.draft.mode ?? forward.modelRouting?.mode ?? "all";
+  const modelNames = rows.map((row) => row.name.trim() || "未命名模型");
+  const modelSummary = modelNames.length
+    ? `${modelNames.slice(0, 3).join("、")}${modelNames.length > 3 ? ` 等 ${modelNames.length} 个` : ""}`
+    : mode === "all"
+      ? "全部模型（默认）"
+      : "尚未添加模型";
   const busy = Boolean(session?.saving || session?.reloading);
   const showAll = expanded || Boolean(session);
   const conflict = Boolean(
@@ -121,6 +129,7 @@ export function InlineModelRouting({
       draft: savedDraft,
     };
     if (current.saving || current.reloading) return;
+    setDetailsOpen(true);
     setNotice("");
     store.set(key, update({ ...current, error: "", issues: [] }));
   };
@@ -145,6 +154,7 @@ export function InlineModelRouting({
       store.set(key, undefined);
       setNotice("");
     } catch (error) {
+      setDetailsOpen(true);
       if (current)
         store.set(key, {
           ...current,
@@ -180,6 +190,7 @@ export function InlineModelRouting({
       store.set(key, undefined);
       setNotice("模型配置已保存；按实例自动推送设置生效");
     } catch (error) {
+      setDetailsOpen(true);
       const issues = error instanceof ZodError ? error.issues : [];
       store.set(key, {
         ...current,
@@ -206,213 +217,252 @@ export function InlineModelRouting({
       className="min-w-0 space-y-2 border-t pt-3"
       onClick={(event) => event.stopPropagation()}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <label htmlFor={`${formId}-mode`} className="text-muted-foreground text-xs">
-            接收模型
-          </label>
-          <select
-            id={`${formId}-mode`}
-            value={mode}
-            disabled={busy || !forward.id}
-            onChange={(event) =>
-              edit((current) => ({
-                ...current,
-                draft: { ...current.draft, mode: event.target.value as "all" | "listed" },
-              }))
-            }
-            className="border-input bg-background focus-visible:ring-ring h-8 max-w-full rounded-md border px-2 text-xs outline-none focus-visible:ring-2"
-          >
-            <option value="all">全部模型（默认）</option>
-            <option value="listed">仅表内模型</option>
-          </select>
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={busy || !forward.id}
-          className="h-8 text-xs"
-          onClick={() =>
-            edit((current) => {
-              const row: ModelRoutingRow = {
-                key: crypto.randomUUID(),
-                name: "",
-                aliases: "",
-                apiFormats: [],
-              };
-              return {
-                ...current,
-                editing: [...current.editing, row.key],
-                draft: { ...current.draft, models: [...current.draft.models, row] },
-              };
-            })
-          }
-        >
-          <Plus className="size-3.5" />
-          添加模型
-        </Button>
-      </div>
-      {rows.length === 0 ? (
-        <p className="text-muted-foreground py-1 text-xs">
-          {mode === "all"
-            ? "全部模型 · 原名透传 · API 不限制"
-            : "请至少添加一个模型，或切换为全部模型。"}
-        </p>
-      ) : (
-        <div>
-          <div
-            aria-hidden="true"
-            className="text-muted-foreground hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem] gap-3 pb-2 text-xs lg:grid"
-          >
-            <span>上游模型</span>
-            <span>客户端别名（可选）</span>
-            <span>支持的 API</span>
-            <span className="text-right">操作</span>
-          </div>
-          {rows.map((row, index) => {
-            const active = Boolean(session?.editing.includes(row.key));
-            if (!showAll && index >= 3 && !active) return null;
-            const fieldErrors =
-              session?.issues.filter(
-                (issue) => issue.path[0] === "models" && issue.path[1] === index,
-              ) ?? [];
-            return (
-              <div
-                key={row.key}
-                className="space-y-2 border-t py-2 first:border-t-0"
-                data-model-row={index}
-              >
-                <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem] lg:gap-3">
-                  <div className="min-w-0 space-y-1">
-                    <label
-                      htmlFor={`${formId}-name-${index}`}
-                      className="text-muted-foreground block text-xs lg:sr-only"
-                    >
-                      上游模型
-                    </label>
-                    {active ? (
-                      <Input
-                        id={`${formId}-name-${index}`}
-                        aria-label={`上游模型 ${index + 1}`}
-                        aria-invalid={fieldErrors.some((issue) => issue.path[2] === "name")}
-                        value={row.name}
-                        disabled={busy}
-                        className="h-8 text-xs"
-                        placeholder="例如 glm-5.3"
-                        autoFocus={!row.name}
-                        onChange={(event) => updateRow(index, { name: event.target.value })}
-                      />
-                    ) : (
-                      <span className="block truncate py-1 text-sm font-medium" title={row.name}>
-                        {row.name}
-                      </span>
-                    )}
-                  </div>
-                  <div className="col-start-1 min-w-0 space-y-1 lg:col-start-auto">
-                    <label
-                      htmlFor={`${formId}-aliases-${index}`}
-                      className="text-muted-foreground block text-xs lg:sr-only"
-                    >
-                      客户端别名（可选）
-                    </label>
-                    {active ? (
-                      <Input
-                        id={`${formId}-aliases-${index}`}
-                        aria-label={`客户端别名 ${index + 1}`}
-                        aria-invalid={fieldErrors.some((issue) => issue.path[2] === "aliases")}
-                        value={row.aliases}
-                        disabled={busy}
-                        className="h-8 text-xs"
-                        placeholder="留空用原名，多个用逗号分隔"
-                        onChange={(event) => updateRow(index, { aliases: event.target.value })}
-                      />
-                    ) : (
-                      <span
-                        className="text-muted-foreground block truncate py-1 text-xs"
-                        title={row.aliases}
-                      >
-                        {row.aliases || "原名透传"}
-                      </span>
-                    )}
-                  </div>
-                  <div className="col-start-1 min-w-0 space-y-1 lg:col-start-auto">
-                    <span className="text-muted-foreground block text-xs lg:sr-only">
-                      支持的 API
-                    </span>
-                    <ModelApiPicker
-                      name={row.name}
-                      value={row.apiFormats}
-                      disabled={busy}
-                      onChange={(apiFormats) => updateRow(index, { apiFormats })}
-                    />
-                  </div>
-                  <div className="col-start-2 row-start-1 flex items-start justify-end gap-0.5 lg:col-start-auto lg:row-start-auto">
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="size-8"
-                      disabled={busy}
-                      aria-label={`编辑模型 ${row.name || index + 1}`}
-                      onClick={() =>
-                        edit((current) => ({
-                          ...current,
-                          editing: [...current.editing, current.draft.models[index]!.key],
-                        }))
-                      }
-                    >
-                      <Pencil className="size-3.5" />
-                    </Button>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="size-8"
-                      disabled={busy}
-                      aria-label={`移除模型 ${row.name || index + 1}`}
-                      onClick={() =>
-                        edit((current) => ({
-                          ...current,
-                          draft: {
-                            ...current.draft,
-                            models: current.draft.models.filter(
-                              (_, position) => position !== index,
-                            ),
-                          },
-                        }))
-                      }
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                </div>
-                {fieldErrors.map((issue, issueIndex) => (
-                  <p key={issueIndex} className="text-destructive text-xs">
-                    {issue.message}
-                  </p>
-                ))}
+      <button
+        type="button"
+        aria-label={`${detailsOpen ? "收起" : "展开"}模型配置 ${forward.name}`}
+        aria-expanded={detailsOpen}
+        aria-controls={detailsId}
+        onClick={() => setDetailsOpen(!detailsOpen)}
+        className="hover:bg-muted/50 focus-visible:ring-ring flex min-h-8 w-full min-w-0 items-center gap-2 rounded text-left outline-none focus-visible:ring-2"
+      >
+        <ChevronDown
+          aria-hidden="true"
+          className={`size-3.5 shrink-0 ${detailsOpen ? "" : "-rotate-90"}`}
+        />
+        <span className="shrink-0 text-xs font-medium">模型</span>
+        <span className="min-w-0 flex-1 truncate text-xs" title={modelNames.join("、")}>
+          {modelSummary}
+        </span>
+        {(rows.length > 0 || mode === "listed") && (
+          <span className="text-muted-foreground shrink-0 text-xs">
+            {mode === "all" ? "全部支持" : "仅表内"}
+          </span>
+        )}
+        {session && <span className="text-muted-foreground shrink-0 text-xs">未保存</span>}
+        <span className="text-muted-foreground shrink-0 text-xs">
+          {detailsOpen ? "收起" : "展开"}
+        </span>
+      </button>
+      <div id={detailsId} hidden={!detailsOpen}>
+        {detailsOpen && (
+          <div role="region" aria-label="模型配置详情" className="min-w-0 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <label htmlFor={`${formId}-mode`} className="text-muted-foreground text-xs">
+                  接收模型
+                </label>
+                <select
+                  id={`${formId}-mode`}
+                  value={mode}
+                  disabled={busy || !forward.id}
+                  onChange={(event) =>
+                    edit((current) => ({
+                      ...current,
+                      draft: { ...current.draft, mode: event.target.value as "all" | "listed" },
+                    }))
+                  }
+                  className="border-input bg-background focus-visible:ring-ring h-8 max-w-full rounded-md border px-2 text-xs outline-none focus-visible:ring-2"
+                >
+                  <option value="all">全部模型（默认）</option>
+                  <option value="listed">仅表内模型</option>
+                </select>
               </div>
-            );
-          })}
-          {rows.length > 3 && (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-7 text-xs"
-              disabled={busy || Boolean(session)}
-              onClick={() => setExpanded(!expanded)}
-            >
-              {showAll ? <ChevronUp /> : <ChevronDown />}
-              {showAll ? "收起模型" : `展开其余 ${rows.length - 3} 个模型`}
-            </Button>
-          )}
-        </div>
-      )}
-      {mode === "all" && rows.length > 0 && (
-        <p className="text-muted-foreground text-xs">其他模型仍按原名透传，API 不限制。</p>
-      )}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={busy || !forward.id}
+                className="h-8 text-xs"
+                onClick={() =>
+                  edit((current) => {
+                    const row: ModelRoutingRow = {
+                      key: crypto.randomUUID(),
+                      name: "",
+                      aliases: "",
+                      apiFormats: [],
+                    };
+                    return {
+                      ...current,
+                      editing: [...current.editing, row.key],
+                      draft: { ...current.draft, models: [...current.draft.models, row] },
+                    };
+                  })
+                }
+              >
+                <Plus className="size-3.5" />
+                添加模型
+              </Button>
+            </div>
+            {rows.length === 0 ? (
+              <p className="text-muted-foreground py-1 text-xs">
+                {mode === "all"
+                  ? "全部模型 · 原名透传 · API 不限制"
+                  : "请至少添加一个模型，或切换为全部模型。"}
+              </p>
+            ) : (
+              <div>
+                <div
+                  aria-hidden="true"
+                  className="text-muted-foreground hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem] gap-3 pb-2 text-xs lg:grid"
+                >
+                  <span>上游模型</span>
+                  <span>客户端别名（可选）</span>
+                  <span>支持的 API</span>
+                  <span className="text-right">操作</span>
+                </div>
+                {rows.map((row, index) => {
+                  const active = Boolean(session?.editing.includes(row.key));
+                  if (!showAll && index >= 3 && !active) return null;
+                  const fieldErrors =
+                    session?.issues.filter(
+                      (issue) => issue.path[0] === "models" && issue.path[1] === index,
+                    ) ?? [];
+                  return (
+                    <div
+                      key={row.key}
+                      className="space-y-2 border-t py-2 first:border-t-0"
+                      data-model-row={index}
+                    >
+                      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem] lg:gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <label
+                            htmlFor={`${formId}-name-${index}`}
+                            className="text-muted-foreground block text-xs lg:sr-only"
+                          >
+                            上游模型
+                          </label>
+                          {active ? (
+                            <Input
+                              id={`${formId}-name-${index}`}
+                              aria-label={`上游模型 ${index + 1}`}
+                              aria-invalid={fieldErrors.some((issue) => issue.path[2] === "name")}
+                              value={row.name}
+                              disabled={busy}
+                              className="h-8 text-xs"
+                              placeholder="例如 glm-5.3"
+                              autoFocus={!row.name}
+                              onChange={(event) => updateRow(index, { name: event.target.value })}
+                            />
+                          ) : (
+                            <span
+                              className="block truncate py-1 text-sm font-medium"
+                              title={row.name}
+                            >
+                              {row.name}
+                            </span>
+                          )}
+                        </div>
+                        <div className="col-start-1 min-w-0 space-y-1 lg:col-start-auto">
+                          <label
+                            htmlFor={`${formId}-aliases-${index}`}
+                            className="text-muted-foreground block text-xs lg:sr-only"
+                          >
+                            客户端别名（可选）
+                          </label>
+                          {active ? (
+                            <Input
+                              id={`${formId}-aliases-${index}`}
+                              aria-label={`客户端别名 ${index + 1}`}
+                              aria-invalid={fieldErrors.some(
+                                (issue) => issue.path[2] === "aliases",
+                              )}
+                              value={row.aliases}
+                              disabled={busy}
+                              className="h-8 text-xs"
+                              placeholder="留空用原名，多个用逗号分隔"
+                              onChange={(event) =>
+                                updateRow(index, { aliases: event.target.value })
+                              }
+                            />
+                          ) : (
+                            <span
+                              className="text-muted-foreground block truncate py-1 text-xs"
+                              title={row.aliases}
+                            >
+                              {row.aliases || "原名透传"}
+                            </span>
+                          )}
+                        </div>
+                        <div className="col-start-1 min-w-0 space-y-1 lg:col-start-auto">
+                          <span className="text-muted-foreground block text-xs lg:sr-only">
+                            支持的 API
+                          </span>
+                          <ModelApiPicker
+                            name={row.name}
+                            value={row.apiFormats}
+                            disabled={busy}
+                            onChange={(apiFormats) => updateRow(index, { apiFormats })}
+                          />
+                        </div>
+                        <div className="col-start-2 row-start-1 flex items-start justify-end gap-0.5 lg:col-start-auto lg:row-start-auto">
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="size-8"
+                            disabled={busy}
+                            aria-label={`编辑模型 ${row.name || index + 1}`}
+                            onClick={() =>
+                              edit((current) => ({
+                                ...current,
+                                editing: [...current.editing, current.draft.models[index]!.key],
+                              }))
+                            }
+                          >
+                            <Pencil className="size-3.5" />
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="size-8"
+                            disabled={busy}
+                            aria-label={`移除模型 ${row.name || index + 1}`}
+                            onClick={() =>
+                              edit((current) => ({
+                                ...current,
+                                draft: {
+                                  ...current.draft,
+                                  models: current.draft.models.filter(
+                                    (_, position) => position !== index,
+                                  ),
+                                },
+                              }))
+                            }
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      {fieldErrors.map((issue, issueIndex) => (
+                        <p key={issueIndex} className="text-destructive text-xs">
+                          {issue.message}
+                        </p>
+                      ))}
+                    </div>
+                  );
+                })}
+                {rows.length > 3 && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    disabled={busy || Boolean(session)}
+                    onClick={() => setExpanded(!expanded)}
+                  >
+                    {showAll ? <ChevronUp /> : <ChevronDown />}
+                    {showAll ? "收起模型" : `展开其余 ${rows.length - 3} 个模型`}
+                  </Button>
+                )}
+              </div>
+            )}
+            {mode === "all" && rows.length > 0 && (
+              <p className="text-muted-foreground text-xs">其他模型仍按原名透传，API 不限制。</p>
+            )}
+          </div>
+        )}
+      </div>
       {session && (
         <div className="space-y-2 border-t pt-3">
           {conflict && (
@@ -446,7 +496,7 @@ export function InlineModelRouting({
           </div>
         </div>
       )}
-      {notice && (
+      {detailsOpen && notice && (
         <p role="status" className="text-muted-foreground text-xs">
           {notice}
         </p>
