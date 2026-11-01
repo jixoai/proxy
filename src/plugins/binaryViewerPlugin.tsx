@@ -55,7 +55,12 @@ function toBinary(data: Uint8Array): string {
  * Uint8Array 转换为 Base64
  */
 function toBase64(data: Uint8Array): string {
-  return btoa(String.fromCharCode(...data));
+  const chunkSize = 32768;
+  const chunks: string[] = [];
+  for (let offset = 0; offset < data.length; offset += chunkSize) {
+    chunks.push(String.fromCharCode(...data.subarray(offset, offset + chunkSize)));
+  }
+  return btoa(chunks.join(""));
 }
 
 /**
