@@ -65,6 +65,13 @@ function stripInternalHeadersForUpstream(headers: http.OutgoingHttpHeaders): htt
     const normalizedKey = key.toLowerCase();
     if (normalizedKey.startsWith(PRIVATE_HEADER_PREFIX)) continue;
     if (isPluginStoreHeader(normalizedKey)) continue;
+    if (normalizedKey === "x-target-model") {
+      try {
+        http.validateHeaderValue(key, String(value));
+      } catch {
+        continue;
+      }
+    }
     result[key] = value;
   }
   return result;

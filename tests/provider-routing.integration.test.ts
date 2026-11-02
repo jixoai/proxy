@@ -258,6 +258,95 @@ test("multiple mappings route by target model and unmatched names still pass wit
   expect(upstreamRequests[0]!.model).toBe("glm-5.3");
 });
 
+test("Chinese client aliases map to ASCII target models", async () => {
+  await configure([
+    {
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "target-model", aliases: ["中文别名"], apiFormats: [] }],
+      },
+    },
+  ]);
+  const response = await request("中文别名");
+  expect(response.status).toBe(200);
+  await response.text();
+  expect(upstreamRequests[0]!.model).toBe("target-model");
+  expect(upstreamRequests[0]!.targetModel).toBe("target-model");
+});
+
+test("Unicode target models stay in JSON without invalid upstream headers", async () => {
+  for (const model of ["中文模型", "模型-🚀"]) {
+    await configure([
+      {
+        modelRouting: {
+          mode: "listed",
+          models: [{ name: model, aliases: ["local"], apiFormats: [] }],
+        },
+      },
+    ]);
+    const response = await request();
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(upstreamRequests[0]!.model).toBe(model);
+    expect(upstreamRequests[0]!.targetModel).toBeNull();
+  }
+});
+
+test("configured Unicode target headers are omitted only at the upstream boundary", async () => {
+  for (const header of ["x-target-model", "X-Target-Model"]) {
+    await configure([{ headers: { [header]: "中文模型" } }]);
+    const response = await request();
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(upstreamRequests[0]!.model).toBe("local");
+    expect(upstreamRequests[0]!.targetModel).toBeNull();
+  }
+});
+
+test("configured Chinese target headers remain available to conversion hooks", async () => {
+  await configure([
+    {
+      endpoint: "v1/messages",
+      path: "/group/v1/responses",
+      headers: { "x-target-model": "中文模型" },
+      hooks: conversionHook("anthropic4codex"),
+    },
+  ]);
+  const response = await request("local", "/v1/responses", {
+    instructions: "Be concise",
+    input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+  });
+  expect(response.status).toBe(200);
+  await response.text();
+  expect(upstreamRequests[0]!.model).toBe("中文模型");
+  expect(upstreamRequests[0]!.targetModel).toBeNull();
+  expect(JSON.parse(upstreamRequests[0]!.body).messages.length).toBeGreaterThan(0);
+});
+
+test("Chinese model mappings remain available to conversion hooks", async () => {
+  await configure([
+    {
+      endpoint: "v1/messages",
+      path: "/group/v1/responses",
+      hooks: conversionHook("anthropic4codex"),
+      modelRouting: {
+        mode: "listed",
+        models: [{ name: "中文模型", aliases: ["local"], apiFormats: ["responses"] }],
+      },
+    },
+  ]);
+  const response = await request("local", "/v1/responses", {
+    instructions: "Be concise",
+    input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+  });
+  expect(response.status).toBe(200);
+  await response.text();
+  expect(upstreamRequests[0]!.model).toBe("中文模型");
+  expect(upstreamRequests[0]!.path).toBe("/v1/messages");
+  expect(upstreamRequests[0]!.targetModel).toBeNull();
+  expect(JSON.parse(upstreamRequests[0]!.body).messages.length).toBeGreaterThan(0);
+});
+
 test("concurrent model requests keep provider selection and mappings isolated", async () => {
   await configure([
     {
